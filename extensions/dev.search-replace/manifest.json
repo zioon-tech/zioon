@@ -1,47 +1,83 @@
 {
   "name": "dev.search-replace",
   "version": "0.1.0",
-  "description": "Zion Next Plugin: dev.search-replace",
+  "description": "Provide editor search, replace, navigation, and select-all matches.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.search-replace",
-    "name": "dev.search-replace",
+    "name": "Search and Replace",
     "version": "0.1.0",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "搜索和替换",
+        "en-US": "Search and Replace"
+      },
+      "description": {
+        "zh-CN": "在编辑器中提供搜索、替换、跳转和全选匹配。",
+        "en-US": "Provide editor search, replace, navigation, and select-all matches."
+      },
+      "icon": "search",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "在编辑器中提供搜索、替换、跳转和全选匹配。"
+        ],
+        "en-US": [
+          "Provide editor search, replace, navigation, and select-all matches."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "searchReplace.show",
-          "title": "Show Search"
+          "title": "Show Search",
+          "titleKey": "dev.search-replace.cmd.show",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.showWithReplace",
-          "title": "Show Search and Replace"
+          "title": "Show Search and Replace",
+          "titleKey": "dev.search-replace.cmd.showWithReplace",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.hide",
-          "title": "Hide Search"
+          "title": "Hide Search",
+          "titleKey": "dev.search-replace.cmd.hide",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.next",
-          "title": "Next Match"
+          "title": "Next Match",
+          "titleKey": "dev.search-replace.cmd.next",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.prev",
-          "title": "Previous Match"
+          "title": "Previous Match",
+          "titleKey": "dev.search-replace.cmd.prev",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.selectAll",
-          "title": "Select All Matches"
+          "title": "Select All Matches",
+          "titleKey": "dev.search-replace.cmd.selectAll",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.replace",
-          "title": "Replace Current Match"
+          "title": "Replace Current Match",
+          "titleKey": "dev.search-replace.cmd.replace",
+          "categoryKey": "dev.search-replace.category.search"
         },
         {
           "id": "searchReplace.replaceAll",
-          "title": "Replace All Matches"
+          "title": "Replace All Matches",
+          "titleKey": "dev.search-replace.cmd.replaceAll",
+          "categoryKey": "dev.search-replace.category.search"
         }
       ],
       "keybindings": [
@@ -82,6 +118,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.search-replace",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.search-replace"
   }
 }

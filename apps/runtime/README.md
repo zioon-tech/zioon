@@ -1,0 +1,944 @@
+# Zion Runtime Host
+
+Local, standalone host for `@zion/runtime`.
+
+Account extension development, isolated Hosts, model providers, lifecycle jobs
+and immutable builds are documented in [Unified plugins](../../docs/architecture/UNIFIED-PLUGINS.md).
+
+Requires Node.js 22.5 or newer and PostgreSQL 16 or newer. PostgreSQL is the
+only authoritative Runtime backend in local, remote, and account deployments.
+
+The current checkpoint provides:
+
+- a loopback-only HTTP API;
+- PostgreSQL-backed Run and ordered Event persistence in every deployment;
+- Run creation, lookup, event catch-up, SSE streaming, and abort;
+- startup reconciliation for Runs left active without a live owner;
+- durable checkpoints after completed tool turns and explicit new-Attempt resume;
+- durable Sessions with ordered user/assistant transcripts;
+- immutable Session seed transcripts imported from pre-Runtime Workbench history;
+- canonical Run transcripts with reasoning, tool calls, and full tool results,
+  reused as structured history by later Session Runs;
+- durable file Artifacts and ChangeSets derived at the Tool Broker boundary and
+  queryable by Run or Session;
+- Runtime-owned Workbench documents, metadata, tree, KV, tombstones, and
+  revision history;
+- a durable, cursor-based Workbench Session event feed with JSON catch-up and
+  SSE streaming for Workbench, CLI, and future Mobile clients;
+- a cursor-preserving Client Run Projection Stream that coalesces raw model
+  deltas and applies HTTP backpressure;
+- embedded Hocuspocus/Yjs collaboration rooms with transactional persistence,
+  CodeMirror-compatible document state, and terminal model output commits;
+- one immutable Run per Session message and idempotent completion projection;
+- an interactive CLI that creates or reconnects to a Session;
+- a local Model Registry with sanitized profile discovery;
+- strict per-Run Model Profile routing with no silent model substitution;
+- loopback write-only import of existing Workbench OpenAI-compatible profiles;
+- separate `0600` profile and credential stores;
+- a real OpenAI-compatible streaming Engine adapter;
+- an environment-backed, allowlisted Credential Provider;
+- a policy-scoped local-tools broker for files, Bash, search, mail, and MCP;
+- Runtime-native `webFetch` and durable `todoWrite`;
+- durable invocation receipts that prevent replayed side effects;
+- account-private Skill, SDK tool-plugin and MCP extension packages, immutable
+  versions, installation state, configuration references and validated tool catalogs;
+- a shared Tool execution lifecycle for deadlines, cancellation, in-flight
+  fencing, retry classification, and unknown outcomes;
+- a manifest-driven Runtime Plugin Service with an explicit plugin allowlist,
+  API-version validation, failure isolation, and reverse-order disposal;
+- an opt-in Node Broker for authenticated Device Connector registration,
+  capability discovery, invocation routing, cancellation, and reconnect
+  redelivery;
+- durable Device registry, project/resource bindings, and completed
+  invocation receipts;
+- a policy-scoped Terminal Inventory Context Provider compatible with the current
+  Workbench XML format;
+- a service-backed Scheduler Agent worker that claims and completes tasks without
+  an online Workbench;
+- Runtime-owned Scheduler Task, occurrence, Run, lease, and trigger persistence;
+- a Runtime-owned Project Automation coordinator that reads Identity project
+  files, starts bounded Agent Runs, mirrors Agent task state, and records
+  attention items without an online Workbench;
+- a restricted model gateway for legacy browser execution paths;
+- idempotent one-time import of legacy Workbench and Scheduler state from
+  `zion-local-tools`;
+- a deliberately limited Echo Engine for protocol smoke testing.
+
+It connects to `zion-next` through the HTTP/SSE RuntimeClient while preserving a
+temporary browser compatibility path. It never exposes `zion-local-tools` directly.
+Remote access is opt-in and uses the single-Space pairing boundary described
+below. The Runtime should still bind to loopback behind a same-origin HTTPS
+reverse proxy; full third-party plugin host APIs, remote Approval, and
+device-held proof-of-possession keys remain later milestones.
+
+## Private extensions
+
+The development CLI supports `zion` and `zioon extensions` with `init`, `validate`,
+`pack`, `upload`, `install`, `list`, `show`, `status`, `enable`, `disable`,
+`uninstall`, `configure`, `prepare`, `probe`, and `call`.
+
+`init --kind skill|plugin|mcp` produces an offline project. SDK tool plugins use
+runtime API 2 and built JavaScript. MCP supports stdio and Streamable HTTP tool
+discovery/calls. Code plugins must bundle their dependencies; MCP `prepare`
+installs the fixed SDK on the selected execution Node with lifecycle scripts
+disabled. Workbench/renderer entries and additional SDK hooks are not activated
+by the private tool host.
+
+Account installation is managed through `/v1/marketplace`. Configuration contains
+an explicit authorized Node ID, workspace root, and optional Node-local credential
+file path. Credential values stay on that Node. HTTP credential files bind both
+the listing ID and exact endpoint; redirects are rejected.
+
+Prepare/probe/call create ordinary `/v1/runs` requests. `extensionsCall` dispatches
+its staging writes and process execution through the same Tool Broker,
+authorization, cancellation, and durable receipts as other tools. It requires
+`trusted-automation`, `write`, and `Bash`; it never grants additional authority.
+Platform Nodes are rejected. In account mode, an unprovisioned workspace must use
+an explicitly authorized physical Node; no Runtime-local fallback exists.
+
+Changing versions, configuration or enable state clears validation. In-flight
+execution is cancelled on configuration changes, and uncertain outcomes retain
+receipts that block identical retries within the Run. Private packages are never
+imported into the Runtime process.
+
+## Start
+
+From the repository root, provide a PostgreSQL database and an existing Space:
+
+```bash
+ZION_DATABASE_URL='postgresql://zion:REDACTED@127.0.0.1:5432/zion' \
+ZION_SPACE_ID=space:example \
+npm run runtime:serve
+```
+
+Defaults:
+
+```text
+listen: 127.0.0.1:8766
+data directory: ~/.zion-next/runtime
+model profiles: ~/.zion-next/runtime/model-profiles.json
+credentials: ~/.zion-next/runtime/credentials.json
+engine: zion.echo
+scheduler worker: enabled
+project automation worker: enabled
+default interaction profile: read-only
+```
+
+Production account mode uses one PostgreSQL database for account and Runtime
+state:
+
+```bash
+ZION_RUNTIME_AUTH_MODE=accounts \
+ZION_DATABASE_URL='postgresql://zion:REDACTED@db.example.com/zion?sslmode=require' \
+ZION_SPACE_ID=space:example \
+ZION_RUNTIME_PUBLIC_URL=https://zion.example.com \
+ZION_OIDC_ISSUER=https://accounts.example.com \
+ZION_OIDC_CLIENT_ID=zion \
+npm run runtime:serve
+```
+
+Run, Workbench, Scheduler, Access, Node, and observability stores share the
+PostgreSQL Pool and are partitioned by `ZION_SPACE_ID`. See
+[`POSTGRES-ACCOUNT-MIGRATION.md`](../../docs/operations/POSTGRES-ACCOUNT-MIGRATION.md)
+for the verified full-data migration procedure.
+
+Image Assets use a local filesystem content-addressed store under
+`$ZION_RUNTIME_DATA_DIR/assets`. PostgreSQL stores only Asset metadata. The
+directory must be on a persistent volume and backed up with PostgreSQL; it is
+not suitable for multiple Runtime replicas. Configure the initial per-image
+limit with:
+
+```bash
+ZION_RUNTIME_ASSET_MAX_IMAGE_BYTES=16MiB
+```
+
+The Workbench streams new images to `POST /v1/assets` and persists only a
+`zion-asset://...` reference. The S3-compatible BlobStore backend and multipart
+uploads are deferred until large media or multi-replica deployment is enabled.
+
+Disable Scheduler claiming for diagnostics with
+`ZION_RUNTIME_SCHEDULER_WORKER=0`. The worker claims directly from the
+Runtime-owned Scheduler store and does not require local-tools or an open
+Workbench for control-plane access. Tool calls still use the configured Tool
+Host.
+
+Runtime request body limits are configurable without code changes:
+
+```bash
+ZION_RUNTIME_MAX_REQUEST_BYTES=8MiB
+ZION_RUNTIME_DEVICE_SERVICE_MAX_REQUEST_BYTES=8MiB
+ZION_RUNTIME_SCHEDULER_MAX_REQUEST_BYTES=1MiB
+ZION_RUNTIME_NODE_HTTP_MAX_REQUEST_BYTES=8MiB
+ZION_DEVICE_SERVICE_MAX_REQUEST_BYTES=8MiB
+```
+
+`ZION_RUNTIME_MAX_REQUEST_BYTES` covers normal Runtime JSON requests such as
+chat and Session mutation. `ZION_RUNTIME_DEVICE_SERVICE_MAX_REQUEST_BYTES`
+covers Runtime-to-device service relay requests such as file writes.
+`ZION_DEVICE_SERVICE_MAX_REQUEST_BYTES` must be set on the Connector side when
+the device relay limit is raised. Values accept raw bytes or units such as
+`512KiB`, `8MiB`, or `10MB`. `/health` reports the effective limits under
+`serviceInfo.requestLimits`.
+
+Project Automation reads Identity project notes through the configured plugin
+data location. Configure the physical host explicitly:
+
+- `ZION_PLUGIN_DATA_HOST=runtime` stores files on the Runtime filesystem and
+  rejects `ZION_PLUGIN_DATA_NODE_ID`.
+- `ZION_PLUGIN_DATA_HOST=node` delegates protected file operations to the
+  configured `ZION_PLUGIN_DATA_NODE_ID`; it requires `node` or `sandbox` tool
+  mode and does not initialize a local plugin-data directory.
+- `ZION_PLUGIN_DATA_HOST=managed` stores each account's plugin files on that
+  account's AgenticFS `/workspace` volume. It requires sandbox tool mode,
+  account scope, and no static Node id. Runtime resolves the account's Managed
+  Node for every request.
+- `ZION_PLUGIN_DATA_HOST=auto` preserves the historical behavior for migration:
+  files remain Runtime-local even when a Node id is published. Runtime logs a
+  warning for this ambiguous combination. Do not retain it in a production
+  release.
+
+`ZION_PLUGIN_DATA_ROOT` is interpreted on the selected host. Node-hosted data is
+an explicit transition mechanism, not the long-term account-data backend.
+
+Plugin-data scope is a separate, explicit migration switch:
+
+- `ZION_PLUGIN_DATA_SCOPE=legacy` keeps `{root}/{pluginId}` and remains the
+  default until data migration is approved.
+- `ZION_PLUGIN_DATA_SCOPE=account` resolves every request to
+  `{root}/scopes/{spaceId}/accounts/{accountId}/{pluginId}`. Missing Run or HTTP
+  account identity fails closed. With managed account volumes, storage isolation
+  already occurs at the volume binding, so the mounted path is
+  `/workspace/.zion/plugin-data/{pluginId}`.
+- `ZION_PLUGIN_DATA_LEGACY_READ_ACCOUNT_ID` optionally allows one named account
+  to read missing files from the old directory. Writes always target the scoped
+  directory; there is no dual write.
+
+Account scope currently covers Identity file access and its in-memory snapshot
+cache. Project Automation is disabled in this mode until its Runtime state and
+delegations are account-scoped. Enabling account scope does not migrate files.
+Structured file tools route Runtime-local plugin paths to the data adapter even
+in node or sandbox execution mode. Managed account volumes place structured
+file tools and `Bash` on the same persistent filesystem.
+Configure the heartbeat interval with
+`ZION_RUNTIME_PROJECT_AUTOMATION_POLL_MS` or `--project-automation-poll-ms`.
+Disable only its background heartbeat with
+`ZION_RUNTIME_PROJECT_AUTOMATION_WORKER=0`; manual `run_now` and `stop` remain
+available through the Runtime tool and control-plane endpoints.
+
+```text
+GET  /v1/project-automation
+POST /v1/project-automation/projects/{projectKey}/run
+POST /v1/project-automation/projects/{projectKey}/stop
+GET  /v1/runs/{runId}/artifacts
+GET  /v1/sessions/{sessionId}/artifacts
+```
+
+Legacy state import is enabled by default during migration. Runtime reads the old
+local-tools `/app-sessions` and `/scheduler` endpoints once, records import
+markers, and keeps the source data untouched. Disable the probe after migration:
+
+```bash
+ZION_RUNTIME_MIGRATE_LOCAL_TOOLS_STATE=0 npm run runtime:serve
+```
+
+Start with an OpenAI-compatible endpoint:
+
+```bash
+ZION_RUNTIME_ENGINE=openai \
+ZION_RUNTIME_MODEL_URL=https://api.example.com/v1/chat/completions \
+ZION_RUNTIME_MODEL_ID=model-name \
+ZION_RUNTIME_API_KEY=secret \
+npm run runtime:serve
+```
+
+Use the built-in DeepSeek V4 Flash profile:
+
+```bash
+ZION_RUNTIME_ENGINE=openai \
+ZION_RUNTIME_MODEL_PROFILE=deepseek-v4-flash \
+ZION_RUNTIME_DEEPSEEK_API_KEY=<deepseek-api-key> \
+npm run runtime:serve
+```
+
+The profile configures streaming, `max_tokens: 8192`, thinking mode, high reasoning
+effort, capability metadata, and `model.deepseek -> ZION_RUNTIME_DEEPSEEK_API_KEY`.
+The profile contains only a credential reference and never stores the key.
+
+The API key is read by the Runtime process and is never returned by the Runtime
+API. The Engine obtains it through the `EnvironmentCredentialProvider` binding
+`model.default -> ZION_RUNTIME_API_KEY`; a Run cannot request arbitrary environment
+variables. Set `ZION_RUNTIME_API_KEY_REQUIRED=1` to reject missing credentials.
+The key may be omitted for an authenticated local model server.
+
+Workbench can migrate an existing OpenAI-compatible configuration without asking
+the user to re-enter it:
+
+```text
+PUT /v1/model-profiles/{profileId}
+```
+
+The request may contain a credential, but the response and `GET /v1/models` only
+expose `credentialConfigured`. The current local credential store is an
+intermediate `0600` file. Remote deployments should inject model credentials
+from their secret manager; OS Keychain/Vault-backed imported credentials remain
+a follow-up.
+
+Override the local port or file data directory:
+
+```bash
+npm run runtime:serve -- --port 8877 --data-dir /var/lib/zion-next/runtime
+```
+
+## Single-Space remote access
+
+The first remote-access checkpoint adds one-time Owner, Client, and Resource
+pairing without introducing an account system. Start Runtime on loopback behind
+an HTTPS reverse proxy that serves Workbench and proxies Runtime HTTP, SSE, and
+WebSocket routes on the same origin:
+
+```bash
+brew install cloudflared
+npm run remote:start
+```
+
+This convenience command builds Desktop Workbench and the independent Mobile
+Client, starts Runtime with Access Control, creates an outbound Cloudflare Quick
+Tunnel, and prints a browser pairing QR code. Desktop is served at `/`; Mobile
+is served at `/mobile/`. Use
+`npm run remote:start -- --public-url https://zion.example.com` when an HTTPS
+reverse proxy is already configured.
+
+Do not run `cloudflared` on managed corporate endpoints where it is prohibited.
+Deploy Runtime and the HTTPS gateway on an external host; corporate computers
+only need the outbound Device Connector. Cloudflare Pages can host a static
+Workbench preview, but it does not replace the Node Runtime or its same-origin
+HTTP, SSE, and WebSocket routes.
+
+The equivalent manual Runtime command is:
+
+```bash
+ZION_RUNTIME_ACCESS_CONTROL=1 \
+ZION_RUNTIME_PUBLIC_URL=https://zion.example.com \
+ZION_RUNTIME_ALLOWED_ORIGINS=https://zion.example.com \
+ZION_RUNTIME_TOOL_MODE=node \
+npm run runtime:serve -- \
+  --runtime-plugins dev.session-manager \
+  --workbench-dist ./dist
+```
+
+Create the first Owner invitation on the Runtime host:
+
+```bash
+npm run runtime:access -- pair create \
+  --kind owner \
+  --delivery cookie \
+  --public-url https://zion.example.com
+```
+
+Open the printed pairing URL on the phone or computer. The high-entropy secret
+is carried in the URL fragment, exchanged once, removed from the address bar,
+and replaced by a `Secure`, `HttpOnly`, `SameSite=Strict` session cookie.
+Workbench and Runtime must share an HTTPS origin.
+
+An authenticated Owner can create further invitations with
+`POST /v1/access/pairings`. The host-local CLI is also available:
+
+```bash
+# Browser or Mobile Client
+npm run runtime:access -- pair create \
+  --kind client --delivery cookie \
+  --public-url https://zion.example.com
+
+# Resource Host
+npm run runtime:access -- pair create \
+  --kind resource --delivery bearer
+
+npm run runtime:access -- devices list
+npm run runtime:access -- devices revoke <device-id>
+```
+
+Access Control keeps only credential and pairing-secret digests in the selected
+Runtime store.
+Owner, Client, and Resource scopes are distinct, and revoking one device revokes
+all credentials issued to that device. Unauthenticated `/health` exposes only
+service liveness and `authRequired`.
+
+Do not expose Runtime's plaintext HTTP listener directly. Non-loopback direct
+binding additionally requires `ZION_RUNTIME_ALLOW_INSECURE_REMOTE=1` and exists
+only for controlled development. Production traffic must terminate TLS at the
+same-origin Access Gateway.
+
+## Device node mode
+
+The default tool mode remains direct, same-machine `local-tools`. Access-Control
+mode enables the remote Node Broker without a shared token. The legacy static
+token remains available only for loopback and private compatibility tests:
+
+```bash
+ZION_RUNTIME_NODE_TOKEN=<shared-development-token> \
+ZION_RUNTIME_TOOL_MODE=node \
+ZION_RUNTIME_INVOCATION_LEASE_MS=120000 \
+npm run runtime:serve -- --runtime-plugins none
+```
+
+The Device Connector uses authenticated outbound long polling, so the machine
+running `zion-local-tools` does not expose its local HTTP port. Runtime routes a
+Tool Invocation by `projectId` to an online Node that advertises a matching
+resource and capability. Node mode defaults to no Runtime plugins because the
+built-in Terminal Inventory Provider observes the Runtime machine rather than a
+remote Device; pass `--runtime-plugins ...` only for providers intentionally
+installed on that Host.
+
+The Node gateway endpoints are mounted in Node tool mode, or when the legacy
+development token is configured:
+
+```text
+POST /v1/device-nodes/register
+POST /v1/device-nodes/{nodeId}/heartbeat
+GET  /v1/device-nodes/{nodeId}/invocations/next
+POST /v1/device-nodes/{nodeId}/invocations/{invocationId}/result
+GET  /v1/device-nodes
+```
+
+Access-Control mode requires a paired Resource credential bound to the exact
+`nodeId`. Legacy static-token mode does not provide that isolation and must not
+be used on the public Internet. Device registrations, project/resource bindings,
+and completed Runtime-side invocation receipts use the selected Runtime store.
+A restored Device is deliberately offline until its Connector registers again.
+Runtime restart still interrupts active remote invocations; pending command
+delivery and Device-side receipts are not durable. Each Connector must also
+configure an absolute local workspace root and explicit local-tools
+terminal-session allowlist. Device Host intersects those local grants with every
+Runtime policy before invoking local-tools.
+
+Every remote invocation has a Runtime-owned lease, 120 seconds by default.
+Declared Tool execution policy can extend that lease for long-running
+capabilities such as Bash. The same policy drives local and Runtime-plugin
+deadlines; see
+[`TOOL-EXECUTION-LIFECYCLE.md`](../../docs/architecture/TOOL-EXECUTION-LIFECYCLE.md).
+Queued work is removed at expiry; already delivered work receives a
+`tool.cancel` command. Device Connector also checks the absolute deadline before
+starting local execution. Override the positive millisecond duration with
+`ZION_RUNTIME_INVOCATION_LEASE_MS` or `--invocation-lease-ms`.
+
+Inspect current and restored Node state with the same development credential:
+
+```bash
+curl http://127.0.0.1:8766/v1/device-nodes \
+  -H "Authorization: Bearer ${ZION_RUNTIME_NODE_TOKEN}"
+```
+
+## Continuous conversation
+
+Keep the Runtime running, then start the interactive client in another terminal:
+
+```bash
+npm run runtime:chat -- --url http://127.0.0.1:8766
+```
+
+The CLI prints the durable Session ID. Reconnect to the same conversation later:
+
+```bash
+npm run runtime:chat -- \
+  --url http://127.0.0.1:8766 \
+  --session <session-id>
+```
+
+Each user message creates a new Run. Runtime loads the Session transcript before
+execution and appends the completed assistant output back to the Session. A new
+message therefore creates a new Run in the same Session; `/resume` remains reserved
+for recovering an interrupted Attempt of an existing Run.
+
+When Workbench first binds an existing document Session, it sends a separate
+`sessionHistory` snapshot. Runtime stores the history before the current user
+message as an immutable seed transcript. Runtime Context Provider output is not
+included in this seed, so temporary injected context does not become conversation
+history.
+
+## Runtime control CLI
+
+The `zion` control CLI uses only Runtime Host HTTP APIs:
+
+```bash
+npm run runtime:cli -- run "inspect the repository" --jsonl
+npm run runtime:cli -- attach <run-id>
+npm run runtime:cli -- attach <run-id> --raw-events
+npm run runtime:cli -- resume <run-id>
+npm run runtime:cli -- abort <run-id>
+npm run runtime:cli -- session list
+npm run runtime:cli -- session transcript <session-id>
+npm run runtime:cli -- session fork <session-id> --title "Alternative"
+npm run runtime:cli -- session attach <session-id>
+npm run runtime:cli -- session watch <session-id> --jsonl
+npm run runtime:cli -- task list
+npm run runtime:cli -- task run <task-id>
+npm run runtime:cli -- task cancel <scheduler-run-id>
+```
+
+Run follow and attach use the coalesced projection stream by default. Add
+`--raw-events` only for diagnostics that require every canonical token event.
+Omit `--jsonl` for human output. JSONL records use `schemaVersion: 1` and retain
+the canonical Runtime `RunEvent` unchanged in each `run.event` record. The
+package also exposes the same entry point as the `zion` executable.
+
+Endpoint profiles live in `~/.zion-next/cli.json` (override with
+`ZION_RUNTIME_CLI_CONFIG`). Credentials are referenced by environment variable
+and are never stored in or printed with the profile:
+
+```json
+{
+  "version": 1,
+  "defaultProfile": "local",
+  "profiles": {
+    "local": { "url": "http://127.0.0.1:8766" },
+    "cloud": {
+      "url": "https://runtime.example.com",
+      "auth": { "type": "bearer", "env": "ZION_CLOUD_RUNTIME_TOKEN" }
+    }
+  }
+}
+```
+
+Select one with `--runtime-profile cloud`; `zion profile list` and
+`zion profile show cloud` return only sanitized endpoint metadata.
+For CI workloads, use `{ "type": "workload", "tokenFileEnv":
+"ZION_WORKLOAD_TOKEN_FILE" }`; the projected token is read for the process and
+is never included in profile output.
+
+For interactive cloud login, configure RFC 8628 metadata:
+
+```json
+{
+  "url": "https://runtime.example.com",
+  "auth": {
+    "type": "device_code",
+    "deviceAuthorizationUrl": "https://identity.example.com/oauth/device/code",
+    "tokenUrl": "https://identity.example.com/oauth/token",
+    "clientId": "zion-cli",
+    "scope": "runtime.run offline_access"
+  }
+}
+```
+
+Run `zion auth login <profile>`. Access and refresh tokens are stored in macOS
+Keychain, refreshed when possible, and never written to the CLI config.
+`zion auth status <profile>` exposes only expiry metadata; `zion auth logout
+<profile>` deletes the Keychain item.
+
+The CLI can also act as the outbound Device Tool Host:
+
+```bash
+npm run runtime:cli -- device connect \
+  --runtime-profile cloud \
+  --pairing-code XXXX-XXXX-XXXX \
+  --project zion-next \
+  --resource-id workspace:zion-next \
+  --workspace-root /absolute/path/to/zion-next \
+  --terminal-sessions <local-tools-session-id>
+```
+
+The one-time code is exchanged for a per-Device credential and persisted in
+the Device credential store. `ZION_DEVICE_TOKEN` remains an explicit
+compatibility override.
+
+To create a CLI Session that can use the read-only tools advertised by a Device:
+
+```bash
+ZION_RUNTIME_PROJECT_ID=zion-next \
+ZION_RUNTIME_ALLOWED_TOOLS=read,glob,grep,tree \
+ZION_RUNTIME_FILE_ROOTS=/absolute/path/to/zion-next \
+ZION_RUNTIME_TERMINAL_SESSION_IDS=<local-tools-session-id> \
+npm run runtime:chat -- --url http://127.0.0.1:8766
+```
+
+The equivalent flags are `--project`, repeatable `--tool`, repeatable
+`--file-root`, repeatable `--terminal-session`, and `--max-tool-calls`. These
+values are stored in the Session when it is created; reconnecting with
+`--session` reuses the stored policy.
+
+## End-to-end read-only setup
+
+This is the currently usable private standalone path. First obtain an active
+local-tools Session ID on the Device:
+
+```bash
+curl http://127.0.0.1:8765/sessions
+```
+
+Start Runtime with a real model and Node mode:
+
+```bash
+ZION_RUNTIME_ENGINE=openai \
+ZION_RUNTIME_MODEL_PROFILE=deepseek-v4-flash \
+ZION_RUNTIME_DEEPSEEK_API_KEY=<deepseek-api-key> \
+ZION_RUNTIME_NODE_TOKEN=<shared-development-token> \
+ZION_RUNTIME_TOOL_MODE=node \
+npm run runtime:serve
+```
+
+Start the Connector on the Device that owns the project:
+
+```bash
+ZION_DEVICE_TOKEN=<shared-development-token> \
+ZION_NODE_ID=node:macbook \
+ZION_NODE_PROJECT_ID=zion-next \
+ZION_NODE_RESOURCE_ID=workspace:zion-next \
+ZION_NODE_WORKSPACE_ROOT=/absolute/path/to/zion-next \
+ZION_NODE_TERMINAL_SESSION_IDS=<local-tools-session-id> \
+npm run device:connect -- --runtime-url http://127.0.0.1:8766
+```
+
+Then start the scoped CLI using the same project root and terminal Session ID:
+
+```bash
+npm run runtime:chat -- \
+  --url http://127.0.0.1:8766 \
+  --project zion-next \
+  --tool read,glob,grep,tree \
+  --file-root /absolute/path/to/zion-next \
+  --terminal-session <local-tools-session-id>
+```
+
+The Runtime API remains loopback-only by default. The shared-token example above
+is limited to an authenticated private tunnel. Public deployment requires the
+Access-Control mode and same-origin HTTPS gateway described earlier.
+
+## API
+
+```text
+GET  /health
+POST /v1/access/pair
+GET  /v1/access/session
+POST /v1/access/logout
+POST /v1/access/pairings
+GET  /v1/access/devices
+POST /v1/access/devices/{deviceId}/revoke
+GET  /v1/models
+GET  /v1/capabilities/tools
+GET  /v1/interaction-profiles
+GET/PUT/PATCH /v1/interaction-profiles/{profileId}
+PUT/DELETE /v1/model-profiles/{profileId}
+POST /v1/model-gateway/proxy?target={url}
+GET  /v1/device-nodes
+GET  /v1/workbench-state/status
+GET  /v1/workbench-state/snapshot
+PUT  /v1/workbench-state/snapshot
+GET/PUT /v1/workbench-state/tree
+GET  /v1/workbench-state/events?after={sequence}
+GET  /v1/workbench-state/events/stream?after={sequence}
+GET/PUT/DELETE /v1/workbench-state/sessions/{sessionId}
+GET  /v1/workbench-state/sessions/{sessionId}/revisions
+POST /v1/workbench-state/sessions/{sessionId}/restore
+GET/PUT /v1/workbench-state/kv/{key}
+GET/POST /v1/scheduler/tasks
+GET/PUT/DELETE /v1/scheduler/tasks/{taskId}
+POST /v1/scheduler/tasks/{taskId}/run
+GET  /v1/scheduler/runs
+GET  /v1/scheduler/runs/{runId}
+POST /v1/scheduler/runs/{runId}/cancel
+POST /v1/sessions
+GET  /v1/sessions/{sessionId}
+GET  /v1/sessions/{sessionId}/active-run
+GET  /v1/sessions/{sessionId}/transcript?after={sequence}
+GET  /v1/sessions/{sessionId}/messages?after={sequence}
+POST /v1/sessions/{sessionId}/messages
+POST /v1/sessions/{sessionId}/fork
+POST /v1/runs
+GET  /v1/runs/{runId}
+GET  /v1/runs/{runId}/events?after={sequence}
+GET  /v1/runs/{runId}/events/{sequence}
+GET  /v1/runs/{runId}/events/stream?after={sequence}
+GET  /v1/runs/{runId}/projection?after={sequence}
+GET  /v1/runs/{runId}/projection/stream?after={sequence}
+GET  /v1/runs/{runId}/transcript
+POST /v1/runs/{runId}/abort
+POST /v1/runs/{runId}/resume
+WS   /v1/collaboration
+```
+
+Workbench state events are committed in the same database transaction as the
+Session, tree, or KV mutation. Clients initialize from a snapshot and continue
+from its `event_cursor`. Expired cursors receive a `reset` event and reload the
+snapshot. The 30-second Workbench snapshot check remains only as a compatibility
+fallback.
+
+`/v1/collaboration` speaks the Hocuspocus/Yjs protocol. Runtime seeds a room from
+the current Workbench Session, stores the Yjs state in
+`runtime_collaboration_documents`, and projects committed collaborative text
+back to the normal Workbench document record. In-flight Run output uses the
+coalesced projection stream and is never persisted per token. Runtime commits
+the final assistant block to the collaborative document, so the Workbench that
+started a Run is not the only persistence owner. The current collaboration
+protocol is v4; older Workbench bundles are rejected so they cannot replay
+stale whole-document replacements.
+
+`/projection/stream` preserves the last raw Run event sequence as each SSE id.
+It accepts `reasoning=stream|summary|none`, `max_delay_ms`, and
+`max_chunk_chars`. `/events/stream` remains available for explicit raw
+diagnostics.
+
+Runtime's fallback projection batch is 200ms/1024 characters. Shared clients
+use 100ms/512 characters, while Workbench requests 50ms/256 characters for
+visible assistant output and independently limits reasoning UI updates to four
+per second.
+
+`POST /v1/runs` accepts optional per-Run model preferences:
+
+```json
+{
+  "modelOptions": {
+    "thinkingMode": "on",
+    "thinkingEffort": "high"
+  }
+}
+```
+
+These values are request overrides. Workbench sends them with each Run; they do
+not mutate the persisted Runtime Model Profile.
+
+`maxTurns` and `policy.maxToolCalls` are separate safeguards. An explicit
+`maxTurns` is honored. Otherwise Runtime derives enough turns to consume the
+tool-call budget and produce a final answer (`max(defaultMaxTurns,
+maxToolCalls + 1)`), so the historical 16-turn fallback cannot silently shadow
+a larger tool-call quota.
+
+The API permits browser CORS only for loopback origins and refuses non-loopback
+binding without the explicit development override. Remote client authentication
+remains required before public deployment.
+
+## Tool Host integration
+
+The Runtime connects to `http://127.0.0.1:8765` by default. Override it with
+`ZION_LOCAL_TOOLS_URL` or `--local-tools-url`.
+
+Tools are not globally enabled. Each Run must explicitly grant the tool names
+and capability scope it needs:
+
+```json
+{
+  "policy": {
+    "allowedTools": ["read", "glob", "grep", "tree"],
+    "maxToolCalls": 12,
+    "fileRoots": ["/absolute/project/root"],
+    "allowedTerminalSessionIds": ["exact-session-id"]
+  }
+}
+```
+
+Empty `fileRoots` and `allowedTerminalSessionIds` lists leave interactive
+file tools unrestricted across absolute paths and existing terminal sessions.
+Supplying either list enables strict allowlist enforcement for that scope.
+Write tools still require `workspace-write`; durable Scheduler tasks also
+require explicit `fileRoots`. Bash requires `trusted-automation` and matches
+`allowedCommandPrefixes` when configured. Mail requires `trusted-automation`,
+a recipient scope, and a per-Run quota; `"*"` is the explicit local-interactive
+recipient scope. Node mode always narrows unrestricted Runtime scopes to the
+Device-local resource root and terminal bindings.
+
+## Runtime plugins
+
+Runtime Host scans built-in manifests under the repository `extensions`
+directory and external packages under `~/.zion-next/plugins` by default, but
+executes only explicitly enabled plugin IDs. `dev.identity` is externalized by
+default: it must exist under the external root and never falls back to the
+repository copy. This makes the Workbench UI and Runtime Entry use the same
+published package version.
+
+Identity requires `ZION_MEMORY_SERVICE_URL`. A Runtime sharing the Memory
+service's account authority uses `ZION_MEMORY_BRIDGE_SECRET_FILE`. Runtime discovers the native agent-fs MCP
+schemas, exposes `mcp__agentfs__*` tools under the existing tool policy and
+receipt path, and contributes the `agentfs-memory` Skill. Panel and background
+file APIs use the same agent-fs service; no Identity plugin-data fallback is
+maintained. See [Memory service](../memory-service/README.md).
+
+For a local Runtime with a separate development account database, configure
+`ZION_MEMORY_ACCOUNT_CONNECTIONS_DIR` and `ZION_MEMORY_MCP_ENABLED=0`.
+Each local account/Space has an explicitly approved online account connection;
+every operation rechecks the local session or execution grant, current file
+policy, remote identity, membership and memory scopes. A remote login is never
+selected by email or shared as a global Runtime credential. Public endpoint
+prefixes such as `/memory` are preserved; bridge signatures bind the
+service-relative path after the reverse proxy strips that prefix.
+
+The local sandbox launcher can connect and migrate its current Identity files:
+
+```bash
+npm run memory:connect
+```
+
+The command backs up current files, prints a Zion login URL, waits for approval,
+imports only absent or identical online files, and verifies API/CLI bytes before
+persisting the endpoint and restarting the local Runtime. It keeps the existing
+sandbox/NAS binding. Different online file contents stop the migration without
+overwriting either copy. `--prepare` creates only a backup; `--resume` continues
+using an already saved, valid login. Run the command again to renew an expired
+connection. Saved credentials and account bindings use private per-account
+files; the installed sandbox CLI uses the same login and online drive.
+
+In local tool mode the default allowlist currently includes Terminal Manager,
+Skills, Memory, Identity, Context Compression, Scheduler, Session Manager, Chat
+model management, Tools, Plugin Manager, Mail, and Agents. Node mode defaults
+to no Runtime plugins because local machine-observation plugins may not
+describe the selected remote Device. Override the roots, externalized IDs, and
+allowlist with:
+
+```bash
+npm run runtime:serve -- \
+  --plugin-root /absolute/builtin-plugin-root \
+  --external-plugin-root /absolute/external-plugin-root \
+  --external-runtime-plugins dev.identity \
+  --runtime-plugins dev.identity,dev.example.context
+```
+
+Build the Identity browser and Runtime bundles, install the unpacked package,
+and publish the Plugin Host ZIP with:
+
+```bash
+npm run plugin:package:identity
+```
+
+On a separate Runtime host, install the uploaded ZIP atomically:
+
+```bash
+npm run plugin:install:runtime -- \
+  --archive /tmp/dev.identity-0.1.7.zip \
+  --plugin-root /var/lib/zion-next/plugins \
+  --plugin-id dev.identity
+```
+
+Use `--runtime-plugins none` to start without Runtime plugins. A Runtime-capable
+manifest declares:
+
+```json
+{
+  "zion": {
+    "entries": {
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 1
+    }
+  }
+}
+```
+
+The entry exports `activateRuntimePlugin(context)`. API version 1 accepts returned
+Context Providers. API version 2 adds Host-owned Tool, Context Provider, Run
+post-processor, namespaced state, and plugin-event registration. Plugin activation
+failures are isolated and reported in `/health`; successful registrations and
+plugins are disposed in reverse order during shutdown.
+
+`dev.plugins` contributes the headless `pluginsManage` catalog/search and
+development-session actions. Local mode connects to the Plugin Host through
+`ZION_PLUGIN_SERVICE_URL` or `--plugin-service-url` (default
+`http://127.0.0.1:8767`); Node mode routes the same requests through the paired
+Device Connector.
+
+`dev.terminal-manager` contributes both `terminalInventory` and
+`terminalManage`. In Node mode its terminal lifecycle and machine metadata
+requests are also routed through the paired Device Connector rather than the
+Runtime host's loopback interface.
+
+Runtime plugins currently execute in the Host process and therefore must be
+trusted code. Entry canonicalization prevents a manifest from escaping its plugin
+directory, but it is not a process or permission sandbox. Untrusted third-party
+plugins must not be enabled until an isolated host model exists.
+
+## Skills context
+
+Workbench scans each configured Skills directory on its recorded source Node,
+then synchronizes a source-aware snapshot through `POST /v1/skills/sync`.
+Runtime retains the last successful snapshot for every Node and resolves
+duplicate Skill IDs to one catalog entry. Conversations read that catalog from
+Runtime; they do not fan out to every Node.
+
+Runtime caches synchronized text files in `dev.skills` Plugin Data and retains
+the normalized `SKILL.md` body in its catalog. A source Node may therefore go
+offline without removing its instructions. The context provider reports the
+source status and explicitly prevents the model from assuming that source-local
+commands, credentials, login state, environment variables, or dependencies are
+available. Unsynchronized current-Workbench changes are attached to that Run as
+transient Skills.
+
+Browser storage contains metadata only. `.env`, credential, secret, key, token,
+machine-configuration, binary, `.git`, and `node_modules` files are not copied.
+See `docs/architecture/MULTI-NODE-SKILLS.md` for the merge, routing, cache, and
+failure contracts.
+
+## Capability defaults
+
+The built-in `interactive.default` profile starts read-only. Mutating tools,
+command execution, model/tool control, and external effects must be explicitly
+enabled through the Workbench tool selector or an explicit request override.
+There is no asynchronous Approval Provider yet; explicit enablement is a local
+Run grant, not a production approval workflow.
+
+## Model request diagnostics
+
+`model.request` events keep only bounded metadata in the primary Run event
+stream. The exact provider payload is stored separately as gzip-compressed
+diagnostic detail and is fetched on demand by the Workbench LLM Requests panel.
+The default retention bounds are 30 days, 2,000 requests per Space, 8 MiB per
+uncompressed request, and 256 MiB of compressed detail per Space:
+
+```bash
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_RETENTION_DAYS=30
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_MAX_ROWS=2000
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_MAX_BYTES=8MiB
+ZION_RUNTIME_MODEL_REQUEST_DETAIL_MAX_STORED_BYTES=256MiB
+```
+
+`POST /v1/runs/preview` executes the same first-turn tool selection, Context
+Provider pipeline, and provider request construction as a real Run, but closes
+the model iterator at `model.request` before credentials or network transport
+are used. Workbench Mock uses this endpoint in Runtime mode.
+
+## Terminal inventory context
+
+Before the first model turn, the Terminal Manager runtime entry reads local-tools
+`/sessions` and `/machines` and injects the same compact `<terminal_inventory>`
+block used by its Workbench entry. Runtime Plugin Service activates the entry from
+its manifest and contributes the Provider to Runtime Host; it is not part of
+`@zion/runtime`. It includes only terminal sessions explicitly listed in the Run's
+`allowedTerminalSessionIds`; a non-empty list filters the inventory strictly,
+while an empty list includes all terminal sessions visible to the local tool
+host.
+
+The automatically injected XML is a bounded projection: at most 8 machines,
+24 workspaces overall, and 12 workspaces per machine by default. Explicitly
+allowed terminal sessions and their parent workspaces are retained even when
+that raises a nominal limit; remaining entries prefer the local machine and
+then recent activity. The XML reports included and total counts plus a
+`truncated` flag. The `terminalInventory` tool remains untruncated within the
+Run policy scope so omitted workspaces can be queried on demand.
+
+Set Run metadata `includeTerminalContext` to `false` to disable the provider for a
+specific Run. A session-list failure emits `context.failed` and does not terminate
+the Run, matching the existing contributor isolation rule. Machine-profile failure
+falls back to the normalized session data.
+
+## Restart behavior
+
+Completed history and ordered events survive restart. Runs left `queued` or
+`running` without a live owner are marked `interrupted` with a new
+`run.interrupted` event.
+
+After every completed tool turn, Runtime saves the normalized transcript, aggregate
+usage, tool-call counters, output, and next turn in a checkpoint. An interrupted,
+aborted, or failed Run with a checkpoint can be resumed explicitly:
+
+```bash
+curl -X POST http://127.0.0.1:8766/v1/runs/<run-id>/resume \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+Resume preserves the Run ID, creates a new Attempt ID, and continues event sequence
+numbering. Completed Runs and Runs without a checkpoint cannot be resumed. Runtime
+does not automatically replay interrupted work because doing so could repeat
+external side effects without user intent.
+
+Session transcript projection is keyed by Run ID and message role, so completion
+retries do not duplicate assistant messages. On startup, Runtime also repairs a
+completed Run whose assistant output was committed before the process stopped but
+had not yet been projected into its Session.

@@ -1,75 +1,125 @@
 {
   "name": "dev.editor-config",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.editor-config",
+  "description": "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.editor-config",
-    "name": "dev.editor-config",
+    "name": "Editor Config",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "编辑器配置",
+        "en-US": "Editor Config"
+      },
+      "description": {
+        "zh-CN": "配置编辑器外观、宽度、行号、折行和语法高亮。",
+        "en-US": "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting."
+      },
+      "icon": "settings-gear",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "配置编辑器外观、宽度、行号、折行和语法高亮。"
+        ],
+        "en-US": [
+          "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "dev.editor.toggleLineNumbers",
-          "title": "Toggle Line Numbers"
+          "title": "Toggle Line Numbers",
+          "titleKey": "dev.editor-config.cmd.toggleLineNumbers",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.toggleActiveLineHighlight",
-          "title": "Toggle Active Line Highlight"
+          "title": "Toggle Active Line Highlight",
+          "titleKey": "dev.editor-config.cmd.toggleActiveLineHighlight",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.toggleSyntaxHighlight",
-          "title": "Toggle Syntax Highlight"
+          "title": "Toggle Syntax Highlight",
+          "titleKey": "dev.editor-config.cmd.toggleSyntaxHighlight",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.toggleAutoIndent",
-          "title": "Toggle Auto Indent"
+          "title": "Toggle Auto Indent",
+          "titleKey": "dev.editor-config.cmd.toggleAutoIndent",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.toggleFolding",
-          "title": "Toggle Folding"
+          "title": "Toggle Folding",
+          "titleKey": "dev.editor-config.cmd.toggleFolding",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.toggleLineWrap",
-          "title": "Toggle Line Wrap"
+          "title": "Toggle Line Wrap",
+          "titleKey": "dev.editor-config.cmd.toggleLineWrap",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.toggleSelectionHighlight",
-          "title": "Toggle Selection Highlight"
+          "title": "Toggle Selection Highlight",
+          "titleKey": "dev.editor-config.cmd.toggleSelectionHighlight",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.cycleWidthMode",
-          "title": "Cycle Editor Width Mode"
+          "title": "Cycle Editor Width Mode",
+          "titleKey": "dev.editor-config.cmd.cycleWidthMode",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.setWidthFull",
-          "title": "Set Editor Width: Full"
+          "title": "Set Editor Width: Full",
+          "titleKey": "dev.editor-config.cmd.setWidthFull",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.setWidthWide",
-          "title": "Set Editor Width: Wide"
+          "title": "Set Editor Width: Wide",
+          "titleKey": "dev.editor-config.cmd.setWidthWide",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.setWidthStandard",
-          "title": "Set Editor Width: Standard"
+          "title": "Set Editor Width: Standard",
+          "titleKey": "dev.editor-config.cmd.setWidthStandard",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.setHeadingSizeMedium",
-          "title": "Set Heading Size: Medium"
+          "title": "Set Heading Size: Medium",
+          "titleKey": "dev.editor-config.cmd.setHeadingSizeMedium",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.setHeadingSizeSmall",
-          "title": "Set Heading Size: Small"
+          "title": "Set Heading Size: Small",
+          "titleKey": "dev.editor-config.cmd.setHeadingSizeSmall",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.setHeadingSizeXSmall",
-          "title": "Set Heading Size: XSmall"
+          "title": "Set Heading Size: XSmall",
+          "titleKey": "dev.editor-config.cmd.setHeadingSizeXSmall",
+          "categoryKey": "dev.editor-config.category.editor"
         },
         {
           "id": "dev.editor.cycleHeadingSize",
-          "title": "Cycle Heading Size"
+          "title": "Cycle Heading Size",
+          "titleKey": "dev.editor-config.cmd.cycleHeadingSize",
+          "categoryKey": "dev.editor-config.category.editor"
         }
       ],
       "keybindings": [
@@ -130,6 +180,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.editor-config",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.editor-config"
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initWorkbench } from "../src/ui/workbench/workbench";
+import { initWorkbench, keepHorizontalScrollerRightEdgeAnchored } from "../src/ui/workbench/workbench";
 import { bindWorkbenchCore, sideBarRuntime } from "../src/ui/workbench/runtime";
 
 function createState() {
@@ -41,6 +41,30 @@ function createState() {
 }
 
 describe("workbench sidebar resize", () => {
+  it("keeps horizontal panels anchored to the inspector edge while the viewport shrinks", () => {
+    const scroller = document.createElement("div");
+    scroller.className = "zion-panels-root is-horizontal-scroll";
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 1200 });
+    scroller.scrollLeft = 100;
+
+    keepHorizontalScrollerRightEdgeAnchored(scroller, 640);
+
+    expect(scroller.scrollLeft).toBe(240);
+  });
+
+  it("does not reverse-scroll when sidebar collapse widens the panels viewport", () => {
+    const scroller = document.createElement("div");
+    scroller.className = "zion-panels-root is-horizontal-scroll";
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 700 });
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 1200 });
+    scroller.scrollLeft = 300;
+
+    keepHorizontalScrollerRightEdgeAnchored(scroller, 500, 30);
+
+    expect(scroller.scrollLeft).toBe(330);
+  });
+
   it("keeps mounted view DOM when width changes", async () => {
     const host = document.createElement("div");
     host.id = "app";
@@ -88,4 +112,3 @@ describe("workbench sidebar resize", () => {
     host.remove();
   });
 });
-

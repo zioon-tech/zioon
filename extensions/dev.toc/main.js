@@ -3,34 +3,71 @@
  * Features:
  * - Command: toc.show -> open TOC overlay with clickable headings
  * - Command: toc.insert -> insert Markdown TOC list at cursor
- * - Keybinding: Mod-Shift-T -> open TOC
  * - StatusBar button "TOC"
  * - Editor context menu item "Table of Contents"
  */
-import { syntaxTree } from "@codemirror/language";
 import { ViewPlugin } from "@codemirror/view";
 
 let extensionCtx = null;
+const I18N_NS = "dev.toc";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.toc": "目录",
+    "cmd.show": "显示目录",
+    "cmd.insert": "插入目录 (Markdown)",
+    "cmd.toggleGroupByRole": "切换目录按角色分组",
+    "menu.contents": "目录",
+    "menu.groupByRole": "目录：按角色分组",
+    "ui.contents": "目录",
+    "ui.empty": "未找到标题 (使用 #、##、### ...)",
+    "ui.insertHere": "在此插入目录",
+    "ui.close": "关闭",
+    "slash.show.description": "显示文档目录",
+    "slash.insert.description": "在当前位置插入 Markdown 目录",
+    "slash.group.description": "切换目录是否按角色分组"
+  },
+  "en-US": {
+    "category.toc": "TOC",
+    "cmd.show": "Show TOC",
+    "cmd.insert": "Insert TOC (Markdown)",
+    "cmd.toggleGroupByRole": "Toggle TOC Group by Role",
+    "menu.contents": "Contents",
+    "menu.groupByRole": "TOC: Group by Role",
+    "ui.contents": "Contents",
+    "ui.empty": "No headings found (use #, ##, ### ...)",
+    "ui.insertHere": "Insert TOC Here",
+    "ui.close": "Close",
+    "slash.show.description": "Show document table of contents",
+    "slash.insert.description": "Insert Markdown TOC at current position",
+    "slash.group.description": "Toggle whether TOC groups by role"
+  }
+};
+
+function t(key, fallback) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
+function iconHtml(name, size) {
+  try {
+    const html = window.zionIcons?.htmlFromCodicon?.(name, "", size);
+    if (html) return html;
+  } catch {}
+  const raw = String(name || "").replace(/^codicon-/, "");
+  const style = typeof size === "number" ? ` style="font-size:${size}px;"` : "";
+  return `<span class="codicon codicon-${raw}" aria-hidden="true"${style}></span>`;
+}
 
 export async function activate(ctx) {
   extensionCtx = ctx;
-  // Inject TOC scrollbar hiding style (WebKit + Firefox + IE) to hide vertical scrollbar in TOC area
   try {
-    if (!document.getElementById('zion-toc-scrollbar-style')) {
-      const style = document.createElement('style');
-      style.id = 'zion-toc-scrollbar-style';
-      style.textContent = `
-#zion-toc-sidepanel, #zion-toc-list, #zion-toc-panel { -ms-overflow-style: none; scrollbar-width: none; }
-#zion-toc-sidepanel::-webkit-scrollbar, #zion-toc-list::-webkit-scrollbar, #zion-toc-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
-@keyframes toc-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4); }
-  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px rgba(33, 150, 243, 0); }
-}
-      `;
-      document.head.appendChild(style);
-    }
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
   } catch {}
-
   // Helper: strip markdown formatting from title text
   const cleanTitle = (title) => {
     // Remove bold/italic/strikethrough: **text**, _text_, ~~text~~
@@ -41,51 +78,50 @@ export async function activate(ctx) {
       .replace(/`(.*?)`/g, '$1'); // also remove inline code formatting
   };
 
-  // Fallback: parse headings from raw text (line-by-line)
-  const parseHeadingsFromText = (text) => {
-    const lines = text.split(/\r?\n/);
+  const parseHeadingsFromLines = (lines, startLine = 0, endLine = lines.length - 1) => {
     const headings = [];
     const re = /^(#{1,6})\s+(.+)\s*$/;
-    for (let i = 0; i < lines.length; i++) {
-      const m = re.exec(lines[i]);
+    const fenceRe = /^\s*(```+|~~~+)/;
+    const start = Math.max(0, startLine || 0);
+    const end = Math.min(lines.length - 1, endLine == null ? lines.length - 1 : endLine);
+    let inFence = false;
+    let fenceToken = "";
+    for (let i = start; i <= end; i++) {
+      const line = String(lines[i] ?? "");
+      const fenceMatch = fenceRe.exec(line);
+      if (fenceMatch) {
+        const token = fenceMatch[1] || "";
+        if (!inFence) {
+          inFence = true;
+          fenceToken = token[0];
+        } else if (!fenceToken || token[0] === fenceToken) {
+          inFence = false;
+          fenceToken = "";
+        }
+        continue;
+      }
+      if (inFence) continue;
+      const m = re.exec(line);
       if (!m) continue;
-      const level = m[1].length;
-      const title = cleanTitle(m[2].trim());
-      headings.push({ level, title, line: i });
+      headings.push({ level: m[1].length, title: cleanTitle(m[2].trim()), line: i });
     }
     return headings;
+  };
+
+  // Fallback: parse headings from raw text (line-by-line)
+  const parseHeadingsFromText = (text) => {
+    const lines = String(text || "").split(/\r?\n/);
+    return parseHeadingsFromLines(lines);
   };
 
   // Preferred: parse headings from CodeMirror syntax tree when editor view is available.
   // Returns {level, title, line} with line being 0-based (compatible with EditorProxy.setCursor).
   const parseHeadingsFromView = (view) => {
-    const headings = [];
     try {
-      const tree = syntaxTree(view.state);
-      const doc = view.state.doc;
-      const re = /^(#{1,6})\s+(.+)\s*$/;
-      tree.iterate({
-        enter: (node) => {
-          const name = node.name || node.type?.name;
-          if (!name) return;
-          // match heading node names conservatively (common markdown grammars use "Header" / "Heading")
-          if (name === "Header" || /heading/i.test(name)) {
-            try {
-              const line = doc.lineAt(node.from);
-              const text = doc.sliceString(line.from, line.to);
-              const m = re.exec(text);
-              if (m) {
-                const level = m[1].length;
-                const title = cleanTitle(m[2].trim());
-                // convert to 0-based line index for EditorProxy compatibility
-                headings.push({ level, title, line: line.number - 1 });
-              }
-            } catch {}
-          }
-        }
-      });
+      const text = view?.state?.doc?.toString?.() || "";
+      return parseHeadingsFromText(text);
     } catch {}
-    return headings;
+    return [];
   };
 
   // Parse role blocks (fallback when roles.index is unavailable)
@@ -189,49 +225,19 @@ export async function activate(ctx) {
 
   // 在 CM6 视图内解析指定字符范围内的标题（返回绝对行号）
   const parseHeadingsFromViewInRange = (view, from, to) => {
-    const headings = [];
     try {
-      const tree = syntaxTree(view.state);
       const doc = view.state.doc;
-      const re = /^(#{1,6})\s+(.+)\s*$/;
-      tree.iterate({
-        enter: (node) => {
-          const name = node.name || node.type?.name;
-          if (!name) return;
-          if (name === "Header" || /heading/i.test(name)) {
-            if (node.from < from || node.from > to) return;
-            try {
-              const line = doc.lineAt(node.from);
-              const text = doc.sliceString(line.from, line.to);
-              const m = re.exec(text);
-              if (m) {
-                const level = m[1].length;
-                const title = cleanTitle(m[2].trim());
-                headings.push({ level, title, line: line.number - 1 });
-              }
-            } catch {}
-          }
-        }
-      });
+      const startLine = doc.lineAt(Math.max(0, from)).number - 1;
+      const endLine = doc.lineAt(Math.max(0, to)).number - 1;
+      return parseHeadingsFromLines(doc.toString().split(/\r?\n/), startLine, endLine);
     } catch {}
-    return headings;
+    return [];
   };
 
   // 文本解析：限定行范围（返回绝对行号）
   const parseHeadingsFromTextInLines = (text, startLine, endLine) => {
-    const lines = text.split(/\r?\n/);
-    const headings = [];
-    const re = /^(#{1,6})\s+(.+)\s*$/;
-    const s = Math.max(0, startLine || 0);
-    const e = Math.min(lines.length - 1, endLine == null ? s : endLine);
-    for (let i = s; i <= e; i++) {
-      const m = re.exec(lines[i]);
-      if (!m) continue;
-      const level = m[1].length;
-      const title = cleanTitle(m[2].trim());
-      headings.push({ level, title, line: i });
-    }
-    return headings;
+    const lines = String(text || "").split(/\r?\n/);
+    return parseHeadingsFromLines(lines, startLine, endLine);
   };
 
   const slugify = (s) => {
@@ -244,11 +250,98 @@ export async function activate(ctx) {
   };
 
   const ACTIVE_TOC_MODE_KEY = 'toc.activeMode';
+  const getRolePrefixes = () => {
+    try {
+      const extras = [];
+      try {
+        const cfg = window?.zion?.config?.roles?.prefixes;
+        if (Array.isArray(cfg)) extras.push(...cfg);
+      } catch {}
+      try {
+        const raw = localStorage.getItem("zion.roles.prefixes") || localStorage.getItem("dev.roles.prefixes");
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (Array.isArray(parsed)) extras.push(...parsed);
+      } catch {}
+      return Array.from(new Set([...BASE_ROLE_PREFIXES, ...extras.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)]));
+    } catch {
+      return [...BASE_ROLE_PREFIXES];
+    }
+  };
+  const getSessionIdFromEditor = (ed) => {
+    try {
+      const panelId = getPanelIdFromEditor(ed);
+      if (panelId) {
+        const fromPanelManager = window?.zion?.panelManager?.getPanel?.(panelId)?.activeTabId;
+        if (fromPanelManager) return String(fromPanelManager);
+        const fromPanelsApi = window?.zion?.panels?.list?.()?.find?.((panel) => panel.id === panelId)?.activeTabId;
+        if (fromPanelsApi) return String(fromPanelsApi);
+      }
+    } catch {}
+    try {
+      const sid = window?.zion?.state?.get?.("sessions.currentId");
+      return sid ? String(sid) : null;
+    } catch {
+      return null;
+    }
+  };
+  const getScopedStateKey = (baseKey, target) => {
+    try {
+      const panelId = typeof target === "string"
+        ? target
+        : (target?.panelId || getBoundPanelId(target) || getPanelIdFromEditor(target) || null);
+      return panelId ? `${baseKey}.${panelId}` : baseKey;
+    } catch {
+      return baseKey;
+    }
+  };
+  const getActiveHeadingStateKey = (target) => getScopedStateKey("toc.activeHeadingId", target);
+  const getActiveBlockStateKey = (target) => getScopedStateKey("toc.activeBlockId", target);
+  const getRoleIndexForEditor = (ed, maybeView) => {
+    try {
+      const fromApi = window?.zion?.roles?.getIndex?.(maybeView || ed);
+      if (fromApi && Array.isArray(fromApi.blocks)) return fromApi;
+      const state = window?.zion?.state;
+      if (!state?.get) return null;
+      const dom = maybeView?.dom || getEditorEl(ed);
+      const editorId = ed?.editorId || ed?.core?.getEditorId?.() || dom?.getAttribute?.("data-editor-id") || "";
+      const panelId = getPanelIdFromEditor(ed) || dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+      const sessionId = ed?.sessionId || ed?.core?.getSessionId?.() || dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+      const candidates = [
+        editorId ? `roles.index.editor.${editorId}` : "",
+        panelId && sessionId ? `roles.index.panelSession.${panelId}.${sessionId}` : "",
+        panelId ? `roles.index.panel.${panelId}` : "",
+        "roles.index"
+      ].filter(Boolean);
+      for (const key of candidates) {
+        const idx = state.get(key);
+        if (!idx || !Array.isArray(idx.blocks)) continue;
+        const scope = idx.scope || {};
+        if (key === "roles.index") {
+          if (editorId && scope.editorId && scope.editorId !== editorId) continue;
+          if (panelId && scope.panelId && scope.panelId !== panelId) continue;
+          if (sessionId && scope.sessionId && scope.sessionId !== sessionId) continue;
+        }
+        return idx;
+      }
+    } catch {}
+    return null;
+  };
+  const getRoleBlocksForEditor = (ed, maybeView) => {
+    try {
+      const text = String(ed?.getValue?.() || "");
+      const idx = getRoleIndexForEditor(ed, maybeView);
+      if (idx?.blocks?.length) return idx.blocks;
+      const blocks = parseRoleBlocksFromText(text, getRolePrefixes());
+      return ensureLeadingUserBlock(blocks, text, maybeView);
+    } catch {
+      return [];
+    }
+  };
 
   // 根据给定行/位置计算应高亮的目录项（标题与块）
   const computeActiveTOCAtCursor = (viewParam, opts = {}) => {
     try {
-      const ed = window?.zion?.window?.activeEditor;
+      const ed = opts?.editor || window?.zion?.window?.activeEditor;
       if (!ed) return;
 
       const groupMode = !!window?.zion?.state?.get?.('toc.groupByRole');
@@ -275,48 +368,14 @@ export async function activate(ctx) {
       let activeBlockId = null;
 
       if (groupMode) {
-        const idx = window?.zion?.state?.get?.('roles.index');
         let curBlock = null;
-
-        const idxUsable = (() => {
-          try {
-            if (!viewParam || !Array.isArray(idx?.blocks)) return false;
-            const docLen = viewParam.state.doc.length;
-            for (const b of idx.blocks) {
-              if (typeof b?.to === 'number' && b.to > docLen) return false;
-            }
-            return true;
-          } catch {
-            return false;
-          }
-        })();
-
-        // 优先使用字符范围定位块
-        if (idxUsable && viewParam && Array.isArray(idx?.blocks)) {
-          const blocks = ensureLeadingUserBlock(idx.blocks, docText, viewParam);
-          for (const b of blocks) {
-            if (typeof b.from === "number" && typeof b.to === "number") {
-              if (pos >= b.from && pos <= b.to) {
-                curBlock = b;
-                break;
-              }
-            }
-          }
-        }
-
-        // 退化为行范围定位块
-        if (!curBlock) {
-          const rawBlocks = (idxUsable && Array.isArray(idx?.blocks) && typeof idx.blocks[0]?.startLine === "number")
-            ? idx.blocks
-            : parseRoleBlocksFromText(docText);
-          const blocks = ensureLeadingUserBlock(rawBlocks, docText, viewParam);
-          for (const b of blocks) {
-            const s = b.startLine ?? 0;
-            const e = b.endLine ?? s;
-            if (currentLine >= s && currentLine <= e) {
-              curBlock = b;
-              break;
-            }
+        const blocks = getRoleBlocksForEditor(ed, viewParam);
+        for (const b of blocks) {
+          const s = b.startLine ?? 0;
+          const e = b.endLine ?? s;
+          if (currentLine >= s && currentLine <= e) {
+            curBlock = b;
+            break;
           }
         }
 
@@ -365,12 +424,14 @@ export async function activate(ctx) {
 
       // 更新状态（避免不必要的 set）
       try {
-        const prevH = window?.zion?.state?.get?.('toc.activeHeadingId');
-        if (prevH !== activeHeadingId) window.zion.state.set('toc.activeHeadingId', activeHeadingId || null);
+        const key = getActiveHeadingStateKey(ed);
+        const prevH = window?.zion?.state?.get?.(key);
+        if (prevH !== activeHeadingId) window.zion.state.set(key, activeHeadingId || null);
       } catch {}
       try {
-        const prevB = window?.zion?.state?.get?.('toc.activeBlockId');
-        if (prevB !== activeBlockId) window.zion.state.set('toc.activeBlockId', activeBlockId || null);
+        const key = getActiveBlockStateKey(ed);
+        const prevB = window?.zion?.state?.get?.(key);
+        if (prevB !== activeBlockId) window.zion.state.set(key, activeBlockId || null);
       } catch {}
 
       try {
@@ -382,7 +443,7 @@ export async function activate(ctx) {
 
   const activeMeasurePending = new WeakMap();
 
-  const scheduleComputeActiveTOCByVisibility = (viewParam) => {
+  const scheduleComputeActiveTOCByVisibility = (viewParam, editorParam = null) => {
     try {
       if (!viewParam || !viewParam.state) return;
       if (activeMeasurePending.get(viewParam)) return;
@@ -390,7 +451,7 @@ export async function activate(ctx) {
 
       if (typeof viewParam.requestMeasure !== 'function') {
         activeMeasurePending.set(viewParam, false);
-        computeActiveTOCAtCursor(viewParam, { mode: 'cursor' });
+        computeActiveTOCAtCursor(viewParam, { mode: 'cursor', editor: editorParam });
         return;
       }
 
@@ -421,9 +482,9 @@ export async function activate(ctx) {
           try {
             const d = data || {};
             if (typeof d.usedLine === 'number' && typeof d.usedPos === 'number') {
-              computeActiveTOCAtCursor(viewParam, { line: d.usedLine, pos: d.usedPos, mode: d.mode });
+              computeActiveTOCAtCursor(viewParam, { line: d.usedLine, pos: d.usedPos, mode: d.mode, editor: editorParam });
             } else {
-              computeActiveTOCAtCursor(viewParam, { mode: 'cursor' });
+              computeActiveTOCAtCursor(viewParam, { mode: 'cursor', editor: editorParam });
             }
           } catch {}
           activeMeasurePending.set(viewParam, false);
@@ -441,11 +502,7 @@ export async function activate(ctx) {
   // - topOffset: pixels to keep between top of viewport and the target line (default 48)
   const scrollLineIntoViewTop = (ed, maybeView, line, topOffset = 48) => {
     try {
-      // Set cursor and focus first (best-effort)
-      try { ed.setCursor({ line, ch: 0 }); } catch {}
-      try { ed.focus(); } catch {}
-
-      if (maybeView && maybeView.coordsAtPos) {
+      if (maybeView && typeof maybeView.lineBlockAt === "function") {
         try {
           let stickyHeight = 0;
           try {
@@ -457,23 +514,44 @@ export async function activate(ctx) {
           const effectiveTopOffset = Math.max(topOffset || 0, (stickyHeight || 0) + 10);
 
           // Convert line to a document position
-          const pos = maybeView.state.doc.line(line + 1).from;
-          const coords = maybeView.coordsAtPos(pos);
-          if (!coords) return;
+          const targetLine = maybeView.state.doc.line(line + 1);
+          const pos = targetLine.from;
+          const lineText = maybeView.state.doc.sliceString(targetLine.from, targetLine.to);
+          const heading = /^([ \t]*#{1,6}[ \t]+)/.exec(lineText);
+          const cursorPos = heading ? Math.min(targetLine.from + heading[1].length, targetLine.to) : pos;
+          try {
+            maybeView.dispatch({ selection: { anchor: cursorPos } });
+            maybeView.focus();
+          } catch {
+            try { ed.setCursor({ line, ch: 0 }); } catch {}
+            try { ed.focus(); } catch {}
+          }
+
+          const block = maybeView.lineBlockAt(pos);
+          if (!block) return;
 
           // Determine scroll container (CodeMirror exposes scrollDOM)
           const scroller = maybeView.scrollDOM || maybeView.dom || document.scrollingElement || document.documentElement;
-          const scrollerRect = scroller.getBoundingClientRect ? scroller.getBoundingClientRect() : { top: 0 };
-          const currentScrollTop = scroller.scrollTop || 0;
 
-          // coords.top is viewport-relative; compute desired scrollTop on scroller
-          const targetScrollTop = currentScrollTop + (coords.top - scrollerRect.top) - effectiveTopOffset;
+          // Use CodeMirror document coordinates instead of viewport coords, so large
+          // documents and in-flight smooth scrolling do not skew the target.
+          const targetScrollTop = Math.max(0, Number(block.top || 0) - effectiveTopOffset);
 
-          if (typeof scroller.scrollTo === 'function') {
-            try { scroller.scrollTo({ top: targetScrollTop, left: 0, behavior: 'smooth' }); } catch { scroller.scrollTop = targetScrollTop; }
-          } else {
+          const applyScroll = () => {
             scroller.scrollTop = targetScrollTop;
-          }
+            try {
+              if (typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: targetScrollTop, left: 0, behavior: 'auto' });
+            } catch {}
+          };
+          applyScroll();
+          try {
+            requestAnimationFrame(() => {
+              applyScroll();
+              requestAnimationFrame(() => {
+                applyScroll();
+              });
+            });
+          } catch {}
         } catch {}
       } else {
         // Fallback: if the editor abstraction provides a scroll API, try it (best-effort)
@@ -495,7 +573,8 @@ export async function activate(ctx) {
       t = setTimeout(() => fn(...args), wait);
     };
   }
-  let tocUI = {
+  const createTOCUI = () => ({
+    instanceKey: null,
     wrapper: null,
     panel: null,
     button: null,
@@ -509,18 +588,82 @@ export async function activate(ctx) {
     prevEditorFlex: "",
     prevEditorWidth: "",
     originalParent: null,
-    originalNextSibling: null
-  };
+    originalNextSibling: null,
+    panelId: null,
+    open: false,
+    overlay: false,
+    collapsedMode: "auto",
+    resizeObserver: null,
+    editor: null,
+    debouncedUpdate: null
+  });
+  let tocUI = createTOCUI();
+  const tocInstances = new Map();
+  const TOC_COLLAPSED_MODE_KEY = "zion.toc.collapsedMode";
   // collapsed state set for headings: keep ids of collapsed nodes so updates can preserve UI state
   const tocState = {
     collapsed: new Set(),
     allCollapsibleIds: new Set(),
-    generatingBlockId: null, // 当前正在生成的块ID（用于显示动画）
-    lastGeneratedBlockId: null // 上一次生成的块ID（用于持久化指示）
+    generatingBlockIdBySession: new Map(), // sessionId -> 当前正在生成的块ID
+    lastGeneratedBlockIdBySession: new Map() // sessionId -> 上一次生成的块ID
   };
-  let sidePanelOpen = false;
-  let sideOverlayMode = false;
-  const debouncedUpdate = debounce(() => updateTOCList(), 120);
+  const getPanelIdFromEditor = (ed) => {
+    try { return ed?.panelId || getEditorEl(ed)?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null; } catch { return null; }
+  };
+  const getTOCInstanceKey = (ed) => {
+    try {
+      const editorId = ed?.editorId || ed?.core?.getEditorId?.() || getEditorEl(ed)?.dataset?.editorId || null;
+      if (editorId) return `editor:${editorId}`;
+      const panelId = getPanelIdFromEditor(ed);
+      const sessionId = ed?.sessionId || ed?.core?.getSessionId?.() || getEditorEl(ed)?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || null;
+      if (panelId && sessionId) return `panel:${panelId}:session:${sessionId}`;
+      return panelId ? `panel:${panelId}` : null;
+    } catch {
+      return null;
+    }
+  };
+  const getTOCUIForEditor = (ed) => {
+    const key = getTOCInstanceKey(ed);
+    return key ? (tocInstances.get(key) || null) : null;
+  };
+  const getBoundPanelId = (ui = tocUI) => {
+    try { return ui?.panelId || ui?.editorEl?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null; } catch { return null; }
+  };
+  const forEachOpenTOCUI = (fn) => {
+    for (const ui of tocInstances.values()) {
+      if (!ui?.open) continue;
+      try { fn(ui); } catch {}
+    }
+  };
+
+  const getEditorEl = (ed) => {
+    try { return ed?.getView?.()?.dom || ed?.core?.view?.dom || null; } catch { return null; }
+  };
+
+  const createTOCWrapper = () => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "zion-toc-layout";
+    wrapper.style.position = "relative";
+    wrapper.style.width = "100%";
+    wrapper.style.height = "100%";
+    wrapper.style.display = "flex";
+    wrapper.style.minWidth = "0";
+    wrapper.style.minHeight = "0";
+    return wrapper;
+  };
+
+  const bindTOCUIToEditor = (ed) => {
+    try {
+      const ui = getTOCUIForEditor(ed);
+      const edEl = getEditorEl(ed);
+      if (!edEl || !ui?.panel) return false;
+      if (!ui.wrapper || ui.editorEl !== edEl || !ui.wrapper.contains(edEl)) return false;
+      tocUI = ui;
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   // Helper: 根据会话ID获取对应的TOC块ID
   const getTOCBlockIdForSession = (sessionId) => {
@@ -532,28 +675,42 @@ export async function activate(ctx) {
     } catch {}
     return null;
   };
+  const getGeneratingBlockIdForEditor = (ed) => {
+    try {
+      const sid = getSessionIdFromEditor(ed);
+      return sid ? (tocState.generatingBlockIdBySession.get(sid) || null) : null;
+    } catch {
+      return null;
+    }
+  };
+  const getLastGeneratedBlockIdForEditor = (ed) => {
+    try {
+      const sid = getSessionIdFromEditor(ed);
+      return sid ? (tocState.lastGeneratedBlockIdBySession.get(sid) || null) : null;
+    } catch {
+      return null;
+    }
+  };
 
   // 监听大模型回答开始/结束事件
   try {
     const onRunStarted = ({ sessionId }) => {
       const blockId = getTOCBlockIdForSession(sessionId);
-      if (blockId) {
-        tocState.generatingBlockId = blockId;
-        // 开始新生成时清除旧的指示器
-        if (tocState.lastGeneratedBlockId) {
-          tocState.lastGeneratedBlockId = null;
-        }
-        if (sidePanelOpen) debouncedUpdate();
-      }
+      const sid = sessionId ? String(sessionId) : "";
+      if (!sid) return;
+      if (blockId) tocState.generatingBlockIdBySession.set(sid, blockId);
+      else tocState.generatingBlockIdBySession.delete(sid);
+      tocState.lastGeneratedBlockIdBySession.delete(sid);
+      forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
     };
 
     const onRunFinished = ({ sessionId }) => {
-      // 记录最后生成的块ID
-      if (tocState.generatingBlockId) {
-        tocState.lastGeneratedBlockId = tocState.generatingBlockId;
-      }
-      tocState.generatingBlockId = null;
-      if (sidePanelOpen) debouncedUpdate();
+      const sid = sessionId ? String(sessionId) : "";
+      if (!sid) return;
+      const generatingBlockId = tocState.generatingBlockIdBySession.get(sid) || getTOCBlockIdForSession(sid);
+      if (generatingBlockId) tocState.lastGeneratedBlockIdBySession.set(sid, generatingBlockId);
+      tocState.generatingBlockIdBySession.delete(sid);
+      forEachOpenTOCUI((ui) => ui.debouncedUpdate?.());
     };
 
     window.zion.events.on("chat/runStarted", onRunStarted);
@@ -569,9 +726,9 @@ export async function activate(ctx) {
     ctx.chatEventsCleanup = chatEventsCleanup;
   } catch {}
 
-  const syncToggleAllBtn = () => {
+  const syncToggleAllBtn = (ui = tocUI) => {
     try {
-      const btn = tocUI?.toggleAllBtn;
+      const btn = ui?.toggleAllBtn;
       if (!btn) return;
       const total = tocState.allCollapsibleIds.size;
       let allCollapsed = total > 0;
@@ -581,20 +738,20 @@ export async function activate(ctx) {
         }
       }
       if (allCollapsed) {
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 5l-5 5h10l-5-5zm0 14l5-5H7l5 5z"/></svg>';
+        btn.innerHTML = iconHtml("unfold", 14);
         btn.setAttribute('aria-label', '展开全部');
         btn.title = '展开全部';
       } else {
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7 14l5 5 5-5H7zm0-4h10L12 5 7 10z"/></svg>';
+        btn.innerHTML = iconHtml("fold", 14);
         btn.setAttribute('aria-label', '折叠全部');
         btn.title = '折叠全部';
       }
     } catch {}
   };
 
-  const syncGroupBtnUI = () => {
+  const syncGroupBtnUI = (ui = tocUI) => {
     try {
-      const groupBtn = tocUI?.groupBtn;
+      const groupBtn = ui?.groupBtn;
       if (!groupBtn) return;
       const on = !!window?.zion?.state?.get?.('toc.groupByRole');
       groupBtn.style.opacity = on ? "1" : "0.7";
@@ -603,32 +760,88 @@ export async function activate(ctx) {
       groupBtn.title = on ? "按角色分组：开" : "按角色分组：关";
     } catch {}
   };
-
-  // Layout the side panel to sit flush left of the editor content while keeping the whole group centered.
-  // New logic: decide overlay by a simple threshold derived from width mode, not from current measured editor width.
-  // This avoids false overlays in "full"/"wide" and keeps inline layout on typical laptop screens.
-  const applySideLayout = () => {
+  const getTOCCollapsedMode = () => {
     try {
-      if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) return;
-      const wrapper = tocUI.wrapper;
-      const edEl = tocUI.editorEl;
-      const scroller = tocUI.scrollerEl || edEl;
+      const raw = localStorage.getItem(TOC_COLLAPSED_MODE_KEY);
+      return raw === "manual-collapsed" ? "manual-collapsed" : "auto";
+    } catch {
+      return "auto";
+    }
+  };
+  const setTOCCollapsedMode = (mode) => {
+    const next = mode === "manual-collapsed" ? "manual-collapsed" : "auto";
+    try { localStorage.setItem(TOC_COLLAPSED_MODE_KEY, next); } catch {}
+    try {
+      for (const ui of tocInstances.values()) {
+        if (ui) ui.collapsedMode = next;
+      }
+    } catch {}
+  };
+  const shouldAutoOpenSideTOC = (ui = tocUI) => {
+    try {
+      if (!ui?.wrapper) return false;
+      if (ui.collapsedMode === "manual-collapsed") return false;
+      const t = document?.documentElement?.dataset?.zionDeviceType;
+      if (t === "mobile") return false;
+      if (window.innerWidth < 768) return false;
+      const available = ui.wrapper.clientWidth || window.innerWidth;
+      return available >= 880;
+    } catch {
+      return false;
+    }
+  };
+  const syncSideTOCVisibility = (ui = tocUI) => {
+    try {
+      if (!ui?.wrapper || !ui?.panel || !ui?.editor) return;
+      if (!ui.wrapper.isConnected || !ui.panel.isConnected || !ui.editorEl?.isConnected) {
+        try { document.getElementById("zion-toc-panel")?.remove?.(); } catch {}
+        return;
+      }
+      if (shouldAutoOpenSideTOC(ui)) openSideTOC(ui.editor, { fallbackToOverlay: false });
+      else closeSideTOC(ui);
+    } catch {}
+  };
+  const observeTOCContainerResize = (ui = tocUI, onResize) => {
+    try {
+      ui?.resizeObserver?.disconnect?.();
+    } catch {}
+    try {
+      const ResizeObserverCtor = typeof window !== "undefined" ? window.ResizeObserver : null;
+      if (typeof ResizeObserverCtor !== "function" || !ui?.wrapper) return;
+      const observer = new ResizeObserverCtor(() => {
+        try { onResize?.(); } catch {}
+      });
+      observer.observe(ui.wrapper.parentElement || ui.wrapper);
+      ui.resizeObserver = observer;
+    } catch {
+      ui.resizeObserver = null;
+    }
+  };
 
-      // Ensure wrapper is a flex row centered as a group (panel + editor)
+  // Layout TOC as a simple left sidebar beside the editor pane.
+  // Do not mutate CodeMirror's internal centering/margin behavior; only size the two top-level panes.
+  const applySideLayout = (ui = tocUI) => {
+    try {
+      if (!ui?.wrapper || !ui?.panel || !ui?.editorEl) return;
+      const wrapper = ui.wrapper;
+      const edEl = ui.editorEl;
+
       wrapper.style.display = "flex";
+      wrapper.style.flexDirection = "row";
+      wrapper.style.flexWrap = "nowrap";
       wrapper.style.alignItems = "stretch";
-      wrapper.style.justifyContent = "center";
+      wrapper.style.justifyContent = "flex-start";
       wrapper.style.position = "relative";
 
       // Ensure the panel has a stable flex-basis/width
-      let basis = tocUI.panel.offsetWidth || 240;
+      let basis = ui.panel.offsetWidth || 240;
       if (basis <= 0) basis = 240;
       basis = Math.max(220, Math.min(480, basis));
-      tocUI.panel.style.flex = `0 0 ${basis}px`;
-      tocUI.panel.style.width = `${basis}px`;
+      ui.panel.style.flex = `0 0 ${basis}px`;
+      ui.panel.style.width = `${basis}px`;
       // Ensure panel maintains flex column layout for sticky toolbar
-      tocUI.panel.style.display = 'flex';
-      tocUI.panel.style.flexDirection = 'column';
+      ui.panel.style.display = 'flex';
+      ui.panel.style.flexDirection = 'column';
 
       const available = wrapper.clientWidth || window.innerWidth;
 
@@ -647,60 +860,59 @@ export async function activate(ctx) {
       const shouldOverlay = available < (basis + minEditor + 16);
 
       if (shouldOverlay) {
-        // Overlay: panel floats; editor keeps its own width/margins (from width mode)
-        sideOverlayMode = true;
-        tocUI.panel.style.position = "absolute";
-        tocUI.panel.style.left = "0";
-        tocUI.panel.style.top = "0";
-        tocUI.panel.style.bottom = "0";
-        tocUI.panel.style.height = "100%";
-        tocUI.panel.style.zIndex = "2";
+        // Overlay: panel floats above the left side; editor pane keeps full width.
+        ui.overlay = true;
+        edEl.style.setProperty("--zion-toc-inline-width", "0px");
+        ui.panel.style.position = "absolute";
+        ui.panel.style.left = "0";
+        ui.panel.style.top = "0";
+        ui.panel.style.bottom = "0";
+        ui.panel.style.height = "100%";
+        ui.panel.style.zIndex = "120";
 
         edEl.style.flex = "1 1 auto";
-        // restore previous editor inline width if any; otherwise let width-mode rules apply
-        edEl.style.width = tocUI.prevEditorWidth || "";
-        if (scroller) {
-          scroller.style.marginLeft = tocUI.prevScrollerMarginLeft || "";
-          scroller.style.marginRight = tocUI.prevScrollerMarginRight || "";
-        }
+        edEl.style.width = ui.prevEditorWidth || "";
       } else {
-        // Inline: panel sits left, editor takes remaining space; remove auto margins for proper side-by-side centering
-        sideOverlayMode = false;
-        tocUI.panel.style.position = "relative";
-        tocUI.panel.style.left = "";
-        tocUI.panel.style.top = "";
-        tocUI.panel.style.bottom = "";
-        tocUI.panel.style.height = "100%";
-        tocUI.panel.style.zIndex = "";
-
-        if (scroller) {
-          scroller.style.marginLeft = "0";
-          scroller.style.marginRight = "0";
-        }
+        // Inline: panel sits left, editor pane fills the rest.
+        ui.overlay = false;
+        edEl.style.setProperty("--zion-toc-inline-width", `${basis}px`);
+        ui.panel.style.position = "relative";
+        ui.panel.style.left = "";
+        ui.panel.style.top = "";
+        ui.panel.style.bottom = "";
+        ui.panel.style.height = "100%";
+        ui.panel.style.zIndex = "";
         edEl.style.flex = "1 1 auto";
         edEl.style.width = "";
       }
     } catch {}
   };
 
-  const updateTOCList = () => {
+  const updateTOCList = (ui = tocUI) => {
     try {
-      const ed = window.zion.window.activeEditor;
-      if (!ed || !tocUI.panel) return;
+      const ed = ui?.editor || window.zion.window.activeEditor;
+      if (!ed || !ui?.panel) return;
       const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
+      const activeHeadingStateKey = getActiveHeadingStateKey(ui);
+      const activeBlockStateKey = getActiveBlockStateKey(ui);
+      const generatingBlockId = getGeneratingBlockIdForEditor(ed);
+      const lastGeneratedBlockId = getLastGeneratedBlockIdForEditor(ed);
 
-      let list = tocUI.panel.querySelector('#zion-toc-list');
+      let list = ui.panel.querySelector('.zion-toc-list');
       if (!list) {
         list = document.createElement('div');
-        list.id = 'zion-toc-list';
+        list.className = 'zion-toc-list';
         // Prevent horizontal scrolling and ensure it fits the panel
         list.style.flex = '1';
+        list.style.fontFamily = 'var(--font-sans)';
+        list.style.fontSize = '13px';
+        list.style.lineHeight = '1.5';
         list.style.overflowY = 'auto';
         list.style.overflowX = 'hidden';
         list.style.minHeight = '0';
         list.style.maxWidth = '100%';
         list.style.boxSizing = 'border-box';
-        tocUI.panel.appendChild(list);
+        ui.panel.appendChild(list);
       }
       list.innerHTML = '';
 
@@ -750,33 +962,31 @@ export async function activate(ctx) {
           } catch {}
           row.style.display = "flex";
           row.style.alignItems = "center";
-          row.style.padding = "4px 8px";
-          row.style.gap = "6px";
+          row.style.padding = "5px 4px";
+          row.style.gap = "4px";
           row.style.cursor = "pointer";
           // indentation by semantic level (offset inside role block when grouped)
-          row.style.paddingLeft = `${(item.level - 1 + baseLevelOffset) * 12}px`;
+          row.style.paddingLeft = `${(item.level - 1 + baseLevelOffset) * 10}px`;
 
           // Always create left column for consistent spacing
           const leftCol = document.createElement("div");
           leftCol.style.display = "flex";
           leftCol.style.alignItems = "center";
           leftCol.style.justifyContent = "center";
-          leftCol.style.flex = "0 0 24px";
-          leftCol.style.width = "24px";
+          leftCol.style.flex = "0 0 12px";
+          leftCol.style.width = "12px";
           
           if (item.children && item.children.length > 0) {
             const isCollapsed = tocState.collapsed.has(item.id);
             const chevronBtn = document.createElement("button");
-            chevronBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
-            chevronBtn.querySelector('svg').style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(90deg)';
-            chevronBtn.querySelector('svg').style.color = "var(--ext-toc-fg, var(--fg))";
-            chevronBtn.querySelector('svg').style.fill = "var(--ext-toc-fg, var(--fg))";
+            chevronBtn.innerHTML = iconHtml(isCollapsed ? "chevron-right" : "chevron-down", 14);
+            chevronBtn.style.color = "var(--ext-toc-fg, var(--fg))";
             chevronBtn.setAttribute('aria-label', isCollapsed ? '展开子目录' : '收起子目录');
             chevronBtn.title = isCollapsed ? '展开' : '收起';
             chevronBtn.style.background = 'transparent';
             chevronBtn.style.border = 'none';
-            chevronBtn.style.width = '24px';
-            chevronBtn.style.height = '24px';
+            chevronBtn.style.width = '16px';
+            chevronBtn.style.height = '18px';
             chevronBtn.style.padding = '0';
             chevronBtn.style.cursor = 'pointer';
             chevronBtn.style.display = 'inline-flex';
@@ -788,7 +998,7 @@ export async function activate(ctx) {
               e.stopPropagation();
               if (tocState.collapsed.has(item.id)) tocState.collapsed.delete(item.id);
               else tocState.collapsed.add(item.id);
-              debouncedUpdate();
+              ui.debouncedUpdate?.();
             };
             
             // Show chevron on row hover
@@ -806,7 +1016,9 @@ export async function activate(ctx) {
           const label = document.createElement("span");
           label.className = "toc-label";
           label.textContent = item.title;
-          label.style.fontSize = "12px";
+          label.style.fontSize = "13px";
+          label.style.lineHeight = "1.5";
+          label.style.letterSpacing = "0";
           label.style.whiteSpace = "nowrap";
           label.style.textOverflow = "ellipsis";
           label.style.overflow = "hidden";
@@ -814,7 +1026,7 @@ export async function activate(ctx) {
           row.appendChild(label);
           // Active heading highlight (cursor-based)
           try {
-            const activeId = window?.zion?.state?.get?.('toc.activeHeadingId');
+            const activeId = window?.zion?.state?.get?.(activeHeadingStateKey);
             if (activeId && activeId === item.id) {
               label.style.fontWeight = "600";
               label.style.color = "var(--ext-toc-active-fg, var(--accent))";
@@ -823,7 +1035,8 @@ export async function activate(ctx) {
 
           row.onclick = () => {
             try {
-              window?.zion?.state?.set?.('toc.activeHeadingId', item.id);
+              window?.zion?.state?.set?.(activeHeadingStateKey, item.id);
+              window?.zion?.state?.set?.(activeBlockStateKey, null);
               const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
               scrollLineIntoViewTop(ed, maybeView, item.line, 48);
             } catch {}
@@ -845,10 +1058,10 @@ export async function activate(ctx) {
         const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
         if (headings.length === 0) {
           const empty = document.createElement("div");
-          empty.textContent = "No headings found (use #, ##, ### ...)";
+          empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
           empty.style.opacity = "0.8";
-          empty.style.fontSize = "12px";
-          empty.style.padding = "8px";
+          empty.style.fontSize = "13px";
+          empty.style.padding = "8px 10px";
           list.appendChild(empty);
         } else {
           const roots = buildTree(headings);
@@ -857,9 +1070,7 @@ export async function activate(ctx) {
         }
       } else {
         // group by role blocks
-        const idx = window?.zion?.state?.get?.('roles.index');
-        const rawBlocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
-        const blocks = ensureLeadingUserBlock(rawBlocks, ed.getValue(), maybeView);
+        const blocks = getRoleBlocksForEditor(ed, maybeView);
         if (!blocks || blocks.length === 0) {
           // fallback to flat headings
           const headings = maybeView ? parseHeadingsFromView(maybeView) : parseHeadingsFromText(ed.getValue());
@@ -898,8 +1109,8 @@ export async function activate(ctx) {
             } catch {}
             row.style.display = "flex";
             row.style.alignItems = "center";
-            row.style.padding = "4px 8px";
-            row.style.gap = "6px";
+            row.style.padding = "6px 4px";
+            row.style.gap = "4px";
             row.style.cursor = "pointer";
 
             // chevron or spacer
@@ -908,22 +1119,20 @@ export async function activate(ctx) {
             leftCol.style.display = "flex";
             leftCol.style.alignItems = "center";
             leftCol.style.justifyContent = "center";
-            leftCol.style.flex = "0 0 24px";
-            leftCol.style.width = "24px";
+            leftCol.style.flex = "0 0 12px";
+            leftCol.style.width = "12px";
             
             if (roots.length > 0) {
               const isCollapsed = tocState.collapsed.has(blockId);
               const chevronBtn = document.createElement("button");
-              chevronBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
-              chevronBtn.querySelector('svg').style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(90deg)';
-              chevronBtn.querySelector('svg').style.color = "var(--ext-toc-fg, var(--fg))";
-              chevronBtn.querySelector('svg').style.fill = "var(--ext-toc-fg, var(--fg))";
+              chevronBtn.innerHTML = iconHtml(isCollapsed ? "chevron-right" : "chevron-down", 14);
+              chevronBtn.style.color = "var(--ext-toc-fg, var(--fg))";
               chevronBtn.setAttribute('aria-label', isCollapsed ? '展开块内目录' : '收起块内目录');
               chevronBtn.title = isCollapsed ? '展开' : '收起';
               chevronBtn.style.background = 'transparent';
               chevronBtn.style.border = 'none';
-              chevronBtn.style.width = '24px';
-              chevronBtn.style.height = '24px';
+              chevronBtn.style.width = '16px';
+              chevronBtn.style.height = '18px';
               chevronBtn.style.padding = '0';
               chevronBtn.style.cursor = 'pointer';
               chevronBtn.style.display = 'inline-flex';
@@ -935,7 +1144,7 @@ export async function activate(ctx) {
                 e.stopPropagation();
                 if (tocState.collapsed.has(blockId)) tocState.collapsed.delete(blockId);
                 else tocState.collapsed.add(blockId);
-                debouncedUpdate();
+                ui.debouncedUpdate?.();
               };
               
               // Show chevron on row hover
@@ -953,21 +1162,25 @@ export async function activate(ctx) {
             const label = document.createElement("span");
             label.className = "toc-label";
             // Use color dot to mark role (方案4) - more subtle
-            const roleColors = { user: '#4caf50', assistant: '#2196f3', system: '#9e9e9e' };
+            const roleColors = {
+              user: 'var(--ext-toc-role-user, var(--role-user-fg, #4caf50))',
+              assistant: 'var(--ext-toc-role-assistant, var(--role-assistant-fg, #2196f3))',
+              system: 'var(--ext-toc-role-system, var(--role-system-fg, #9e9e9e))'
+            };
             const dotColor = roleColors[b.role?.toLowerCase()] || roleColors.user;
             // 判断是否是正在生成的块
-            const isGenerating = tocState.generatingBlockId === blockId;
-            const isLastGenerated = tocState.lastGeneratedBlockId === blockId;
+            const isGenerating = generatingBlockId === blockId;
+            const isLastGenerated = lastGeneratedBlockId === blockId;
 
             // 创建小圆点容器，给它留出空间
             const dotContainer = document.createElement("span");
             dotContainer.style.display = "inline-flex";
             dotContainer.style.alignItems = "center";
             dotContainer.style.justifyContent = "center";
-            dotContainer.style.width = "16px"; // 增加宽度以容纳放大效果
+            dotContainer.style.width = "12px";
             dotContainer.style.height = "16px";
             dotContainer.style.flexShrink = "0";
-            dotContainer.style.marginRight = "4px";
+            dotContainer.style.marginRight = "5px";
 
             if (isLastGenerated) {
               // 持久化指示器 - 使用 SVG 图标代替字符
@@ -983,7 +1196,7 @@ export async function activate(ctx) {
               // 这里选用一个向左的箭头，或者一个定位图标。
               // 考虑到 "new answer"，使用一个小圆点带光晕效果的 SVG 可能更好，或者简单的 Left Arrow Icon
               // 试用 Right Arrow
-              indicator.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+              indicator.innerHTML = iconHtml("chevron-right", 12);
               dotContainer.appendChild(indicator);
             } else {
               const dot = document.createElement("span");
@@ -1002,7 +1215,9 @@ export async function activate(ctx) {
 
             const textSpan = document.createElement("span");
             textSpan.textContent = (b.preview || '').trim() || '(empty)';
-            textSpan.style.fontSize = "12px";
+            textSpan.style.fontSize = "13px";
+            textSpan.style.lineHeight = "1.5";
+            textSpan.style.letterSpacing = "0";
             textSpan.style.whiteSpace = "nowrap";
             textSpan.style.textOverflow = "ellipsis";
             textSpan.style.overflow = "hidden";
@@ -1024,8 +1239,8 @@ export async function activate(ctx) {
             }
 
             try {
-              const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
-              const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
+              const activeBlockId = window?.zion?.state?.get?.(activeBlockStateKey);
+              const activeHeadingId = window?.zion?.state?.get?.(activeHeadingStateKey);
               // 活跃块的高亮（生成中状态优先级更高）
               if (activeBlockId && activeBlockId === blockId && !activeHeadingId && !isGenerating) {
                 label.style.fontWeight = "600";
@@ -1037,12 +1252,14 @@ export async function activate(ctx) {
 
             row.onclick = () => {
               // Clear persistent indicator on click
-              if (tocState.lastGeneratedBlockId === blockId) {
-                tocState.lastGeneratedBlockId = null;
-                setTimeout(() => debouncedUpdate(), 0);
+              const sid = getSessionIdFromEditor(ed);
+              if (sid && tocState.lastGeneratedBlockIdBySession.get(sid) === blockId) {
+                tocState.lastGeneratedBlockIdBySession.delete(sid);
+                setTimeout(() => ui.debouncedUpdate?.(), 0);
               }
               try {
-                window?.zion?.state?.set?.('toc.activeHeadingId', null);
+                window?.zion?.state?.set?.(activeHeadingStateKey, null);
+                window?.zion?.state?.set?.(activeBlockStateKey, blockId);
                 const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
                 scrollLineIntoViewTop(ed, maybeView, blockStartLine, 48);
               } catch {}
@@ -1059,11 +1276,11 @@ export async function activate(ctx) {
         }
       }
 
-      syncToggleAllBtn();
+      syncToggleAllBtn(ui);
 
       try {
-        const activeHeadingId = window?.zion?.state?.get?.('toc.activeHeadingId');
-        const activeBlockId = window?.zion?.state?.get?.('toc.activeBlockId');
+        const activeHeadingId = window?.zion?.state?.get?.(activeHeadingStateKey);
+        const activeBlockId = window?.zion?.state?.get?.(activeBlockStateKey);
         const activeId = activeHeadingId || activeBlockId;
         if (activeId) {
           requestAnimationFrame(() => {
@@ -1095,82 +1312,76 @@ export async function activate(ctx) {
     } catch {}
   };
 
-  const openSideTOC = () => {
-    const ed = window.zion.window.activeEditor;
+  const openSideTOC = (ed = window.zion.window.activeEditor, opts = {}) => {
+    const allowOverlayFallback = opts?.fallbackToOverlay !== false;
     const maybeView = (ed && ed.core && ed.core.view) ? ed.core.view : null;
-    if (!ed) return showOverlayTOC();
+    const ui = getTOCUIForEditor(ed);
+    if (!ed) return allowOverlayFallback ? showOverlayTOC() : undefined;
     try {
       const t = document?.documentElement?.dataset?.zionDeviceType;
-      if (t === "mobile") return showOverlayTOC();
+      if (t === "mobile") return allowOverlayFallback ? showOverlayTOC() : undefined;
     } catch {}
     try {
-      if (window.innerWidth < 768) return showOverlayTOC();
+      if (window.innerWidth < 768) return allowOverlayFallback ? showOverlayTOC() : undefined;
     } catch {}
-    if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) {
+    if (!bindTOCUIToEditor(ed) || !ui?.wrapper || !ui?.panel || !ui?.editorEl || !ui.wrapper.isConnected || !ui.editorEl.isConnected) {
       // UI not ready (editor DOM not found) -> fallback to overlay
-      return showOverlayTOC();
+      return allowOverlayFallback ? showOverlayTOC() : undefined;
     }
+    tocUI = ui;
     // Show panel
-    tocUI.panel.style.display = "block";
+    ui.panel.style.display = "block";
 
     // Backup current styles to restore when closing
-    const scroller = tocUI.scrollerEl || tocUI.editorEl;
-    if (tocUI.wrapper) {
-      tocUI.prevWrapperJustifyContent = tocUI.wrapper.style.justifyContent || "";
+    if (ui.wrapper) {
+      ui.prevWrapperJustifyContent = ui.wrapper.style.justifyContent || "";
     }
-    if (tocUI.editorEl) {
-      tocUI.prevEditorFlex = tocUI.editorEl.style.flex || "";
-      tocUI.prevEditorWidth = tocUI.editorEl.style.width || "";
-    }
-    if (scroller) {
-      tocUI.prevScrollerMarginLeft = scroller.style.marginLeft || "";
-      tocUI.prevScrollerMarginRight = scroller.style.marginRight || "";
+    if (ui.editorEl) {
+      ui.prevEditorFlex = ui.editorEl.style.flex || "";
+      ui.prevEditorWidth = ui.editorEl.style.width || "";
     }
 
-    // Apply centered layout with panel snug to the editor content
-    applySideLayout();
+    // Apply a simple left-sidebar layout.
+    applySideLayout(ui);
 
     // Sync active heading/block based on visible content (cursor-in-view prefers cursor)
     try {
-      if (maybeView) scheduleComputeActiveTOCByVisibility(maybeView);
-      else computeActiveTOCAtCursor(null, { mode: 'cursor' });
+      if (maybeView) scheduleComputeActiveTOCByVisibility(maybeView, ed);
+      else computeActiveTOCAtCursor(null, { mode: 'cursor', editor: ed });
     } catch {}
 
     // Build list
-    updateTOCList();
-    sidePanelOpen = true;
+    updateTOCList(ui);
+    ui.open = true;
   };
 
-  const closeSideTOC = () => {
-    if (!tocUI.wrapper || !tocUI.panel || !tocUI.editorEl) return;
-    tocUI.panel.style.display = "none";
-    sideOverlayMode = false;
+  const closeSideTOC = (ui = tocUI) => {
+    if (!ui?.wrapper || !ui?.panel || !ui?.editorEl) return;
+    ui.panel.style.display = "none";
+    ui.overlay = false;
     // Restore wrapper layout
-    if (tocUI.wrapper) {
-      tocUI.wrapper.style.display = "block";
-      tocUI.wrapper.style.justifyContent = tocUI.prevWrapperJustifyContent || "";
+    if (ui.wrapper) {
+      ui.wrapper.style.display = "flex";
+      ui.wrapper.style.justifyContent = ui.prevWrapperJustifyContent || "";
     }
     // Restore editor element sizing
-    if (tocUI.editorEl) {
-      tocUI.editorEl.style.flex = tocUI.prevEditorFlex || "";
-      tocUI.editorEl.style.width = tocUI.prevEditorWidth || "";
+    if (ui.editorEl) {
+      ui.editorEl.style.flex = ui.prevEditorFlex || "";
+      ui.editorEl.style.width = ui.prevEditorWidth || "";
+      ui.editorEl.style.removeProperty("--zion-toc-inline-width");
     }
-    // Restore scroller margins
-    const scroller = tocUI.scrollerEl || tocUI.editorEl;
-    if (scroller) {
-      scroller.style.marginLeft = tocUI.prevScrollerMarginLeft || "";
-      scroller.style.marginRight = tocUI.prevScrollerMarginRight || "";
-      tocUI.prevScrollerMarginLeft = "";
-      tocUI.prevScrollerMarginRight = "";
-    }
-    sidePanelOpen = false;
+    ui.prevScrollerMarginLeft = "";
+    ui.prevScrollerMarginRight = "";
+    ui.open = false;
   };
 
   const toggleSideTOC = () => {
+    const ed = window.zion.window.activeEditor;
+    const ui = getTOCUIForEditor(ed);
     try {
       const t = document?.documentElement?.dataset?.zionDeviceType;
       if (t === "mobile") {
-        try { closeSideTOC(); } catch {}
+        try { closeSideTOC(ui); } catch {}
         try {
           const exist = document.getElementById("zion-toc-panel");
           if (exist) { exist.remove(); return; }
@@ -1180,7 +1391,7 @@ export async function activate(ctx) {
     } catch {}
     try {
       if (window.innerWidth < 768) {
-        try { closeSideTOC(); } catch {}
+        try { closeSideTOC(ui); } catch {}
         try {
           const exist = document.getElementById("zion-toc-panel");
           if (exist) { exist.remove(); return; }
@@ -1188,8 +1399,13 @@ export async function activate(ctx) {
         return showOverlayTOC();
       }
     } catch {}
-    if (sidePanelOpen) closeSideTOC();
-    else openSideTOC();
+    if (ui?.open) {
+      setTOCCollapsedMode("manual-collapsed");
+      closeSideTOC(ui);
+    } else {
+      setTOCCollapsedMode("auto");
+      openSideTOC(ed);
+    }
   };
 
   const showOverlayTOC = () => {
@@ -1228,25 +1444,31 @@ export async function activate(ctx) {
     panel.style.borderRadius = "6px";
     panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
     panel.style.padding = "10px";
+    panel.style.fontFamily = "var(--font-sans)";
+    panel.style.fontSize = "13px";
+    panel.style.lineHeight = "1.5";
     panel.style.zIndex = "99999";
     panel.onclick = (e) => e.stopPropagation();
 
     const title = document.createElement("div");
-    title.textContent = "Contents";
+    title.textContent = t("ui.contents", "Contents");
     title.style.fontWeight = "600";
     title.style.marginBottom = "8px";
     panel.appendChild(title);
 
     const list = document.createElement("div");
     // Constrain list to avoid horizontal scrolling
+    list.style.fontFamily = "var(--font-sans)";
+    list.style.fontSize = "13px";
+    list.style.lineHeight = "1.5";
     list.style.overflowY = "auto";
     list.style.overflowX = "hidden";
     list.style.maxWidth = "100%";
     if (headings.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No headings found (use #, ##, ### ...)";
+      empty.textContent = t("ui.empty", "No headings found (use #, ##, ### ...)");
       empty.style.opacity = "0.8";
-      empty.style.fontSize = "12px";
+      empty.style.fontSize = "13px";
       list.appendChild(empty);
     } else {
       headings.forEach(h => {
@@ -1254,10 +1476,11 @@ export async function activate(ctx) {
         row.className = "toc-row";
         row.style.display = "flex";
         row.style.alignItems = "center";
-        row.style.padding = "4px 2px";
+        row.style.padding = "5px 4px";
+        row.style.gap = "4px";
         row.style.cursor = "pointer";
         // indent by level (still set inline for per-item indentation)
-        row.style.paddingLeft = `${(h.level - 1) * 12}px`;
+        row.style.paddingLeft = `${(h.level - 1) * 10}px`;
 
         const bullet = document.createElement("span");
         bullet.className = "toc-bullet";
@@ -1266,7 +1489,9 @@ export async function activate(ctx) {
         const label = document.createElement("span");
         label.className = "toc-label";
         label.textContent = h.title;
-        label.style.fontSize = "12px";
+        label.style.fontSize = "13px";
+        label.style.lineHeight = "1.5";
+        label.style.letterSpacing = "0";
         label.style.whiteSpace = "nowrap";
         label.style.textOverflow = "ellipsis";
         label.style.overflow = "hidden";
@@ -1295,7 +1520,7 @@ export async function activate(ctx) {
     footer.style.justifyContent = "space-between";
 
     const insertBtn = document.createElement("button");
-    insertBtn.textContent = "Insert TOC Here";
+    insertBtn.textContent = t("ui.insertHere", "Insert TOC Here");
     insertBtn.style.background = "var(--ext-toc-btn-bg, var(--panel))";
     insertBtn.style.color = "var(--ext-toc-fg, var(--fg))";
     insertBtn.style.border = "1px solid var(--ext-toc-accent, var(--accent))";
@@ -1307,7 +1532,7 @@ export async function activate(ctx) {
     };
 
     const closeBtn = document.createElement("button");
-    closeBtn.textContent = "Close";
+    closeBtn.textContent = t("ui.close", "Close");
     closeBtn.style.background = "var(--ext-toc-btn-bg, var(--panel))";
     closeBtn.style.color = "var(--ext-toc-fg, var(--fg))";
     closeBtn.style.border = "1px solid var(--ext-toc-accent, var(--accent))";
@@ -1321,6 +1546,33 @@ export async function activate(ctx) {
 
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
+  };
+
+  const teardownTOCLayout = (ui) => {
+    try {
+      closeSideTOC(ui);
+      if (ui?.panel) ui.panel.remove();
+      if (ui?.originalParent && ui?.editorEl) {
+        ui.originalParent.insertBefore(ui.editorEl, ui.originalNextSibling || null);
+      }
+      if (ui?.wrapper) ui.wrapper.remove();
+    } catch {}
+    try {
+      ui.wrapper = null;
+      ui.panel = null;
+      ui.button = null;
+      ui.editorEl = null;
+      ui.scrollerEl = null;
+      ui.prevScrollerMarginLeft = "";
+      ui.prevScrollerMarginRight = "";
+      ui.prevWrapperJustifyContent = "";
+      ui.prevEditorFlex = "";
+      ui.prevEditorWidth = "";
+      ui.originalParent = null;
+      ui.originalNextSibling = null;
+      ui.open = false;
+      ui.overlay = false;
+    } catch {}
   };
 
   // Build TOC text according to current group mode (Grp).
@@ -1346,9 +1598,7 @@ export async function activate(ctx) {
     }
 
     // Group mode: build by role blocks
-    const idx = window?.zion?.state?.get?.('roles.index');
-    const rawBlocks = Array.isArray(idx?.blocks) ? idx.blocks : parseRoleBlocksFromText(ed.getValue());
-    const blocks = ensureLeadingUserBlock(rawBlocks, ed.getValue(), maybeView);
+    const blocks = getRoleBlocksForEditor(ed, maybeView);
     if (!blocks || blocks.length === 0) {
       // fallback to flat if no blocks found
       return buildFlat();
@@ -1390,17 +1640,11 @@ export async function activate(ctx) {
   };
 
   // commands
-  const d1 = window.zion.commands.registerCommand("toc.show", () => toggleSideTOC());
+  const d1 = window.zion.commands.registerCommand("toc.show", () => {
+    return toggleSideTOC();
+  });
   const d2 = window.zion.commands.registerCommand("toc.insert", () => insertMarkdownTOC());
   ctx.subscriptions.push(d1, d2);
-
-  // keybinding
-  const d3 = window.zion.keybindings.register({
-    command: "toc.show",
-    key: "Mod-Shift-t",
-    when: "editorFocus"
-  });
-  ctx.subscriptions.push(d3);
 
   // 初始化分组开关状态（localStorage -> state）
   try {
@@ -1416,16 +1660,18 @@ export async function activate(ctx) {
       const next = !cur;
       window.zion.state.set('toc.groupByRole', next);
       // 切换分组模式时清空高亮状态，防止残留
-      try { window.zion.state.set('toc.activeHeadingId', null); } catch {}
-      try { window.zion.state.set('toc.activeBlockId', null); } catch {}
+      forEachOpenTOCUI((ui) => {
+        try { window.zion.state.set(getActiveHeadingStateKey(ui), null); } catch {}
+        try { window.zion.state.set(getActiveBlockStateKey(ui), null); } catch {}
+      });
       try { localStorage.setItem('zion.toc.groupByRole', next ? '1' : '0'); } catch {}
-      if (sidePanelOpen) {
+      forEachOpenTOCUI((ui) => {
         try {
-          const maybeView = window?.zion?.window?.activeEditor?.core?.view || null;
-          computeActiveTOCAtCursor(maybeView);
+          const maybeView = ui?.editor?.core?.view || null;
+          computeActiveTOCAtCursor(maybeView, { editor: ui?.editor || null });
         } catch {}
-        debouncedUpdate();
-      }
+        ui.debouncedUpdate?.();
+      });
     } catch {}
   });
   ctx.subscriptions.push(dToggle);
@@ -1434,10 +1680,10 @@ export async function activate(ctx) {
   const dSlash1 = window.zion.slash?.registerCommand?.({
     id: "toc.show",
     trigger: ["toc", "table-of-contents"],
-    title: "显示目录",
-    description: "打开文档目录侧边栏",
-    category: "navigation",
-    icon: "📑",
+    title: t("cmd.show", "显示目录"),
+    description: t("slash.show.description", "打开文档目录侧边栏"),
+    category: t("category.toc", "目录"),
+    icon: "$(book)",
     priority: 100,
     execute: () => {
       window.zion.commands.executeCommand("toc.show");
@@ -1447,10 +1693,10 @@ export async function activate(ctx) {
   const dSlash2 = window.zion.slash?.registerCommand?.({
     id: "toc.insert",
     trigger: ["insert-toc", "toc-insert"],
-    title: "插入目录",
-    description: "在光标位置插入 Markdown 目录",
-    category: "markdown",
-    icon: "📋",
+    title: t("cmd.insert", "插入目录"),
+    description: t("slash.insert.description", "在光标位置插入 Markdown 目录"),
+    category: t("category.toc", "目录"),
+    icon: "$(list-tree)",
     priority: 90,
     execute: () => {
       window.zion.commands.executeCommand("toc.insert");
@@ -1460,10 +1706,10 @@ export async function activate(ctx) {
   const dSlash3 = window.zion.slash?.registerCommand?.({
     id: "toc.toggleGroupByRole",
     trigger: ["toc-group", "group-toc"],
-    title: "切换目录分组",
-    description: "按角色分组显示目录",
-    category: "navigation",
-    icon: "📑",
+    title: t("cmd.toggleGroupByRole", "切换目录分组"),
+    description: t("slash.group.description", "按角色分组显示目录"),
+    category: t("category.toc", "目录"),
+    icon: "$(book)",
     priority: 80,
     execute: () => {
       window.zion.commands.executeCommand("toc.toggleGroupByRole");
@@ -1486,40 +1732,55 @@ export async function activate(ctx) {
   const d5 = window.zion.editor.registerDecorator({
     id: "dev.toc.ui",
     apply(editor) {
+      let ui = null;
       try {
-        // Find CM6 editor root
-        const edEl = document.querySelector(".cm-editor");
+        const panelId = getPanelIdFromEditor(editor);
+        const instanceKey = getTOCInstanceKey(editor);
+        const edEl = getEditorEl(editor);
         if (!edEl) return { dispose() {} };
+        ui = instanceKey ? tocInstances.get(instanceKey) : null;
+        if (!ui) {
+          ui = createTOCUI();
+          ui.instanceKey = instanceKey || null;
+          ui.panelId = panelId || null;
+          ui.collapsedMode = getTOCCollapsedMode();
+          ui.editor = editor;
+          ui.debouncedUpdate = debounce(() => updateTOCList(ui), 120);
+          if (instanceKey) tocInstances.set(instanceKey, ui);
+        } else {
+          ui.collapsedMode = getTOCCollapsedMode();
+          ui.editor = editor;
+        }
+        tocUI = ui;
 
-        // Build UI once
-        if (!tocUI.wrapper) {
+        const needsRebuild = !ui.wrapper || ui.editorEl !== edEl || !ui.wrapper.contains(edEl);
+        if (needsRebuild && ui.wrapper) {
+          teardownTOCLayout(ui);
+        }
+
+        // Build UI once per actual editor DOM
+        if (!ui.wrapper) {
           const originalParent = edEl.parentElement;
           const originalNextSibling = edEl.nextSibling;
 
-          const wrapper = document.createElement("div");
-          wrapper.id = "zion-toc-wrapper";
-          wrapper.style.position = "relative";
-          wrapper.style.width = "100%";
-          wrapper.style.height = "100%";
-          wrapper.style.display = "block";
-
-          // Insert wrapper before editor and move editor inside it
+          const wrapper = createTOCWrapper();
+          // Insert a simple layout at the editor-slot level: TOC on the left, real editor on the right.
           originalParent.insertBefore(wrapper, edEl);
           wrapper.appendChild(edEl);
 
           // Left side panel
           const panel = document.createElement("div");
-          panel.id = "zion-toc-sidepanel";
+          panel.className = "zion-toc-sidepanel";
           panel.style.display = "none";
-          panel.style.flex = "0 0 240px";
-          panel.style.width = "240px";
-          panel.style.minWidth = "220px";
+          panel.style.flex = "0 0 268px";
+          panel.style.width = "268px";
+          panel.style.minWidth = "240px";
           panel.style.maxWidth = "480px";
           panel.style.height = "100%";
           // Prevent horizontal scrolling in the TOC side panel; allow only vertical scrolling
-          panel.style.display = "flex";
+          panel.style.display = "none";
           panel.style.flexDirection = "column";
-          panel.style.background = "var(--ext-toc-bg, var(--bg))";
+          panel.style.background = "var(--ext-toc-bg, var(--editor-bg, var(--bg)))";
           // remove right border to avoid visual divider
           panel.style.borderRight = "none";
           // panel.style.boxShadow = "2px 0 8px rgba(0,0,0,0.15)";
@@ -1541,7 +1802,7 @@ export async function activate(ctx) {
           let isResizing = false;
           let startX = 0;
           let startWidth = 0;
-          const minWidth = 220;
+          const minWidth = 240;
           const maxWidth = 480;
 
           resizer.addEventListener("mousedown", (e) => {
@@ -1571,15 +1832,16 @@ export async function activate(ctx) {
             }
           });
 
-          // Insert panel before editor element (so it sits on the left in flex)
+          // Insert panel before the real editor so TOC never becomes part of CodeMirror's DOM.
           wrapper.insertBefore(panel, edEl);
 
           // Button toolbar (right-aligned, icons only)
           const toolbar = document.createElement("div");
           toolbar.style.display = "flex";
           toolbar.style.alignItems = "center";
-          toolbar.style.gap = "6px";
-          toolbar.style.padding = "8px 0px 8px 35px";
+          toolbar.style.gap = "8px";
+          toolbar.style.padding = "10px 8px 8px";
+          toolbar.style.justifyContent = "flex-start";
           toolbar.style.flexShrink = "0";
           toolbar.style.flexGrow = "0";
           // ensure toolbar spans full width and align buttons to the right
@@ -1587,7 +1849,7 @@ export async function activate(ctx) {
 
           // 分组模式切换按钮
           const groupBtn = document.createElement("button");
-          groupBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm2 4v-2H3v2h2zM3 9h2V7H3v2zm12 12h2v-2h-2v2zm4-18H9v2h10v10h2V3zm-2 14h-2v2h2v-2zm-4 4h-2v2h2v-2zM9 17h2v-2H9v2zm0-4h2v-2H9v2zm0-4h2V7H9v2zm4 8h2v-2h-2v2zm0-8h2V7h-2v2zm4 4h2v-2h-2v2zm0-4h2V7h-2v2z"/></svg>';
+          groupBtn.innerHTML = iconHtml("list-tree", 14);
           groupBtn.setAttribute('aria-label', '按角色分组 TOC');
           groupBtn.title = "按角色分组 TOC";
           // Use the same base visual style as other toolbar buttons (icon-only, no border/background)
@@ -1600,10 +1862,10 @@ export async function activate(ctx) {
           groupBtn.style.cursor = "pointer";
           groupBtn.style.opacity = "0.7";
           groupBtn.style.transition = "opacity 120ms ease";
-          tocUI.groupBtn = groupBtn;
+          ui.groupBtn = groupBtn;
           groupBtn.onclick = () => window.zion.commands.executeCommand("toc.toggleGroupByRole");
           toolbar.appendChild(groupBtn);
-          syncGroupBtnUI();
+          syncGroupBtnUI(ui);
 
           const toggleAllBtn = document.createElement("button");
           toggleAllBtn.setAttribute('aria-label', '折叠全部');
@@ -1632,17 +1894,17 @@ export async function activate(ctx) {
                 tocState.collapsed.clear();
                 for (const id of tocState.allCollapsibleIds) tocState.collapsed.add(id);
               }
-              updateTOCList();
+              updateTOCList(ui);
             } catch {}
           };
           toolbar.appendChild(toggleAllBtn);
 
-          tocUI.toggleAllBtn = toggleAllBtn;
-          syncToggleAllBtn();
+          ui.toggleAllBtn = toggleAllBtn;
+          syncToggleAllBtn(ui);
 
           // 复制按钮（内联 clipboard SVG）
           const copyBtn = document.createElement("button");
-          copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+          copyBtn.innerHTML = iconHtml("copy", 14);
           copyBtn.setAttribute('aria-label', '复制 TOC 到剪贴板');
           copyBtn.title = "复制 TOC 到剪贴板";
           copyBtn.style.background = "transparent";
@@ -1682,7 +1944,7 @@ export async function activate(ctx) {
 
           // 插入按钮（内联 plus SVG）
           const insertBtn = document.createElement("button");
-          insertBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M19 13H13v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>';
+          insertBtn.innerHTML = iconHtml("add", 14);
           insertBtn.setAttribute('aria-label', '插入 TOC 到光标处');
           insertBtn.title = "插入 TOC 到光标处";
           insertBtn.style.background = "transparent";
@@ -1701,7 +1963,7 @@ export async function activate(ctx) {
 
           // 收起按钮（使用内联 chevron-left SVG）
           const collapseBtn = document.createElement("button");
-          collapseBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
+          collapseBtn.innerHTML = iconHtml("chevron-left", 14);
           collapseBtn.setAttribute('aria-label', '收起目录');
           collapseBtn.title = "收起目录";
           collapseBtn.style.background = "transparent";
@@ -1714,7 +1976,8 @@ export async function activate(ctx) {
           collapseBtn.style.opacity = "0.7";
           collapseBtn.style.transition = "opacity 120ms ease";
           collapseBtn.onclick = () => {
-            closeSideTOC();
+            setTOCCollapsedMode("manual-collapsed");
+            closeSideTOC(ui);
           };
           toolbar.appendChild(collapseBtn);
 
@@ -1737,7 +2000,7 @@ export async function activate(ctx) {
           panel.appendChild(toolbar);
 
           const list = document.createElement("div");
-          list.id = "zion-toc-list";
+          list.className = "zion-toc-list";
           list.style.flex = "1";
           list.style.overflowY = "auto";
           list.style.overflowX = "hidden";
@@ -1747,14 +2010,14 @@ export async function activate(ctx) {
           panel.appendChild(list);
 
           // Save refs
-          tocUI.wrapper = wrapper;
-          tocUI.panel = panel;
-          tocUI.button = null;
-          tocUI.editorEl = edEl;
-          tocUI.scrollerEl = edEl.querySelector(".cm-scroller") || edEl;
-          tocUI.prevScrollerMarginLeft = "";
-          tocUI.originalParent = originalParent;
-          tocUI.originalNextSibling = originalNextSibling;
+          ui.wrapper = wrapper;
+          ui.panel = panel;
+          ui.button = null;
+          ui.editorEl = edEl;
+          ui.scrollerEl = edEl.querySelector(".cm-scroller") || edEl;
+          ui.prevScrollerMarginLeft = "";
+          ui.originalParent = originalParent;
+          ui.originalNextSibling = originalNextSibling;
         }
       } catch {}
 
@@ -1763,22 +2026,22 @@ export async function activate(ctx) {
         constructor(view) {
           this.view = view;
           this.scrollHandler = () => {
-            try { scheduleComputeActiveTOCByVisibility(this.view); } catch {}
+            try { scheduleComputeActiveTOCByVisibility(this.view, editor); } catch {}
           };
           try {
             view.scrollDOM?.addEventListener?.('scroll', this.scrollHandler, { passive: true });
           } catch {}
-          try { scheduleComputeActiveTOCByVisibility(view); } catch {}
+          try { scheduleComputeActiveTOCByVisibility(view, editor); } catch {}
         }
         update(u) {
           this.view = u.view;
           try {
             if (u.docChanged || u.viewportChanged || u.selectionSet) {
-              scheduleComputeActiveTOCByVisibility(u.view);
+              scheduleComputeActiveTOCByVisibility(u.view, editor);
             }
           } catch {}
-          if (sidePanelOpen && tocUI.panel && (u.docChanged || u.viewportChanged || u.selectionSet)) {
-            debouncedUpdate();
+          if (ui.open && ui.panel && (u.docChanged || u.viewportChanged || u.selectionSet)) {
+            ui.debouncedUpdate?.();
           }
         }
         destroy() {
@@ -1788,27 +2051,29 @@ export async function activate(ctx) {
 
       // Keep editor scroller left-aligned when width mode changes while TOC is open
       const widthModeSub = window.zion.state.onDidChange("ui.editorWidthMode", () => {
-        if (sidePanelOpen) {
-          applySideLayout();
+        if (ui.open) {
+          applySideLayout(ui);
         }
       });
       // 监听分组模式状态变化以同步按钮样式与列表
       const groupModeSub = window.zion.state.onDidChange("toc.groupByRole", () => {
         try {
-          try { syncGroupBtnUI(); } catch {}
-          if (sidePanelOpen) debouncedUpdate();
+          try { syncGroupBtnUI(ui); } catch {}
+          if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
+      const activeHeadingKey = getActiveHeadingStateKey(ui);
+      const activeBlockKey = getActiveBlockStateKey(ui);
       // 点击子目录时的高亮状态变化，触发列表重绘
-      const activeHeadingSub = window.zion.state.onDidChange("toc.activeHeadingId", () => {
+      const activeHeadingSub = window.zion.state.onDidChange(activeHeadingKey, () => {
         try {
-          if (sidePanelOpen) debouncedUpdate();
+          if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
       // 当前块（角色）高亮状态变化，触发列表重绘
-      const activeBlockSub = window.zion.state.onDidChange("toc.activeBlockId", () => {
+      const activeBlockSub = window.zion.state.onDidChange(activeBlockKey, () => {
         try {
-          if (sidePanelOpen) debouncedUpdate();
+          if (ui.open) ui.debouncedUpdate?.();
         } catch {}
       });
 
@@ -1816,38 +2081,29 @@ export async function activate(ctx) {
         try {
           const t = document?.documentElement?.dataset?.zionDeviceType;
           if (t === "mobile" || window.innerWidth < 768) {
-            try { closeSideTOC(); } catch {}
+            try { closeSideTOC(ui); } catch {}
             try { document.getElementById("zion-toc-panel")?.remove?.(); } catch {}
             return;
           }
         } catch {
           // ignore
         }
-        if (!sidePanelOpen) return;
-        applySideLayout();
+        syncSideTOCVisibility(ui);
+        if (!ui.open) return;
+        applySideLayout(ui);
         try {
-          if (sideOverlayMode) closeSideTOC();
+          if (ui.overlay) closeSideTOC(ui);
         } catch {}
       };
       window.addEventListener("resize", onResize);
+      observeTOCContainerResize(ui, onResize);
 
-      // Open TOC side panel by default
+      // Open TOC side panel by default when auto mode is active and width is sufficient.
       try {
-        const t = document?.documentElement?.dataset?.zionDeviceType;
-        if (t !== "mobile" && !sidePanelOpen && window.innerWidth >= 768) {
-          openSideTOC();
-          try {
-            if (sideOverlayMode) closeSideTOC();
-          } catch {}
-        }
+        syncSideTOCVisibility(ui);
       } catch {
         try {
-          if (!sidePanelOpen && window.innerWidth >= 768) {
-            openSideTOC();
-            try {
-              if (sideOverlayMode) closeSideTOC();
-            } catch {}
-          }
+          syncSideTOCVisibility(ui);
         } catch {}
       }
 
@@ -1856,35 +2112,17 @@ export async function activate(ctx) {
         dispose() {
           try {
             // Close panel if open and restore editor DOM
-            closeSideTOC();
-            if (tocUI.button) tocUI.button.remove();
-            if (tocUI.panel) tocUI.panel.remove();
-            if (tocUI.originalParent && tocUI.editorEl) {
-              tocUI.originalParent.insertBefore(tocUI.editorEl, tocUI.originalNextSibling || null);
-            }
-            if (tocUI.wrapper) tocUI.wrapper.remove();
+            teardownTOCLayout(ui);
 
             // Dispose subscriptions
             try { widthModeSub?.dispose?.(); } catch {}
             try { groupModeSub?.dispose?.(); } catch {}
             try { activeHeadingSub?.dispose?.(); } catch {}
             try { activeBlockSub?.dispose?.(); } catch {}
+            try { ui.resizeObserver?.disconnect?.(); } catch {}
             try { window.removeEventListener("resize", onResize); } catch {}
-
-            // Reset refs
-            tocUI.wrapper = null;
-            tocUI.panel = null;
-            tocUI.button = null;
-            tocUI.editorEl = null;
-            tocUI.scrollerEl = null;
-            tocUI.prevScrollerMarginLeft = "";
-            tocUI.prevScrollerMarginRight = "";
-            tocUI.prevWrapperJustifyContent = "";
-            tocUI.prevEditorFlex = "";
-            tocUI.prevEditorWidth = "";
-            tocUI.originalParent = null;
-            tocUI.originalNextSibling = null;
-            sidePanelOpen = false;
+            ui.resizeObserver = null;
+            if (ui.instanceKey) tocInstances.delete(ui.instanceKey);
           } catch {}
         }
       };

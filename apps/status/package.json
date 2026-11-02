@@ -1,0 +1,1 @@
+{"name":"zioon-status","private":true,"type":"commonjs","version":"0.1.0","dependencies":{"acme-client":"5.4.0","@alicloud/fc20230330":"4.8.4","@alicloud/openapi-client":"0.4.15"},"engines":{"node":">=20"}}

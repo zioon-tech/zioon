@@ -1,0 +1,53 @@
+{
+  "name": "dev.comments",
+  "version": "0.0.2",
+  "description": "Create anchored comment threads around editor selections.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.comments",
+    "name": "Comments",
+    "version": "0.0.2",
+    "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "评论",
+        "en-US": "Comments"
+      },
+      "description": {
+        "zh-CN": "围绕编辑器选区创建锚定评论线程。",
+        "en-US": "Create anchored comment threads around editor selections."
+      },
+      "icon": "comment-discussion",
+      "category": "productivity",
+      "features": {
+        "zh-CN": [
+          "围绕编辑器选区创建锚定评论线程。"
+        ],
+        "en-US": [
+          "Create anchored comment threads around editor selections."
+        ]
+      }
+    },
+    "contributes": {
+      "commands": [
+        {
+          "id": "comments.createFromSelection",
+          "title": "Create Comment From Selection",
+          "category": "Comments"
+        },
+        {
+          "id": "comments.openPanel",
+          "title": "Open Comments",
+          "category": "Comments"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

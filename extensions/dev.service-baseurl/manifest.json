@@ -1,0 +1,41 @@
+{
+  "name": "dev.service-baseurl",
+  "version": "0.0.1",
+  "description": "Manage backend service base URLs in the Settings Center.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.service-baseurl",
+    "name": "Service Base URLs",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "服务地址",
+        "en-US": "Service Base URLs"
+      },
+      "description": {
+        "zh-CN": "在设置中心统一管理后端服务地址。",
+        "en-US": "Manage backend service base URLs in the Settings Center."
+      },
+      "icon": "plug",
+      "category": "integration",
+      "features": {
+        "zh-CN": [
+          "在设置中心统一管理后端服务地址。"
+        ],
+        "en-US": [
+          "Manage backend service base URLs in the Settings Center."
+        ]
+      }
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    },
+    "nameKey": "dev.plugins.pluginName.dev.service-baseurl",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.service-baseurl"
+  }
+}

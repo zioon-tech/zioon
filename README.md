@@ -1,4 +1,12 @@
-# Zion Next (CM6) — Developer Guide
+# Zioon
+
+[官网与文档](https://zioon.tech) · [工作台](https://workbench.zioon.tech) · [状态](https://status.zioon.tech) · [仓库与发布归属](docs/operations/REPOSITORY-AND-RELEASE.md)
+
+本仓库维护 Runtime、Workbench、Mobile、CLI、统一账户协议、Marketplace 和 Zioon 官网与文档。ADC 与 Memory 的服务、SDK、官网和文档分别位于独立产品仓库。
+
+当前开发使用 Node 22.18.0、npm 10.9.3 和 `npm ci`。具体服务入口与 CI 见 [仓库与发布归属](docs/operations/REPOSITORY-AND-RELEASE.md)。
+
+以下保留编辑器内核的原始开发说明。
 
 Zion Next 是一个基于 CodeMirror 6 的最小化脚手架，用于快速搭建“大模型交互编辑器”的核心与扩展体系验证。该工程提供：
 - CM6 编辑器内核（EditorCore）与安全代理（EditorProxy）
@@ -28,11 +36,79 @@ npm run dev
 # 默认端口 5174，浏览器访问 http://localhost:5174
 ```
 
+## 选择部署模式
+
+| 场景 | 命令入口 |
+| --- | --- |
+| 只在当前电脑使用 | `npm run deploy:configure -- --mode local` |
+| 有公网服务器，只有 IP | `npm run deploy:configure -- --mode ip --public-ip <IPv4>` |
+| 有公网服务器和正式域名 | `npm run deploy:configure -- --mode domain --domain <域名> --public-ip <IPv4>` |
+
+配置命令默认只输出计划，不修改系统；远程服务器确认后再增加 `--apply`。完整前置条件、
+端口、配对、迁移和验收步骤见
+[部署模式指南](./docs/operations/DEPLOYMENT-MODES.md)。
+
+## 手机或其他电脑访问
+
+推荐使用临时 HTTPS Tunnel，不需要开放本机端口，也不需要手工配置证书。
+该方式仅适用于允许运行 `cloudflared` 的非办公主机；受管公司电脑只应运行
+Device Connector，并连接部署在外部服务器上的 Runtime。
+
+```bash
+# macOS 首次使用
+brew install cloudflared
+
+# 以后只运行这一条
+npm run remote:start
+```
+
+命令会自动构建并启动 Desktop Workbench、Mobile Client、Runtime 和安全 Tunnel，
+然后在终端显示二维码、一次性配对码和访问地址。配对后可访问：
+
+```text
+/           Desktop Workbench
+/mobile/   Mobile Client
+```
+
+要让当前电脑提供本地文件和终端能力：
+
+1. 在 Workbench 打开“设置 → 服务 → 设备与远程访问”。
+2. 选择“工具电脑”，生成一次性配对码。
+3. 在项目目录运行：
+
+```bash
+npm run device:connect -- \
+  --runtime-url <Workbench 显示的 HTTPS 地址> \
+  --pairing-code <一次性配对码>
+```
+
+Connector 默认把当前目录作为 workspace，并自动复用或创建该目录的本地 terminal
+session。`local-tools` 始终只监听 `127.0.0.1`。
+
+已有域名和 HTTPS 反向代理时：
+
+```bash
+npm run remote:start -- --public-url https://zion.example.com
+```
+
+详细生产部署和当前安全边界见
+[单租户远程部署](./docs/architecture/REMOTE-SINGLE-TENANT-DEPLOYMENT.md)。
+多 Node 从当前实现走向稳定身份、可靠投递、生命周期治理和规模化连接平面的执行顺序见
+[Node Control Plane 演进路线图](./docs/architecture/NODE-CONTROL-PLANE-ROADMAP.md)。
+当前阿里云实例、凭据位置、发布和排障交接见
+[远程部署运维交接](./docs/operations/REMOTE-DEPLOYMENT-RUNBOOK.md)。
+
 ## 构建与预览
 
 ```bash
 # 生产构建
 npm run build
+
+# 独立 Mobile Client 构建到 dist/mobile
+npm run build:mobile
+
+# 依次构建 Desktop 和 Mobile
+npm run build:all
 
 # 本地预览构建产物
 npm run preview
@@ -192,4 +268,3 @@ const disp = window.zion.editor.registerPasteHandler({
 - [docs/Development.md](./docs/Development.md)
 - [docs/Roadmap.md](./docs/Roadmap.md)
 - [docs/Changelog.md](./docs/Changelog.md)
-=======

@@ -11,8 +11,16 @@ import type {
   PluginLoaderOptions,
   PluginValidationResult,
   PluginError,
-  PluginErrorType
+  PluginErrorType,
+  PluginEntryKind,
+  PluginHostKind,
+  NormalizedPluginManifest
 } from './types';
+import {
+  normalizePluginManifest,
+  validatePluginManifest
+} from '../../packages/plugin-sdk/src/manifest.mjs';
+import { createPluginModuleBlobUrl, normalizePluginModulePath } from './module-urls';
 
 /**
  * 插件加载器
@@ -52,12 +60,13 @@ export class PluginLoader {
       if (!validation.valid) {
         throw new Error(`Plugin validation failed: ${validation.errors.join(', ')}`);
       }
+      const contract = normalizePluginManifest(manifest);
 
       // 创建插件信息
       const pluginInfo: PluginInfo = {
-        id: this.getPluginId(manifest),
-        name: this.getPluginName(manifest),
-        version: this.getPluginVersion(manifest),
+        id: contract.id,
+        name: contract.name,
+        version: contract.version,
         description: this.getPluginDescription(manifest),
         author: this.getPluginAuthor(manifest),
         license: this.getPluginLicense(manifest),
@@ -68,7 +77,9 @@ export class PluginLoader {
         peerDependencies: this.getPeerDependencies(manifest),
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        isLegacy: format === 'legacy'
+        isLegacy: format === 'legacy',
+        origin: pluginPath.startsWith('/extensions/') ? 'builtin' : 'external',
+        contract
       };
 
       // 缓存插件信息
@@ -180,47 +191,28 @@ export class PluginLoader {
    * 验证插件
    */
   private async validatePlugin(manifest: PluginManifest | ExtensionManifest, pluginPath: string): Promise<PluginValidationResult> {
-    const errors: string[] = [];
-    const warnings: string[] = [];
+    const contractValidation = validatePluginManifest(manifest);
+    const errors: string[] = [...contractValidation.errors];
+    const warnings: string[] = [...contractValidation.warnings];
 
     try {
-      if (this.isModernManifest(manifest)) {
-        // 验证新格式
-        const zion = manifest.zion;
-        
-        if (!zion.id) {
-          errors.push('Plugin ID is required');
-        } else if (!this.isValidPluginId(zion.id)) {
-          errors.push('Invalid plugin ID format');
-        }
-
-        if (!zion.name) {
-          errors.push('Plugin name is required');
-        }
-
-        if (!zion.version) {
-          errors.push('Plugin version is required');
-        } else if (!this.isValidVersion(zion.version)) {
-          errors.push('Invalid version format');
-        }
-
-        if (!zion.main) {
-          errors.push('Plugin main entry is required');
-        } else {
-          // 检查主文件是否存在
-          const mainPath = this.joinPath(pluginPath, zion.main);
+      if (contractValidation.valid) {
+        for (const entry of this.getWorkbenchEntries(contractValidation.normalized)) {
+          if (/^(blob:|data:|https?:|internal:)/i.test(entry)) continue;
+          const entryPath = this.joinPath(pluginPath, entry);
           try {
-            const response = await fetch(mainPath);
+            const response = await fetch(entryPath);
             if (!response.ok) {
-              errors.push(`Main entry file not found: ${zion.main}`);
+              errors.push(`Workbench entry file not found: ${entry}`);
             }
           } catch {
-            errors.push(`Cannot access main entry file: ${zion.main}`);
+            errors.push(`Cannot access Workbench entry file: ${entry}`);
           }
         }
 
+        const zion = this.isModernManifest(manifest) ? manifest.zion : undefined;
         // 验证依赖
-        if (zion.dependencies) {
+        if (zion?.dependencies) {
           for (const [depId, version] of Object.entries(zion.dependencies)) {
             if (!this.isValidPluginId(depId)) {
               errors.push(`Invalid dependency ID: ${depId}`);
@@ -231,14 +223,21 @@ export class PluginLoader {
           }
         }
 
-      } else {
-        // 验证旧格式（已废弃）
-        errors.push('Extension format is no longer supported. Please use manifest.json format.');
-      }
-
-      // 通用验证
-      if (manifest.version && !this.isValidVersion(manifest.version)) {
-        errors.push('Invalid version format');
+        const skills = zion?.contributes?.skills;
+        if (skills != null) {
+          if (!Array.isArray(skills)) {
+            errors.push('Skills contribution must be an array');
+          } else {
+            for (const skillPath of skills) {
+              const value = typeof skillPath === 'string' ? skillPath.trim() : '';
+              if (!value) {
+                errors.push('Skill contribution must be a non-empty relative path');
+              } else if (value.startsWith('/') || value.includes('..')) {
+                errors.push(`Skill contribution path must stay inside the plugin: ${value}`);
+              }
+            }
+          }
+        }
       }
 
     } catch (error) {
@@ -260,30 +259,23 @@ export class PluginLoader {
     try {
       this.log(`Loading module for plugin: ${pluginInfo.id}`, 'debug');
 
-      const manifest = pluginInfo.manifest;
-      let mainPath: string;
-
-      if (this.isModernManifest(manifest)) {
-        const rawCandidate = manifest.zion.main || 'index.js';
-        // 支持绝对路径（blob:/data:/http(s):）
-        if (/^(blob:|data:|https?:|internal:)/i.test(rawCandidate)) {
-          mainPath = rawCandidate;
-        } else {
-          const candidate = rawCandidate.replace(/^\.\/+/, '');
-          mainPath = this.joinPath(pluginInfo.path, candidate);
-        }
-      } else {
-        const rawCandidate = (manifest as any).main || 'index.js';
-        if (/^(blob:|data:|https?:|internal:)/i.test(rawCandidate)) {
-          mainPath = rawCandidate;
-        } else {
-          const candidate = String(rawCandidate).replace(/^\.\/+/, '');
-          mainPath = this.joinPath(pluginInfo.path, candidate);
-        }
+      await this.preparePackageEntries(pluginInfo);
+      const contract = pluginInfo.contract || normalizePluginManifest(pluginInfo.manifest);
+      if (!contract.hosts.workbench) {
+        throw new Error(`Plugin ${pluginInfo.id} is not compatible with the workbench host`);
       }
-
-      // 动态导入模块
-      const module = await this.dynamicImport(mainPath);
+      const entries = this.getWorkbenchEntries(contract);
+      // #region debug-point C:module-entry
+      if ((globalThis as any).__zionDebugPluginActivationState === true) void fetch("http://127.0.0.1:7777/event", { method: "POST", body: JSON.stringify({ sessionId: "plugin-activation-state", runId: (globalThis as any).__zionDebugPluginActivationRunId || "pre-fix-3", hypothesisId: "C", location: "PluginLoader.loadModule", msg: "[DEBUG] Actual module entry before import", data: { id: pluginInfo.id, path: pluginInfo.path, entries, sourceEntries: pluginInfo.sourceEntries, scripts: Object.keys(pluginInfo.scriptContents || {}), hasStoredScripts: Boolean(pluginInfo.scriptStorageKey) }, ts: Date.now() }) }).catch(() => {});
+      // #endregion
+      if (!entries.length) {
+        throw new Error(`Plugin ${pluginInfo.id} has no Workbench or renderer entry`);
+      }
+      const modules: PluginModule[] = [];
+      for (const entry of entries) {
+        modules.push(await this.dynamicImport(this.resolveEntry(pluginInfo.path, entry)));
+      }
+      const module = this.composeWorkbenchModules(modules);
       
       this.log(`Module loaded successfully for plugin: ${pluginInfo.id}`, 'debug');
       return module;
@@ -301,6 +293,131 @@ export class PluginLoader {
     }
   }
 
+  private async preparePackageEntries(pluginInfo: PluginInfo): Promise<void> {
+    const contract = pluginInfo.contract || normalizePluginManifest(pluginInfo.manifest);
+    const packageSource = Boolean(
+      pluginInfo.sourceEntries
+      || pluginInfo.scriptStorageKey
+      || /\/plugins\/[^/]+\/download(?:[?#]|$)/.test(pluginInfo.path)
+      || /^file:.*\.zip$/i.test(pluginInfo.path)
+    );
+    if (!packageSource) return;
+
+    if (!pluginInfo.scriptContents || !pluginInfo.sourceEntries) {
+      // A persisted ZIP URL is an archive, never a module directory.
+      if (!/^https?:/i.test(pluginInfo.path)) {
+        throw new Error(`ZIP plugin ${pluginInfo.id} has no stored scripts; reinstall its archive`);
+      }
+      const { HttpPluginInstaller } = await import('./http-installer');
+      const installer = new HttpPluginInstaller({
+        baseUrl: pluginInfo.path,
+        timeout: this.options.timeout,
+        cache: false
+      });
+      const result = await installer.installFromUrl(pluginInfo.path);
+      if (!result.success || !result.plugin) {
+        throw new Error(`Cannot restore ZIP plugin ${pluginInfo.id}: ${result.error?.message || 'download failed'}`);
+      }
+      const restored = result.plugin;
+      if (restored.id !== pluginInfo.id || restored.version !== pluginInfo.version) {
+        installer.removeFromCache(restored.id);
+        for (const url of Object.values(restored.scriptBlobUrls || {})) URL.revokeObjectURL(url);
+        throw new Error(`ZIP plugin package changed; synchronize ${pluginInfo.id} before activation`);
+      }
+      Object.assign(pluginInfo, {
+        manifest: restored.manifest,
+        contract: restored.contract,
+        scriptContents: restored.scriptContents,
+        sourceEntries: restored.sourceEntries,
+        scriptBlobUrls: restored.scriptBlobUrls,
+        styleContents: restored.styleContents
+      });
+      return;
+    }
+
+    // Regenerate module URLs from owned sources at the activation boundary.
+    // Installer caches or earlier activations may have revoked old Blob URLs.
+    const entries = { ...contract.entries };
+    const cache = new Map<string, string>();
+    try {
+      for (const kind of ['workbench', 'renderer'] as const) {
+        const source = pluginInfo.sourceEntries[kind];
+        if (!source) continue;
+        entries[kind] = createPluginModuleBlobUrl({
+          entryPath: normalizePluginModulePath(source),
+          sources: pluginInfo.scriptContents,
+          cache
+        });
+      }
+    } catch (error) {
+      for (const url of cache.values()) URL.revokeObjectURL(url);
+      throw error;
+    }
+    for (const url of Object.values(pluginInfo.scriptBlobUrls || {})) URL.revokeObjectURL(url);
+    pluginInfo.contract = { ...contract, entries };
+    pluginInfo.scriptBlobUrls = Object.fromEntries(cache);
+  }
+
+  normalizeManifest(
+    manifest: PluginManifest | ExtensionManifest
+  ): NormalizedPluginManifest {
+    return normalizePluginManifest(manifest);
+  }
+
+  supportsHost(pluginInfo: PluginInfo, host: PluginHostKind): boolean {
+    const contract = pluginInfo.contract || this.normalizeManifest(pluginInfo.manifest);
+    return contract.hosts[host] === true;
+  }
+
+  getEntry(pluginInfo: PluginInfo, kind: PluginEntryKind): string {
+    const contract = pluginInfo.contract || this.normalizeManifest(pluginInfo.manifest);
+    return contract.entries[kind] || '';
+  }
+
+  private getWorkbenchEntries(contract: NormalizedPluginManifest): string[] {
+    return [...new Set([
+      contract.entries.workbench,
+      contract.entries.renderer
+    ].filter((entry): entry is string => Boolean(entry)))];
+  }
+
+  private resolveEntry(pluginPath: string, entry: string): string {
+    if (/^(blob:|data:|https?:|internal:)/i.test(entry)) return entry;
+    return this.joinPath(pluginPath, entry.replace(/^\.\/+/, ''));
+  }
+
+  private composeWorkbenchModules(modules: PluginModule[]): PluginModule {
+    if (modules.length === 1) return modules[0];
+    const activated: PluginModule[] = [];
+    return {
+      async activate(context) {
+        try {
+          for (const module of modules) {
+            const activate = module.activate
+              || (module as any).activateRendererPlugin;
+            if (typeof activate === 'function') await activate(context);
+            activated.push(module);
+          }
+        } catch (error) {
+          for (const module of [...activated].reverse()) {
+            const deactivate = module.deactivate
+              || (module as any).deactivateRendererPlugin;
+            if (typeof deactivate === 'function') await deactivate();
+          }
+          throw error;
+        }
+      },
+      async deactivate() {
+        for (const module of [...activated].reverse()) {
+          const deactivate = module.deactivate
+            || (module as any).deactivateRendererPlugin;
+          if (typeof deactivate === 'function') await deactivate();
+        }
+        activated.length = 0;
+      }
+    };
+  }
+
   /**
    * 动态导入模块
    */
@@ -308,7 +425,19 @@ export class PluginLoader {
     try {
       if (path.startsWith('internal:')) {
         const key = path.slice('internal:'.length);
-        const extensionModules = (import.meta as any).glob('/extensions/**/*.{js,ts,jsx,tsx}') as Record<
+        const extensionModules = (import.meta as any).glob([
+          '/extensions/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.identity/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.byteintl-model/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.adc-studio/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools-entry.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/skills/**/*.{js,mjs,ts,jsx,tsx}'
+        ]) as Record<
           string,
           () => Promise<any>
         >;
@@ -328,7 +457,19 @@ export class PluginLoader {
 
       const normalizedExtensionPath = this.normalizeExtensionsPath(path);
       if (normalizedExtensionPath) {
-        const extensionModules = (import.meta as any).glob('/extensions/**/*.{js,ts,jsx,tsx}') as Record<
+        const extensionModules = (import.meta as any).glob([
+          '/extensions/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.identity/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.byteintl-model/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/dev.adc-studio/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/runtime/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools-entry.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/tools/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/cli/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/skills/**/*.{js,mjs,ts,jsx,tsx}'
+        ]) as Record<
           string,
           () => Promise<any>
         >;

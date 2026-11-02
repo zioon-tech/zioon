@@ -1,0 +1,31 @@
+{
+  "region": "cn-shanghai",
+  "zone": "cn-shanghai-f",
+  "teamId": "a650d94a-8add-4c40-9995-6d94d99cf4d6",
+  "fileSystemId": "030pngfn34jnuh0y0mx",
+  "vpcId": "vpc-uf6x43ew3juslwjylna6r",
+  "vSwitchId": "vsw-uf6qjx33v7ksqu8blr2q9",
+  "securityGroupId": "sg-uf6d0rkzvmmo2eqfs73k",
+  "templateId": "u3sxwxk9b0l0tiphkt32",
+  "templateVerified": true,
+  "workspaces": [
+    {
+      "label": "a",
+      "agenticSpaceId": "agentic-1whanme7512lomy9g",
+      "accessPointId": "ap-1xsz1qm78n7oudxv6",
+      "accessPointArn": "acs:nas:cn-shanghai:1803625616810276:accesspoint/ap-1xsz1qm78n7oudxv6",
+      "serverAddr": "ap-1xsz1qm78n7oudxv6.030pngfn34jnuh0y0mx-ncv19.cn-shanghai.nas.aliyuncs.com:/",
+      "roleName": "ZionSandboxPocA",
+      "roleArn": "acs:ram::1803625616810276:role/zionsandboxpoca"
+    },
+    {
+      "label": "b",
+      "agenticSpaceId": "agentic-1snn89w2o81hz31ea",
+      "accessPointId": "ap-0pxgbpd5aaqqhwhmj",
+      "accessPointArn": "acs:nas:cn-shanghai:1803625616810276:accesspoint/ap-0pxgbpd5aaqqhwhmj",
+      "serverAddr": "ap-0pxgbpd5aaqqhwhmj.030pngfn34jnuh0y0mx-ncv19.cn-shanghai.nas.aliyuncs.com:/",
+      "roleName": "ZionSandboxPocB",
+      "roleArn": "acs:ram::1803625616810276:role/zionsandboxpocb"
+    }
+  ]
+}

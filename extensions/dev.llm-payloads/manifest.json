@@ -1,0 +1,62 @@
+{
+  "name": "dev.llm-payloads",
+  "version": "0.0.1",
+  "description": "Inspect complete requests before they are sent to the model.",
+  "descriptionKey": "dev.llm-payloads.description",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.llm-payloads",
+    "name": "LLM Requests",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "LLM 请求",
+        "en-US": "LLM Requests"
+      },
+      "description": {
+        "zh-CN": "检查即将发送给模型的完整请求。",
+        "en-US": "Inspect complete requests before they are sent to the model."
+      },
+      "icon": "debug-alt",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "检查即将发送给模型的完整请求。"
+        ],
+        "en-US": [
+          "Inspect complete requests before they are sent to the model."
+        ]
+      }
+    },
+    "nameKey": "dev.llm-payloads.title",
+    "contributes": {
+      "commands": [
+        {
+          "id": "llmPayloads.open",
+          "title": "Open LLM Requests",
+          "titleKey": "dev.llm-payloads.cmd.open",
+          "category": "Developer",
+          "categoryKey": "dev.llm-payloads.category.developer"
+        },
+        {
+          "id": "llmPayloads.clear",
+          "title": "Clear LLM Requests",
+          "titleKey": "dev.llm-payloads.cmd.clear",
+          "category": "Developer",
+          "categoryKey": "dev.llm-payloads.category.developer"
+        }
+      ],
+      "styles": [
+        "./styles.css"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

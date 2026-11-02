@@ -1,0 +1,23 @@
+# Imported from the existing Caddyfile. Do not replace its existing site blocks.
+memory.zioon.tech {
+    @memoryMcp path /mcp /mcp/*
+    respond @memoryMcp 404
+    reverse_proxy 127.0.0.1:18991
+}
+
+auth.zioon.tech {
+    @accountEndpoints path /.well-known/openid-configuration /jwks /token /userinfo /revoke /device_authorization
+    handle @accountEndpoints {
+        rewrite * /api/v1/zioon{uri}
+        reverse_proxy 127.0.0.1:__ADC_PORT__ {
+            header_up Host adc.zioon.tech
+            header_up -Cookie
+        }
+    }
+    handle / {
+        redir https://memory.zioon.tech/account/login 302
+    }
+    handle {
+        respond 404
+    }
+}

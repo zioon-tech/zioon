@@ -4,6 +4,7 @@ import {
   auxiliaryBarRuntime,
   bindWorkbenchCore,
   bottomPanelRuntime,
+  inspectorRuntime,
   responsiveRuntime,
   sideBarRuntime
 } from "../src/ui/workbench/runtime";
@@ -48,6 +49,82 @@ function createState() {
 }
 
 describe("workbench runtime", () => {
+  it("keeps PDF blobs available to the inspector renderer", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+    const blob = new Blob(["%PDF-1.7"], { type: "application/pdf" });
+
+    inspectorRuntime.open({
+      id: "pdf-preview",
+      ownerId: "test",
+      title: "sample.pdf",
+      path: "/tmp/sample.pdf",
+      file: { kind: "pdf", blob, size: blob.size }
+    });
+
+    expect(inspectorRuntime.getActiveItem()?.file).toMatchObject({
+      kind: "pdf",
+      blob,
+      size: blob.size
+    });
+    inspectorRuntime.close("pdf-preview");
+  });
+
+  it("can update inspector width without emitting a full inspector change", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    let changes = 0;
+    const disp = inspectorRuntime.onDidChange(() => {
+      changes += 1;
+    });
+
+    inspectorRuntime.setWidth(620, { emit: false });
+
+    expect(state.get("ui.inspector.width")).toBe(620);
+    expect(state.get("ui.inspector.visible")).toBe(true);
+    expect(changes).toBe(0);
+
+    inspectorRuntime.setWidth(640);
+    expect(changes).toBe(1);
+
+    disp.dispose();
+  });
+
+  it("does not re-emit bottom panel visibility while resizing an already visible panel", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    let visibleChanges = 0;
+    state.onDidChange("ui.bottomPanel.visible", () => {
+      visibleChanges += 1;
+    });
+
+    state.set("ui.bottomPanel.visible", true);
+    bottomPanelRuntime.setHeight(360);
+
+    expect(state.get("ui.bottomPanel.height")).toBe(360);
+    expect(visibleChanges).toBe(1);
+  });
+
   it("activityBar.activateItem should show sidebar and activate mapped view", () => {
     const state = createState();
     bindWorkbenchCore({
@@ -75,7 +152,7 @@ describe("workbench runtime", () => {
     activityBarRuntime.activateItem("sessions.activity");
 
     expect(state.get("ui.activityBar.activeItemId")).toBe("sessions.activity");
-    expect(state.get("ui.sideBar.visible")).toBe(true);
+    expect(sideBarRuntime.isVisible()).toBe(true);
     expect(state.get("ui.sideBar.activeViewId")).toBe("sessions.list");
 
     dispItem.dispose();
@@ -107,7 +184,7 @@ describe("workbench runtime", () => {
     });
 
     activityBarRuntime.activateItem("sessions.activity");
-    expect(state.get("ui.sideBar.visible")).toBe(true);
+    expect(sideBarRuntime.isVisible()).toBe(true);
 
     activityBarRuntime.activateItem("sessions.activity");
     expect(state.get("ui.sideBar.visible")).toBe(false);
@@ -160,7 +237,41 @@ describe("workbench runtime", () => {
     dispView.dispose();
   });
 
-  it("activityBar item with auxiliaryBarViewId should toggle auxiliary bar visibility", () => {
+  it("syncs the active Activity item when a Bottom Panel tab is selected", () => {
+    const state = createState();
+    bindWorkbenchCore({
+      state,
+      events: {
+        emit: () => {},
+        on: () => ({ dispose() {} })
+      }
+    });
+
+    const view = bottomPanelRuntime.registerView({
+      id: "core.output",
+      pluginId: "core",
+      title: "日志",
+      component: { render: () => {} }
+    });
+    const item = activityBarRuntime.registerItem({
+      id: "core.run-log.activity",
+      pluginId: "core",
+      icon: "$(output)",
+      tooltip: "日志",
+      bottomPanelViewId: "core.output",
+      order: 80
+    });
+
+    bottomPanelRuntime.activateView("core.output");
+
+    expect(state.get("ui.activityBar.activeItemId")).toBe("core.run-log.activity");
+    expect(state.get("ui.bottomPanel.visible")).toBe(true);
+
+    item.dispose();
+    view.dispose();
+  });
+
+  it("keeps legacy auxiliary Activity items callable but omits them from the visible list", () => {
     const state = createState();
     bindWorkbenchCore({
       state,
@@ -183,6 +294,8 @@ describe("workbench runtime", () => {
       auxiliaryBarViewId: "preview.view",
       order: 30
     });
+
+    expect(activityBarRuntime.getItems().some((item) => item.id === "preview.activity")).toBe(false);
 
     activityBarRuntime.activateItem("preview.activity");
     expect(state.get("ui.activityBar.activeItemId")).toBe("preview.activity");

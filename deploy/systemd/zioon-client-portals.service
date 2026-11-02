@@ -1,0 +1,30 @@
+[Unit]
+Description=Zioon Workbench, Mobile and Admin browser gateways
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zion
+Group=zion
+WorkingDirectory=/opt/zion-next
+Environment=NODE_ENV=production
+Environment=ZIOON_PORTAL_SESSION_KEY_FILE=/var/lib/zioon-portals/session.key
+Environment=ZIOON_WORKBENCH_DIST=/srv/zioon-portals/current/workbench
+Environment=ZIOON_MOBILE_DIST=/srv/zioon-portals/current/mobile
+Environment=ZIOON_ADMIN_DIST=/srv/zioon-portals/current/admin
+ExecStart=/usr/local/bin/node /opt/zion-next/apps/client-portal/server/main.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/zioon-portals /var/lib/zioon-portals
+MemoryMax=256M
+TimeoutStopSec=30
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

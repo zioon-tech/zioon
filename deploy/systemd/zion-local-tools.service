@@ -1,0 +1,36 @@
+[Unit]
+Description=Zion Cloud Local Tools
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zion-worker
+Group=zion-worker
+WorkingDirectory=/srv/zion-workspaces/zion-next
+Environment=HOME=/home/zion-worker
+Environment=PYTHONUNBUFFERED=1
+Environment=ZION_LOCAL_HOST=127.0.0.1
+Environment=ZION_LOCAL_PORT=8765
+Environment=ZION_RELOAD=0
+Environment=ZION_WORKER_COUNT=1
+Environment=ZION_BASH_SANDBOX=1
+Environment=ZION_ALLOW_DANGEROUS=1
+Environment=ZION_ENABLE_LEGACY_CONTROL_PLANE=0
+Environment=ZION_ENABLE_PLUGIN_HOSTING=0
+Environment=ZION_REDIS_ENABLED=0
+ExecStart=/opt/zion-local-tools/.venv/bin/python /opt/zion-local-tools/run.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zion-worker /srv/zion-workspaces /srv/zion-plugin-data
+InaccessiblePaths=-/var/lib/zion-next -/etc/zion-next -/var/lib/caddy -/etc/caddy
+RestrictSUIDSGID=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

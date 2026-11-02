@@ -1,0 +1,18 @@
+{
+  "name": "@zion/device-connector",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Outbound Device Host connector for Zion Runtime",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "vitest run tests"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "werift": "^0.24.4"
+  }
+}

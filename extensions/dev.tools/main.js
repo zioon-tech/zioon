@@ -1,9 +1,829 @@
+import "./styles.css";
+import { createElement } from "react";
 import { installToolCallCards } from "./tool-calls.js";
-import { installToolSwitcher } from "./tool-switcher.js";
+import { filterToolsForRuntime, installToolSwitcher } from "./tool-switcher.js";
+import { registerChangesPanel } from "./changes-panel.js";
+import { registerFilesPanel } from "./files-panel.js";
+import { registerContextPanel } from "./context-panel.js";
+import { getCurrentSessionChangeState, getSessionChangeState } from "./session-change-state.js";
+import {
+  createTerminalToolExecutionContext,
+  getTerminalSessionRequirementError,
+  TERMINAL_AWARE_TOOL_NAMES
+} from "./terminal-tool-context.js";
+import { ToolsSettingsPage, buildToolRows } from "./ToolsSettingsPage.jsx";
+import { createHttpRuntimeClient } from "../../src/runtime/http-runtime-client.ts";
+import {
+  readWorkbenchRuntimeConfig
+} from "../../src/runtime/workbench-runtime-config.ts";
+import { currentAccountSession } from "../../packages/account-ui/src/client";
+
+const I18N_NS = "dev.tools";
+const DEFAULT_RUNTIME_INTERACTION_PROFILE_ID = "interactive.default";
+const RUNTIME_WORKSPACE_WRITE_TOOLS = new Set([
+  "write",
+  "edit",
+  "memoryManage",
+  "agentsManage",
+  "identityManage",
+  "projectAutomationManage",
+  "sessionCreate",
+  "sessionUpdate",
+  "sessionDelete"
+]);
+const RUNTIME_TRUSTED_AUTOMATION_TOOLS = new Set([
+  "Bash",
+  "sandboxBash",
+  "sandboxWrite",
+  "sendMail",
+  "todoWrite",
+  "mcpCall",
+  "extensionsCall",
+  "schedulerManage",
+  "modelsManage",
+  "toolsManage",
+  "pluginsManage",
+  "terminalManage",
+  "mailManage"
+]);
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.tools": "工具",
+    "cmd.parseFromContent": "从内容解析工具",
+    "settings.title": "工具",
+    "settings.description": "启用工具与工具入口",
+    "settings.section": "工具",
+    "settings.manager": "工具",
+    "cmd.openChanges": "打开变更面板",
+    "cmd.openFiles": "打开文件面板",
+    "cmd.openContext": "打开上下文面板",
+    "cmd.openFilesPicker": "文件：打开...",
+    "cmd.openFilesPicker.description": "选择本地文件夹或打开某个终端会话的当前目录",
+    "status.tools": "工具：{count}",
+    "status.toolsRuntime": "工具：{runtime}/{count}",
+    "status.tooltip": "管理已启用工具",
+    "status.tooltipRuntime": "Runtime 当前可执行 {runtime}/{count} 个已启用工具",
+    "switcher.title": "选择工具",
+    "switcher.search": "搜索工具...",
+    "switcher.footer": "Enter：切换 • Esc：关闭 • ↑↓：导航",
+    "switcher.parameters": "参数",
+    "switcher.noDescription": "无描述",
+    "switcher.none": "（无）",
+    "switcher.noTools": "未找到工具",
+    "switcher.preview": "预览",
+    "switcher.previewTitle": "预览工具详情",
+    "call.title": "调用 {name}",
+    "call.status": "工具调用状态：{label}",
+    "call.revert": "回退",
+    "call.accept": "接受",
+    "call.revertEdit": "回退编辑操作",
+    "call.acceptEdit": "接受编辑操作",
+    "call.revertWrite": "回退写入操作",
+    "call.acceptWrite": "接受写入操作",
+    "call.remove": "移除该工具记录",
+    "call.inlineTitle": "调用 {name}（点击展开/收起）",
+    "call.inlineTitleWithSummary": "调用 {name}：{summary}（点击展开/收起）",
+    "call.inlineAria": "调用 {name}（点击展开或收起工具调用卡片）",
+    "call.toggle": "展开/收起工具调用卡片",
+    "call.openInContext": "在 Context 中打开",
+    "call.patchTruncated": "patch 过长，已截断显示前 {count} 行",
+    "files.title": "文件",
+    "files.stats": "{dirs} 个文件夹 · {files} 个文件",
+    "files.source": "来源",
+    "files.sourceLocal": "本地授权",
+    "files.sourceActiveTerminal": "终端：当前",
+    "files.sourceActiveTerminalProject": "当前：{project}",
+    "files.sort": "排序",
+    "files.sortLabel": "排序：{sort}",
+    "files.sortName": "名称",
+    "files.sortModified": "修改时间",
+    "files.sortSize": "大小",
+    "files.refresh": "刷新",
+    "files.addFolder": "添加文件夹",
+    "files.openManager": "打开管理器",
+    "files.more": "更多操作",
+    "files.moreActions": "更多操作",
+    "files.open": "打开预览",
+    "files.openInFolder": "在文件夹中打开",
+    "files.preview": "预览",
+    "files.download": "下载",
+    "files.downloadFailed": "下载文件失败",
+    "files.refreshFolder": "刷新文件夹",
+    "files.copyPath": "复制路径",
+    "files.copied": "路径已复制",
+    "files.kind": "类型",
+    "files.kindFile": "文件",
+    "files.kindFolder": "文件夹",
+    "files.size": "大小",
+    "files.modified": "修改时间",
+    "files.emptyTitle": "还没有添加文件夹",
+    "files.emptyDescription": "从文件系统访问管理器添加文件夹或文件后，可以在这里浏览。",
+    "files.noTerminalTitle": "没有终端会话",
+    "files.noTerminalDescription": "创建或选择本地/SSH 终端会话后，可以通过它浏览文件。",
+    "files.openTerminalManager": "打开终端管理器",
+    "files.terminalJsonFailed": "终端命令没有返回 JSON",
+    "files.terminalCommandFailed": "终端命令执行失败",
+    "files.emptyFolder": "空文件夹",
+    "files.loading": "正在加载文件...",
+    "files.errorTitle": "无法加载文件",
+    "files.retry": "重试",
+    "files.permissionDenied": "没有访问权限",
+    "files.binaryUnsupported": "暂不支持二进制预览",
+    "files.tooLarge": "文件太大，暂不预览",
+      "files.previewTruncated": "文件较大，仅以只读方式展示前 {size} KB。",
+    "files.openFailed": "打开文件失败",
+    "files.openSubmenu": "打开文件",
+    "files.openSubmenuPlaceholder": "搜索本地文件夹或终端会话...",
+    "files.openSubmenuEmpty": "没有找到匹配的入口",
+    "context.title": "上下文",
+    "context.resizeExplorer": "调整上下文浏览区宽度",
+    "context.close": "关闭",
+    "context.files": "文件",
+    "context.webPages": "网页",
+    "context.tasks": "任务",
+    "context.comments": "评论",
+    "context.agents": "Agents",
+      "context.biographyEvents": "经历事件",
+    "context.tags": "标签",
+    "context.ignoredTags": "已忽略",
+    "context.ignoreTag": "在当前会话中忽略",
+    "context.restoreTag": "恢复标签提取",
+    "context.tagIgnored": "已在当前会话中忽略 #{tag}",
+    "context.tagRestored": "已恢复 #{tag}",
+    "context.tagActionFailed": "无法更新标签提取",
+    "context.ignoredTagSubtree": "已忽略标签子树 #{tag}",
+    "context.ignoredTagExact": "已忽略标签 #{tag}",
+    "context.links": "引用",
+    "context.headings": "标题",
+    "context.anchors": "锚点",
+    "context.modelUsage": "模型消耗",
+    "context.basics": "基础信息",
+    "context.noSession": "暂无打开的会话",
+    "context.session": "会话",
+    "context.terminalContext": "终端上下文",
+    "context.terminalInjected": "会注入聊天",
+    "context.terminalNotInjected": "未注入聊天",
+    "context.terminalSessions": "终端会话",
+    "context.terminalActive": "active {id}",
+    "context.count": "{count} 个",
+    "context.toolArtifacts": "工具产物",
+    "context.itemCount": "{count} 条",
+    "context.emptyFiles": "当前会话里还没有识别到文件路径。",
+    "context.emptyWeb": "当前会话里还没有识别到网页链接。",
+    "context.emptyTasks": "当前会话还没有 todo。",
+    "context.emptyComments": "当前会话还没有评论。",
+    "context.emptyAgents": "当前会话还没有 Agent Task。",
+      "context.emptyBiography": "当前会话还没有蒸馏出的经历事件。",
+    "context.emptyTags": "当前会话还没有标签。",
+    "context.emptyLinks": "当前会话还没有 wiki 引用。",
+    "context.emptyHeadings": "当前会话还没有 Markdown 标题。",
+    "context.emptyAnchors": "当前会话还没有块锚点。",
+    "context.emptyUsage": "当前会话还没有可统计的模型消耗。",
+    "context.emptyBasics": "暂无基础上下文信息。",
+    "context.copyUsage": "复制消耗信息",
+    "context.openInFiles": "在文件面板里定位并打开",
+    "context.addFolderToFiles": "添加到文件面板",
+    "context.addedFolderToFiles": "已添加到文件面板",
+    "context.openInFolder": "在文件夹中打开",
+    "context.copyPath": "复制路径",
+    "context.openUrl": "打开网页",
+    "context.copyUrl": "复制链接",
+    "context.copyInfo": "复制信息",
+    "context.copyComment": "复制评论信息",
+    "context.copyAgentTask": "复制 Agent Task 信息",
+      "context.copyBiography": "复制经历事件",
+    "context.copyTask": "复制任务信息",
+    "context.copyTodo": "复制 todo",
+    "context.openingFiles": "正在打开文件面板并定位文件...",
+    "context.copied": "已复制到剪贴板",
+    "context.run.streaming": "回答中",
+    "context.run.ready": "可继续对话",
+    "context.run.error": "出错",
+    "context.run.aborted": "已停止",
+      "context.biographyProjects": "{count} 个项目",
+      "context.biographyKind.decision": "决策",
+      "context.biographyKind.milestone": "里程碑",
+      "context.biographyKind.outcome": "结果",
+      "context.biographyKind.lesson": "经验",
+    "context.run.idle": "未运行",
+    "context.usage.files": "{count} files",
+    "context.usage.modelCalls": "{count} model calls",
+    "context.usage.input": "input {count}",
+    "context.usage.output": "output {count}",
+    "context.usage.cacheRead": "cache read {count}",
+    "context.usage.cacheWrite": "cache write {count}",
+    "context.tasks.todoLists": "{count} todo lists",
+    "context.tasks.done": "完成 {done}/{total}",
+    "context.tasks.doing": "进行中 {count}",
+    "context.tasks.active": "当前",
+    "context.tasks.activeWithName": "当前 {name}",
+    "context.tasks.list": "Todo 列表 {index}",
+    "context.tasks.emptyTodo": "（空 todo）",
+    "changes.title": "变更",
+    "changes.empty": "当前会话还没有文件修改。当 edit、write 或 apply_patch 工具产生文件产物时，会在这里展示 diff。",
+    "changes.files": "{count} files",
+    "changes.wrap": "换行",
+    "changes.wrapLongLines": "自动换行长行",
+    "changes.scrollLongLines": "横向滚动长行",
+    "changes.expand": "展开",
+    "changes.collapse": "折叠",
+    "changes.expandAll": "展开全部文件",
+    "changes.collapseAll": "折叠全部文件",
+    "changes.refresh": "刷新",
+    "changes.new": "新增",
+    "changes.deleted": "删除",
+    "changes.fileActions": "文件操作",
+    "changes.copyPath": "复制路径",
+    "changes.copyDiff": "复制 Diff",
+    "changes.accept": "接受",
+    "changes.revert": "回退",
+    "changes.pathCopied": "路径已复制",
+    "changes.diffCopied": "diff 已复制",
+    "changes.copied": "已复制",
+    "changes.copyFailed": "复制失败"
+  },
+  "en-US": {
+    "category.tools": "Tools",
+    "cmd.parseFromContent": "Parse Tools From Content",
+    "settings.title": "Tools",
+    "settings.description": "Enable tools and tool entry points",
+    "settings.section": "Tools",
+    "settings.manager": "Tools",
+    "cmd.openChanges": "Open Changes",
+    "cmd.openFiles": "Open Files",
+    "cmd.openContext": "Open Context",
+    "cmd.openFilesPicker": "Files: Open...",
+    "cmd.openFilesPicker.description": "Choose a local folder or open the current directory of a terminal session",
+    "status.tools": "Tools: {count}",
+    "status.toolsRuntime": "Tools: {runtime}/{count}",
+    "status.tooltip": "Manage enabled tools",
+    "status.tooltipRuntime": "Runtime can execute {runtime}/{count} enabled tools",
+    "switcher.title": "Select Tools",
+    "switcher.search": "Search tools...",
+    "switcher.footer": "Enter: toggle • Esc: close • ↑↓: navigate",
+    "switcher.parameters": "Parameters",
+    "switcher.noDescription": "No description",
+    "switcher.none": "(none)",
+    "switcher.noTools": "No tools found",
+    "switcher.preview": "Preview",
+    "switcher.previewTitle": "Preview tool details",
+    "call.title": "Call {name}",
+    "call.status": "Tool call status: {label}",
+    "call.revert": "Revert",
+    "call.accept": "Accept",
+    "call.revertEdit": "Revert edit operation",
+    "call.acceptEdit": "Accept edit operation",
+    "call.revertWrite": "Revert write operation",
+    "call.acceptWrite": "Accept write operation",
+    "call.remove": "Remove this tool record",
+    "call.inlineTitle": "Call {name} (click to expand/collapse)",
+    "call.inlineTitleWithSummary": "Call {name}: {summary} (click to expand/collapse)",
+    "call.inlineAria": "Call {name} (click to expand or collapse tool call card)",
+    "call.toggle": "Expand/collapse tool call card",
+    "call.openInContext": "Open in Context",
+    "call.patchTruncated": "Patch is too long; showing the first {count} lines",
+    "files.title": "Files",
+    "files.stats": "{dirs} folders · {files} files",
+    "files.source": "Source",
+    "files.sourceLocal": "Local Grants",
+    "files.sourceActiveTerminal": "Terminal: Active",
+    "files.sourceActiveTerminalProject": "Active: {project}",
+    "files.sort": "Sort",
+    "files.sortLabel": "Sort: {sort}",
+    "files.sortName": "Name",
+    "files.sortModified": "Modified",
+    "files.sortSize": "Size",
+    "files.refresh": "Refresh",
+    "files.addFolder": "Add Folder",
+    "files.openManager": "Open Manager",
+    "files.more": "More actions",
+    "files.moreActions": "More actions",
+    "files.open": "Open Preview",
+    "files.openInFolder": "Open in Folder",
+    "files.preview": "Preview",
+    "files.download": "Download",
+    "files.downloadFailed": "Failed to download file",
+    "files.refreshFolder": "Refresh Folder",
+    "files.copyPath": "Copy Path",
+    "files.copied": "Path copied",
+    "files.kind": "Kind",
+    "files.kindFile": "File",
+    "files.kindFolder": "Folder",
+    "files.size": "Size",
+    "files.modified": "Modified",
+    "files.emptyTitle": "No folders added",
+    "files.emptyDescription": "Add a folder or file from File System Access Manager to browse it here.",
+    "files.noTerminalTitle": "No terminal session",
+    "files.noTerminalDescription": "Create or select a local/SSH terminal session to browse files through it.",
+    "files.openTerminalManager": "Open Terminal Manager",
+    "files.terminalJsonFailed": "Terminal command did not return JSON",
+    "files.terminalCommandFailed": "Terminal command failed",
+    "files.emptyFolder": "Empty folder",
+    "files.loading": "Loading files...",
+    "files.errorTitle": "Unable to load files",
+    "files.retry": "Retry",
+    "files.permissionDenied": "Permission denied",
+    "files.binaryUnsupported": "Binary preview is not supported yet",
+    "files.tooLarge": "File is too large to preview",
+      "files.previewTruncated": "Large file: showing the first {size} KB as read-only.",
+    "files.openFailed": "Failed to open file",
+    "files.openSubmenu": "Open Files",
+    "files.openSubmenuPlaceholder": "Search local folders or terminal sessions...",
+    "files.openSubmenuEmpty": "No matching entries",
+    "context.title": "Context",
+    "context.resizeExplorer": "Resize Context Explorer",
+    "context.close": "Close",
+    "context.files": "Files",
+    "context.webPages": "Web Pages",
+    "context.tasks": "Tasks",
+    "context.comments": "Comments",
+    "context.agents": "Agents",
+      "context.biographyEvents": "Biography Events",
+    "context.tags": "Tags",
+    "context.ignoredTags": "Ignored",
+    "context.ignoreTag": "Ignore in this session",
+    "context.restoreTag": "Restore tag extraction",
+    "context.tagIgnored": "Ignored #{tag} in this session",
+    "context.tagRestored": "Restored #{tag}",
+    "context.tagActionFailed": "Could not update tag extraction",
+    "context.ignoredTagSubtree": "Ignored tag subtree #{tag}",
+    "context.ignoredTagExact": "Ignored tag #{tag}",
+    "context.links": "Links",
+    "context.headings": "Headings",
+    "context.anchors": "Anchors",
+    "context.modelUsage": "Model Usage",
+    "context.basics": "Basics",
+    "context.noSession": "No open session",
+    "context.session": "Session",
+    "context.terminalContext": "Terminal Context",
+    "context.terminalInjected": "Injected into chat",
+    "context.terminalNotInjected": "Not injected into chat",
+    "context.terminalSessions": "Terminal Sessions",
+    "context.terminalActive": "active {id}",
+    "context.count": "{count}",
+    "context.toolArtifacts": "Tool Artifacts",
+    "context.itemCount": "{count}",
+    "context.emptyFiles": "No file paths detected in the current session.",
+    "context.emptyWeb": "No web links detected in the current session.",
+    "context.emptyTasks": "No todos in the current session.",
+    "context.emptyComments": "No comments in the current session.",
+    "context.emptyAgents": "No agent tasks in the current session.",
+      "context.emptyBiography": "No biography events in the current session.",
+    "context.emptyTags": "No tags in the current session.",
+    "context.emptyLinks": "No wiki links in the current session.",
+    "context.emptyHeadings": "No Markdown headings in the current session.",
+    "context.emptyAnchors": "No block anchors in the current session.",
+    "context.emptyUsage": "No model usage available for the current session.",
+    "context.emptyBasics": "No basic context information.",
+    "context.copyUsage": "Copy usage info",
+    "context.openInFiles": "Reveal and open in Files",
+    "context.addFolderToFiles": "Add to Files Panel",
+    "context.addedFolderToFiles": "Added folder to Files panel",
+    "context.openInFolder": "Open in Folder",
+    "context.copyPath": "Copy path",
+    "context.openUrl": "Open webpage",
+    "context.copyUrl": "Copy link",
+    "context.copyInfo": "Copy info",
+    "context.copyComment": "Copy comment info",
+    "context.copyAgentTask": "Copy agent task info",
+      "context.copyBiography": "Copy biography event",
+    "context.copyTask": "Copy task info",
+    "context.copyTodo": "Copy todo",
+    "context.openingFiles": "Opening Files and locating file...",
+    "context.copied": "Copied to clipboard",
+    "context.run.streaming": "Answering",
+    "context.run.ready": "Ready to continue",
+    "context.run.error": "Error",
+    "context.run.aborted": "Stopped",
+      "context.biographyProjects": "{count} projects",
+      "context.biographyKind.decision": "decision",
+      "context.biographyKind.milestone": "milestone",
+      "context.biographyKind.outcome": "outcome",
+      "context.biographyKind.lesson": "lesson",
+    "context.run.idle": "Not running",
+    "context.usage.files": "{count} files",
+    "context.usage.modelCalls": "{count} model calls",
+    "context.usage.input": "input {count}",
+    "context.usage.output": "output {count}",
+    "context.usage.cacheRead": "cache read {count}",
+    "context.usage.cacheWrite": "cache write {count}",
+    "context.tasks.todoLists": "{count} todo lists",
+    "context.tasks.done": "{done}/{total} done",
+    "context.tasks.doing": "{count} doing",
+    "context.tasks.active": "active {name}",
+    "context.tasks.activeWithName": "active {name}",
+    "context.tasks.list": "Todo List {index}",
+    "context.tasks.emptyTodo": "(empty todo)",
+    "changes.title": "Changes",
+    "changes.empty": "No file changes in the current session yet. Diffs from edit, write, or apply_patch tools will appear here.",
+    "changes.files": "{count} files",
+    "changes.wrap": "Wrap",
+    "changes.wrapLongLines": "Wrap long lines",
+    "changes.scrollLongLines": "Scroll long lines",
+    "changes.expand": "Expand",
+    "changes.collapse": "Collapse",
+    "changes.expandAll": "Expand all files",
+    "changes.collapseAll": "Collapse all files",
+    "changes.refresh": "Refresh",
+    "changes.new": "New",
+    "changes.deleted": "Deleted",
+    "changes.fileActions": "File actions",
+    "changes.copyPath": "Copy Path",
+    "changes.copyDiff": "Copy Diff",
+    "changes.accept": "Accept",
+    "changes.revert": "Revert",
+    "changes.pathCopied": "Path copied",
+    "changes.diffCopied": "Diff copied",
+    "changes.copied": "Copied",
+    "changes.copyFailed": "Copy failed"
+  }
+};
+
+const TERMINAL_SESSION_ID_PARAM_DESCRIPTION = "Required exact terminal session_id from terminal_inventory workspace preferred_session_id or terminalManage list sessions[].session_id. Do not use machine_id, workspace_id, local, or ssh.";
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
+
+function getSessionAnnotations(sessionId) {
+  try {
+    return window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sessionId) || {};
+  } catch {
+    return {};
+  }
+}
+
+function updateSessionAnnotations(sessionId, updater) {
+  try {
+    return window.zion?.commands?.executeCommand?.("zion.chatCards.updateSessionAnnotations", { sessionId, updater }) || {};
+  } catch {
+    return {};
+  }
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(
+    (Array.isArray(values) ? values : [])
+      .map(String)
+      .map((value) => value.trim())
+      .filter(Boolean)
+  ));
+}
+
+function toolName(tool) {
+  return String(tool?.function?.name || tool?.name || "").trim();
+}
+
+function workbenchToolNames(state = window.zion?.state) {
+  return uniqueStrings((state?.get?.("chat.tools") || []).map(toolName));
+}
+
+function runtimeToolModelInjectable(tool) {
+  return tool?.modelInjectable !== false
+    && tool?.["x-zionToolModelInjectable"] !== false;
+}
+
+function runtimeInjectableToolNames(capabilityTools) {
+  return uniqueStrings(
+    (Array.isArray(capabilityTools) ? capabilityTools : [])
+      .filter(runtimeToolModelInjectable)
+      .map(toolName)
+  );
+}
+
+function runtimeModelToolNamesFromState(state = window.zion?.state) {
+  const injectableValue = state?.get?.("runtime.injectableToolNames");
+  if (Array.isArray(injectableValue)) return uniqueStrings(injectableValue);
+  return uniqueStrings(state?.get?.("runtime.supportedToolNames"));
+}
+
+function runtimeCapabilityToWorkbenchTool(tool) {
+  const name = toolName(tool);
+  if (!name) return null;
+  return {
+    type: "function",
+    function: {
+      name,
+      description: String(tool?.description || ""),
+      parameters: tool?.inputSchema && typeof tool.inputSchema === "object"
+        ? tool.inputSchema
+        : { type: "object", additionalProperties: true }
+    },
+    "x-zionRuntimeOnly": true,
+    "x-zionToolModelInjectable": runtimeToolModelInjectable(tool),
+    ...(tool?.unavailableReason
+      ? { "x-zionToolUnavailableReason": String(tool.unavailableReason) }
+      : {}),
+    "x-zionToolHostKinds": Array.isArray(tool?.hostKinds)
+      ? tool.hostKinds.map(String)
+      : [],
+    ...(tool?.owner && typeof tool.owner === "object"
+      ? { "x-zionToolOwner": tool.owner }
+      : {}),
+    ...(tool?.availability && typeof tool.availability === "object"
+      ? { "x-zionToolAvailability": tool.availability }
+      : {}),
+    ...(tool?.policy && typeof tool.policy === "object"
+      ? { "x-zionToolPolicy": tool.policy }
+      : {})
+  };
+}
+
+export function mergeRuntimeCapabilityToolsIntoWorkbenchTools({
+  state = window.zion?.state,
+  capabilityTools = []
+} = {}) {
+  const existing = Array.isArray(state?.get?.("chat.tools"))
+    ? state.get("chat.tools")
+    : [];
+  const names = new Set(existing.map(toolName).filter(Boolean));
+  const additions = [];
+  for (const tool of Array.isArray(capabilityTools) ? capabilityTools : []) {
+    const name = toolName(tool);
+    if (!name || names.has(name)) continue;
+    const converted = runtimeCapabilityToWorkbenchTool(tool);
+    if (!converted) continue;
+    additions.push(converted);
+    names.add(name);
+  }
+  if (!additions.length) return existing;
+  const next = [...existing, ...additions];
+  state?.set?.("chat.tools", next);
+  return next;
+}
+
+function readRuntimeInteractionProfileId({
+  state = window.zion?.state,
+  storage = globalThis.localStorage
+} = {}) {
+  const fromState = String(state?.get?.("runtime.interactionProfileId") || "").trim();
+  if (fromState) return fromState;
+  try {
+    const stored = String(storage?.getItem?.("zion.runtime.interactionProfileId") || "").trim();
+    if (stored) return stored;
+  } catch {}
+  return DEFAULT_RUNTIME_INTERACTION_PROFILE_ID;
+}
+
+export function createRuntimeToolPolicyPatch(enabledNames) {
+  const allowedTools = uniqueStrings(enabledNames);
+  const trustedAutomation = allowedTools.some((name) =>
+    RUNTIME_TRUSTED_AUTOMATION_TOOLS.has(name)
+  );
+  const workspaceWrite = allowedTools.some((name) =>
+    RUNTIME_WORKSPACE_WRITE_TOOLS.has(name)
+  );
+  return {
+    preset: trustedAutomation
+      ? "trusted-automation"
+      : workspaceWrite
+        ? "workspace-write"
+        : "read-only",
+    allowedTools,
+    allowedRecipients: allowedTools.includes("sendMail") ? ["*"] : [],
+    maxMailPerRun: allowedTools.includes("sendMail") ? 10 : 0
+  };
+}
+
+export async function syncEnabledToolsFromRuntimeProfile({
+  state = window.zion?.state,
+  storage = globalThis.localStorage,
+  fetchImpl = globalThis.fetch,
+  shouldApplyEnabledTools = () => true,
+  applyEnabledTools = (enabledTools) => {
+    state?.set?.("chat.enabledTools", enabledTools);
+  }
+} = {}) {
+  const config = readWorkbenchRuntimeConfig({ state, storage });
+  if (config.mode === "browser") {
+    state?.set?.("runtime.toolSync", {
+      status: "skipped",
+      reason: "browser-mode",
+      syncedAt: Date.now()
+    });
+    return { applied: false, reason: "browser-mode" };
+  }
+  const profileId = readRuntimeInteractionProfileId({ state, storage });
+  const client = createHttpRuntimeClient({
+    baseUrl: config.baseUrl,
+    fetchImpl
+  });
+
+  try {
+    const [capabilityTools, profile] = await Promise.all([
+      client.getCapabilityTools(),
+      client.getInteractionProfile(profileId)
+    ]);
+    mergeRuntimeCapabilityToolsIntoWorkbenchTools({ state, capabilityTools });
+    const supportedNames = uniqueStrings(capabilityTools.map(toolName));
+    const injectableNames = runtimeInjectableToolNames(capabilityTools);
+    const supported = new Set(injectableNames);
+    const localNames = workbenchToolNames(state);
+    const localSet = new Set(localNames);
+    const runtimeEnabled = uniqueStrings(profile?.policy?.allowedTools)
+      .filter((name) => supported.has(name) && localSet.has(name));
+    const nextEnabled = runtimeEnabled;
+
+    state?.set?.("runtime.capabilityTools", capabilityTools);
+    state?.set?.("runtime.supportedToolNames", supportedNames);
+    state?.set?.("runtime.injectableToolNames", injectableNames);
+    if (!shouldApplyEnabledTools()) {
+      state?.set?.("runtime.toolSync", {
+        status: "stale",
+        profileId: profile?.id || profileId,
+        reason: "local-selection-changed",
+        syncedAt: Date.now()
+      });
+      return {
+        applied: false,
+        reason: "local-selection-changed",
+        profile,
+        capabilityTools
+      };
+    }
+    state?.set?.("runtime.enabledToolNames", runtimeEnabled);
+    state?.set?.("runtime.interactionProfile", profile);
+    state?.set?.("runtime.interactionProfileId", profile?.id || profileId);
+    if (localNames.length) {
+      applyEnabledTools(nextEnabled);
+      state?.set?.("chat.toolsKnownNames", localNames);
+    }
+    state?.set?.("runtime.toolSync", {
+      status: "synced",
+      profileId: profile?.id || profileId,
+      supportedToolCount: supportedNames.length,
+      injectableToolCount: injectableNames.length,
+      enabledToolCount: runtimeEnabled.length,
+      syncedAt: Date.now()
+    });
+    return {
+      applied: true,
+      profile,
+      capabilityTools,
+      enabledTools: nextEnabled,
+      runtimeEnabledTools: runtimeEnabled,
+      runtimeInjectableTools: injectableNames
+    };
+  } catch (error) {
+    state?.set?.("runtime.toolSync", {
+      status: "error",
+      profileId,
+      error: error?.message || String(error),
+      syncedAt: Date.now()
+    });
+    return {
+      applied: false,
+      reason: error?.message || String(error)
+    };
+  }
+}
+
+export async function persistEnabledToolsToRuntimeProfile({
+  enabledTools,
+  state = window.zion?.state,
+  storage = globalThis.localStorage,
+  fetchImpl = globalThis.fetch
+} = {}) {
+  const config = readWorkbenchRuntimeConfig({ state, storage });
+  if (config.mode === "browser") {
+    return { persisted: false, reason: "browser-mode" };
+  }
+  const supportedNames = runtimeModelToolNamesFromState(state);
+  if (!supportedNames.length) {
+    return { persisted: false, reason: "no-runtime-catalog" };
+  }
+  const supported = new Set(supportedNames);
+  const runtimeEnabled = uniqueStrings(enabledTools)
+    .filter((name) => supported.has(name));
+  const profileId = readRuntimeInteractionProfileId({ state, storage });
+  const client = createHttpRuntimeClient({
+    baseUrl: config.baseUrl,
+    fetchImpl
+  });
+
+  try {
+    const profile = await client.patchInteractionProfile(profileId, {
+      policy: createRuntimeToolPolicyPatch(runtimeEnabled),
+      metadata: {
+        toolSelectionUserManaged: true
+      }
+    });
+    state?.set?.("runtime.interactionProfile", profile);
+    state?.set?.("runtime.interactionProfileId", profile?.id || profileId);
+    state?.set?.("runtime.enabledToolNames", uniqueStrings(profile?.policy?.allowedTools)
+      .filter((name) => supported.has(name)));
+    state?.set?.("runtime.toolSync", {
+      status: "persisted",
+      profileId: profile?.id || profileId,
+      enabledToolCount: runtimeEnabled.length,
+      syncedAt: Date.now()
+    });
+    return { persisted: true, profile };
+  } catch (error) {
+    state?.set?.("runtime.toolSync", {
+      status: "error",
+      profileId,
+      error: error?.message || String(error),
+      syncedAt: Date.now()
+    });
+    return {
+      persisted: false,
+      reason: error?.message || String(error)
+    };
+  }
+}
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   // 注册默认工具与处理器
   registerDefaultTools();
+
+  let applyingRuntimeToolProfile = false;
+  let runtimeToolSyncPromise = null;
+  let runtimeToolSelectionVersion = 0;
+  let runtimeToolOperationQueue = Promise.resolve();
+  const enqueueRuntimeToolOperation = (operation) => {
+    const result = runtimeToolOperationQueue
+      .catch(() => null)
+      .then(operation);
+    runtimeToolOperationQueue = result.catch(() => null);
+    return result;
+  };
+  const persistRuntimeToolSelection = (enabledTools) => {
+    runtimeToolSelectionVersion += 1;
+    window.zion?.state?.set?.("runtime.toolSync", { status: "stale", reason: "local-selection-changed" });
+    const selection = uniqueStrings(enabledTools);
+    return enqueueRuntimeToolOperation(
+      () => persistEnabledToolsToRuntimeProfile({ enabledTools: selection })
+    );
+  };
+  const syncRuntimeToolSelection = () => {
+    if (runtimeToolSyncPromise) return runtimeToolSyncPromise;
+    const sync = window.zion?.state?.get?.("runtime.toolSync");
+    const config = readWorkbenchRuntimeConfig({
+      state: window.zion?.state, storage: globalThis.localStorage
+    });
+    const profileId = readRuntimeInteractionProfileId();
+    const identity = currentAccountSession();
+    const accountScope = JSON.stringify([identity?.user?.id, identity?.space?.id, identity?.membership?.role]);
+    if (sync?.status === "synced"
+      && sync.baseUrl === config.baseUrl && sync.profileId === profileId
+      && sync.accountScope === accountScope
+      && Date.now() - sync.syncedAt < 15_000) {
+      return Promise.resolve({ applied: true, cached: true });
+    }
+    runtimeToolSyncPromise = enqueueRuntimeToolOperation(async () => {
+      const selectionVersion = runtimeToolSelectionVersion;
+      const result = await syncEnabledToolsFromRuntimeProfile({
+        shouldApplyEnabledTools: () =>
+          selectionVersion === runtimeToolSelectionVersion,
+        applyEnabledTools(enabledTools) {
+          applyingRuntimeToolProfile = true;
+          try {
+            window.zion?.state?.set?.("chat.enabledTools", enabledTools);
+          } finally {
+            applyingRuntimeToolProfile = false;
+          }
+        }
+      });
+      if (result.applied) {
+        const current = window.zion?.state?.get?.("runtime.toolSync");
+        window.zion?.state?.set?.("runtime.toolSync", { ...current, baseUrl: config.baseUrl, accountScope });
+      }
+      return result;
+    })
+      .finally(() => {
+        runtimeToolSyncPromise = null;
+      });
+    return runtimeToolSyncPromise;
+  };
+
+  try {
+    registerContextPanel(ctx);
+  } catch (e) {
+    console.warn("[dev.tools] register context panel failed", e);
+  }
+
+  // 右侧 Changes 面板：集中查看当前会话的 edit/write/apply_patch 文件产物
+  try {
+    registerChangesPanel(ctx);
+  } catch (e) {
+    console.warn("[dev.tools] register changes panel failed", e);
+  }
+
+  try {
+    registerFilesPanel(ctx);
+  } catch (e) {
+    console.warn("[dev.tools] register files panel failed", e);
+  }
 
   // 提供“从文档解析工具定义”的命令
   const dispParse = window.zion.commands.registerCommand("tools.parseFromContent", (content) => {
@@ -25,7 +845,7 @@ export async function activate(ctx) {
       const sid = window.zion?.state?.get("sessions.currentId");
       if (!sid) return null;
 
-      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const ann = getSessionAnnotations(sid);
       const tools = ann.tools || [];
       return tools.find(t => t.id === toolId) || null;
     },
@@ -38,7 +858,7 @@ export async function activate(ctx) {
       const sid = window.zion?.state?.get("sessions.currentId");
       if (!sid) return [];
 
-      const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+      const ann = getSessionAnnotations(sid);
       return ann.tools || [];
     },
 
@@ -50,6 +870,14 @@ export async function activate(ctx) {
     findToolCalls(predicate) {
       const tools = this.getAllToolCalls();
       return tools.filter(predicate);
+    },
+
+    getSessionChangeState(sessionId) {
+      return getSessionChangeState(sessionId);
+    },
+
+    getCurrentSessionChangeState() {
+      return getCurrentSessionChangeState();
     }
   };
 
@@ -68,6 +896,7 @@ export async function activate(ctx) {
   const dispSwitcher = window.zion.editor.registerDecorator({
     id: "dev.tools.switcher",
     apply(editor) {
+      if (String(editor?.panelId || "").startsWith("comments:")) return { dispose() {} };
       toolSwitcher = installToolSwitcher();
       return { dispose() { toolSwitcher?.dispose?.(); toolSwitcher = null; } };
     }
@@ -76,13 +905,22 @@ export async function activate(ctx) {
 
   // 打开/关闭工具切换器命令
   const dispOpen = window.zion.commands.registerCommand("tools.openSwitcher", async () => {
-    ensureEnabledTools();
+    applyingRuntimeToolProfile = true;
+    try {
+      ensureEnabledTools();
+    } finally {
+      applyingRuntimeToolProfile = false;
+    }
+    await syncRuntimeToolSelection();
     toolSwitcher?.open?.();
   });
   const dispClose = window.zion.commands.registerCommand("tools.closeSwitcher", () => {
     toolSwitcher?.close?.();
   });
-  ctx.subscriptions.push(dispOpen, dispClose);
+  const dispSyncRuntime = window.zion.commands.registerCommand("tools.syncRuntime", async () =>
+    await syncRuntimeToolSelection()
+  );
+  ctx.subscriptions.push(dispOpen, dispClose, dispSyncRuntime);
 
   // 状态栏按钮：Tools
   let toolsBtnDisp = null;
@@ -91,11 +929,50 @@ export async function activate(ctx) {
     const enabled = window.zion.state.get("chat.enabledTools");
     const enabledNames = Array.isArray(enabled) ? enabled : all.map(t => t?.function?.name).filter(Boolean);
     const n = enabledNames.filter(Boolean).length;
+    const runtimeSupported = runtimeModelToolNamesFromState(window.zion.state);
+    const runtimeCatalogLoaded = Array.isArray(
+      window.zion.state.get("runtime.injectableToolNames")
+    ) || Array.isArray(window.zion.state.get("runtime.supportedToolNames"));
+    const runtimeMode = String(
+      window.zion.state.get("runtime.mode")
+      || localStorage.getItem("zion.runtime.mode")
+      || "auto"
+    ).toLowerCase();
+    const showRuntimeCount = runtimeMode !== "browser" && runtimeCatalogLoaded;
+    const runtimeSet = new Set(showRuntimeCount ? runtimeSupported : []);
+    const runtimeCount = showRuntimeCount
+      ? enabledNames.filter((name) => runtimeSet.has(name)).length
+      : 0;
+    const buttonText = showRuntimeCount
+      ? t("status.toolsRuntime", "Tools: {runtime}/{count}", {
+          runtime: runtimeCount,
+          count: n
+        })
+      : t("status.tools", "Tools: {count}", { count: n });
+    const buttonTooltip = showRuntimeCount
+      ? t(
+          "status.tooltipRuntime",
+          "Runtime can execute {runtime}/{count} enabled tools",
+          { runtime: runtimeCount, count: n }
+        )
+      : t("status.tooltip", "Manage enabled tools");
     toolsBtnDisp?.dispose?.();
-    toolsBtnDisp = window.zion.statusBar.registerItem({
+    toolsBtnDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: "dev.tools.button",
-      text: `Tools: ${n}`,
-      tooltip: "Manage enabled tools (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)",
+      text: buttonText,
+      tooltip: `${buttonTooltip} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
+      priority: 70,
+      onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: "dev.tools.button",
+      title: buttonText,
+      section: "Chat",
+      order: 20,
+      onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
+    }) || window.zion.statusBar.registerItem({
+      id: "dev.tools.button",
+      text: buttonText,
+      tooltip: `${buttonTooltip} (Search / ↑↓ / PgUp/PgDn / Home/End / Enter / Esc)`,
       onClick: () => window.zion.commands.executeCommand("tools.openSwitcher")
     });
   };
@@ -126,8 +1003,14 @@ export async function activate(ctx) {
         finalEnabled = Array.from(new Set([...filtered, ...names]));
       }
 
-      window.zion.state.set("chat.enabledTools", finalEnabled);
-      window.zion.state.set("chat.toolsKnownNames", names.slice());
+      applyingRuntimeToolProfile = true;
+      try {
+        window.zion.state.set("chat.enabledTools", finalEnabled);
+        window.zion.state.set("chat.toolsKnownNames", names.slice());
+      } finally {
+        applyingRuntimeToolProfile = false;
+      }
+      void syncRuntimeToolSelection();
     } catch {}
   });
   ctx.subscriptions.push({ dispose: () => off.dispose?.() });
@@ -151,12 +1034,82 @@ export async function activate(ctx) {
       const prevCustomized = localStorage.getItem("zion.enabledTools.userCustomized") === "1";
       const customizedNow = enabledArr.length < names.length;
       localStorage.setItem("zion.enabledTools.userCustomized", (prevCustomized || customizedNow) ? "1" : "0");
+      if (!applyingRuntimeToolProfile) {
+        void persistRuntimeToolSelection(enabledArr);
+      }
     } catch {}
   };
 
+  const getToolRows = () => {
+    ensureEnabledTools();
+    const rawTools = filterToolsForRuntime(window.zion.state.get("chat.tools") || []);
+    const enabled = window.zion.state.get("chat.enabledTools");
+    const names = rawTools.map((tool) => tool?.function?.name).filter(Boolean);
+    const enabledNames = Array.isArray(enabled) ? enabled.filter((name) => names.includes(name)) : names;
+    return buildToolRows(rawTools, enabledNames);
+  };
+  const setEnabledTools = async (value) => {
+    const rawTools = filterToolsForRuntime(window.zion.state.get("chat.tools") || []);
+    const names = rawTools.map((tool) => tool?.function?.name).filter(Boolean);
+    const next = Array.isArray(value) ? value.map(String).filter((name) => names.includes(name)) : [];
+    window.zion.state.set("chat.enabledTools", next);
+    window.zion.state.set("chat.toolsKnownNames", names);
+  };
+
+  try {
+    window.zion.settings.registerPage({
+      id: "tools.preferences",
+      pluginId: "dev.tools",
+      category: "workspace",
+      title: "Tools",
+      titleKey: "dev.tools.settings.title",
+      description: "启用工具与工具入口",
+      descriptionKey: "dev.tools.settings.description",
+      order: 38,
+      sections: [
+        {
+          id: "tools.preferences.page",
+          title: "Tools",
+          titleKey: "dev.tools.settings.section",
+          settings: [
+            {
+              id: "tools.preferences.manager",
+              kind: "custom",
+              label: "Tools",
+              labelKey: "dev.tools.settings.manager",
+              renderCustom: () =>
+                createElement(ToolsSettingsPage, {
+                  getTools: getToolRows,
+                  setEnabledTools,
+                  openSwitcher: () => window.zion.commands.executeCommand("tools.openSwitcher")
+                })
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    console.error("[dev.tools] register settings page failed", e);
+  }
+
   ctx.subscriptions.push(
-    window.zion.state.onDidChange("chat.tools", () => { ensureEnabledTools(); updateToolsBtn(); }),
-    window.zion.state.onDidChange("chat.enabledTools", () => { persistEnabledTools(); updateToolsBtn(); })
+    window.zion.state.onDidChange("chat.tools", () => {
+      applyingRuntimeToolProfile = true;
+      try {
+        ensureEnabledTools();
+      } finally {
+        applyingRuntimeToolProfile = false;
+      }
+      updateToolsBtn();
+      void syncRuntimeToolSelection();
+    }),
+    window.zion.state.onDidChange("chat.enabledTools", () => { persistEnabledTools(); updateToolsBtn(); }),
+    window.zion.state.onDidChange("runtime.supportedToolNames", updateToolsBtn),
+    window.zion.state.onDidChange("runtime.injectableToolNames", updateToolsBtn),
+    window.zion.state.onDidChange("runtime.connection", () => { updateToolsBtn(); void syncRuntimeToolSelection(); }),
+    window.zion.state.onDidChange("runtime.mode", () => { updateToolsBtn(); void syncRuntimeToolSelection(); }),
+    window.zion.state.onDidChange("runtime.baseUrl", () => { void syncRuntimeToolSelection(); }),
+    window.zion.events.on("i18n/changed", updateToolsBtn)
   );
 
 }
@@ -208,11 +1161,24 @@ function parseToolsFromDocument(content) {
   // 合并状态总线预注册工具
   const regTools = window.zion?.state?.get("chat.tools") || [];
   const merged = [...regTools, ...tools];
+  const runtimeBackend = String(
+    window.zion?.state?.get?.("runtime.connection")?.backend
+    || window.zion?.state?.get?.("runtime.mode")
+    || localStorage.getItem("zion.runtime.mode")
+    || "auto"
+  ).toLowerCase();
+  const runtimeActive = runtimeBackend === "runtime";
+  const runtimeSupported = new Set(
+    runtimeModelToolNamesFromState(window.zion?.state)
+  );
+  const eligible = runtimeActive
+    ? merged.filter((tool) => runtimeSupported.has(toolName(tool)))
+    : merged.filter((tool) => tool?.["x-zionRuntimeOnly"] !== true);
 
   // 依据启用列表过滤（chat.enabledTools），未设置则默认全启用
   const enabledNames = window.zion?.state?.get("chat.enabledTools");
   const set = Array.isArray(enabledNames) ? new Set(enabledNames) : null;
-  const filtered = set ? merged.filter(t => t?.function?.name && set.has(t.function.name)) : merged;
+  const filtered = set ? eligible.filter(t => t?.function?.name && set.has(t.function.name)) : eligible;
 
   return filtered.length > 0 ? filtered : null;
 }
@@ -223,7 +1189,7 @@ function parseToolsFromDocument(content) {
  */
 function ensureEnabledTools(forceAll = false) {
   try {
-    const all = window.zion?.state?.get("chat.tools") || [];
+    const all = filterToolsForRuntime(window.zion?.state?.get("chat.tools") || []);
     const names = all.map(t => t?.function?.name).filter(Boolean);
 
     let cur = window.zion?.state?.get("chat.enabledTools") || [];
@@ -365,15 +1331,15 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "glob",
-          description: "Fast file pattern matching. Returns matching file paths sorted by modification time.",
+          description: "Fast file pattern matching through a specific terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               pattern: { type: "string", description: "Glob pattern (e.g., **/*.js)" },
               path: { type: "string", description: "Directory to search (optional, default cwd)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["pattern"],
+            required: ["pattern", "session_id"],
             additionalProperties: false
           }
         }
@@ -383,7 +1349,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "grep",
-          description: "Powerful content search via local Python service (ripgrep-backed).",
+          description: "Ripgrep-backed content search through a specific terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
@@ -400,9 +1366,9 @@ function registerDefaultTools() {
               head_limit: { type: "number", description: "Limit output to first N lines/entries" },
               offset: { type: "number", description: "Skip first N lines/entries" },
               multiline: { type: "boolean", description: "Enable multiline search (rg -U --multiline --multiline-dotall)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["pattern"],
+            required: ["pattern", "session_id"],
             additionalProperties: false
           }
         }
@@ -412,16 +1378,16 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "read",
-          description: "Read a file's content (supports local or SSH session via local tools service).",
+          description: "Read a file's content through a specific local or SSH terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "File path to read" },
               offset: { type: "number", description: "Start line (1-based, optional)" },
               limit: { type: "number", description: "Number of lines to read (optional)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path"],
+            required: ["path", "session_id"],
             additionalProperties: false
           }
         }
@@ -431,16 +1397,16 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "write",
-          description: "Write content to a file (supports local or SSH session via local tools service).",
+          description: "Write content through a specific local or SSH terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "File path to write" },
               content: { type: "string", description: "Content to write" },
               prompt: { type: "string", description: "Short summary of what is being written (<=100 chars)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path", "content"],
+            required: ["path", "content", "session_id"],
             additionalProperties: false
           }
         }
@@ -450,7 +1416,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "edit",
-          description: "Edit a file by exact string replacement (supports local or SSH session via local tools service).",
+          description: "Edit a file through a specific local or SSH terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
@@ -459,9 +1425,9 @@ function registerDefaultTools() {
               new_string: { type: "string", description: "Replacement string" },
               replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
               prompt: { type: "string", description: "Short summary of what is being edited (<=100 chars)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path", "old_string", "new_string"],
+            required: ["path", "old_string", "new_string", "session_id"],
             additionalProperties: false
           }
         }
@@ -487,15 +1453,15 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "tree",
-          description: "Get directory tree structure (supports local or SSH session via local tools service).",
+          description: "Get a directory tree through a specific terminal session. session_id is required and must be an exact terminal session id.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "Directory path" },
               max_depth: { type: "number", description: "Maximum traversal depth (default 1)" },
-              session_id: { type: "string", description: "Optional terminal session ID (local/ssh)" }
+              session_id: { type: "string", description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION }
             },
-            required: ["path"],
+            required: ["path", "session_id"],
             additionalProperties: false
           }
         }
@@ -505,7 +1471,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "Bash",
-          description: "Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.\n\nBefore executing the command, please follow these steps:\n\n1. Directory Verification:\n   - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location\n   - For example, before running \"mkdir foo/bar\", first use LS to check that \"foo\" exists and is the intended parent directory\n\n2. Command Execution:\n   - Always quote file paths that contain spaces with double quotes (e.g., cd \"path with spaces/file.txt\")\n   - Examples of proper quoting:\n     - cd \"/Users/name/My Documents\" (correct)\n     - cd /Users/name/My Documents (incorrect - will fail)\n     - python \"/path/with spaces/script.py\" (correct)\n     - python /path/with spaces/script.py (incorrect - will fail)\n   - After ensuring proper quoting, execute the command.\n   - Capture the output of the command.\n\nUsage notes:\n  - The command argument is required.\n  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).\n  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.\n  - If the output exceeds 30000 characters, output will be truncated before being returned to you.\n  - VERY IMPORTANT: Avoid using search commands like `find` and `grep`. Instead use Grep, Glob.\n  - When issuing multiple commands, use ';' or '&&'. DO NOT use newlines (except inside quoted strings).\n  - Prefer absolute paths over 'cd' unless the user requests it explicitly.",
+          description: "Executes a command in the explicitly selected persistent terminal session. session_id is required and must be an exact terminal session id from terminal_inventory workspace preferred_session_id or terminalManage list sessions[].session_id. Do not pass machine_id values such as machine:local, workspace_id values, or session type values local/ssh.\n\nBefore executing the command, please follow these steps:\n\n1. Directory Verification:\n   - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location\n   - For example, before running \"mkdir foo/bar\", first use LS to check that \"foo\" exists and is the intended parent directory\n\n2. Command Execution:\n   - Always quote file paths that contain spaces with double quotes (e.g., cd \"path with spaces/file.txt\")\n   - Examples of proper quoting:\n     - cd \"/Users/name/My Documents\" (correct)\n     - cd /Users/name/My Documents (incorrect - will fail)\n     - python \"/path/with spaces/script.py\" (correct)\n     - python /path/with spaces/script.py (incorrect - will fail)\n   - After ensuring proper quoting, execute the command.\n   - Capture the output of the command.\n\nUsage notes:\n  - The command and session_id arguments are required.\n  - You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 120000ms (2 minutes).\n  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.\n  - If the output exceeds 30000 characters, output will be truncated before being returned to you.\n  - VERY IMPORTANT: Avoid using search commands like `find` and `grep`. Instead use Grep, Glob.\n  - When issuing multiple commands, use ';' or '&&'. DO NOT use newlines (except inside quoted strings).\n  - Prefer absolute paths over 'cd' unless the user requests it explicitly.",
           parameters: {
             type: "object",
             properties: {
@@ -527,10 +1493,10 @@ function registerDefaultTools() {
               },
               session_id: {
                 type: "string",
-                description: "Optional terminal session ID to execute within (see terminalManage)"
+                description: TERMINAL_SESSION_ID_PARAM_DESCRIPTION
               }
             },
-            required: ["command"],
+            required: ["command", "session_id"],
             additionalProperties: false
           }
         }
@@ -566,7 +1532,7 @@ function registerDefaultTools() {
               path: { type: "string", description: "Local plugin directory (for startDev)" },
               plugin_id: { type: "string", description: "Plugin ID (for install/enable/disable/uninstall)" },
               devId: { type: "string", description: "Dev session ID (for stopDev)" },
-              serviceUrl: { type: "string", description: "Override local tools service base URL (default from localStorage zion.pluginServiceUrl)" }
+              serviceUrl: { type: "string", description: "Override plugin host base URL (default from localStorage zion.pluginServiceUrl)" }
             },
             required: ["action"],
             additionalProperties: false
@@ -609,8 +1575,8 @@ function registerDefaultTools() {
             return cache[url].md.slice(0, 12000);
           }
 
-          // 通过 r.jina.ai 代理抓取，规避浏览器 CORS
-          const proxied = `https://r.jina.ai/${url}`;
+          // 通过 r.jinaai.cn 代理抓取，规避浏览器 CORS
+          const proxied = `https://r.jinaai.cn/${url}`;
           const res = await fetch(proxied, { redirect: "follow" });
           if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
           const text = await res.text();
@@ -637,13 +1603,13 @@ function registerDefaultTools() {
         const allowed = Array.isArray(args?.allowed_domains) ? args.allowed_domains.map(d => String(d).toLowerCase()) : [];
         const blocked = Array.isArray(args?.blocked_domains) ? args.blocked_domains.map(d => String(d).toLowerCase()) : [];
         try {
-          // 使用 DuckDuckGo lite 版，经 r.jina.ai 代理规避 CORS
-          const searchUrl = `https://r.jina.ai/http://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
+          // 使用 DuckDuckGo lite 版，经 r.jinaai.cn 代理规避 CORS
+          const searchUrl = `https://r.jinaai.cn/http://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
           const res = await fetch(searchUrl);
           if (!res.ok) return `HTTP ${res.status}: ${await res.text().catch(() => "")}`;
           const txt = await res.text();
 
-          // 1) 优先从 markdown 中提取 [title](url) 形式（r.jina.ai 常返回为 markdown/纯文本）
+          // 1) 优先从 markdown 中提取 [title](url) 形式（r.jinaai.cn 常返回为 markdown/纯文本）
           const mdLinks = Array.from(txt.matchAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g))
             .map(m => ({ title: (m[1] || "").trim(), url: m[2] }))
             // 过滤掉指向搜索页自身的链接
@@ -1066,10 +2032,9 @@ function registerDefaultTools() {
           if (!res.ok) {
             const txt = await res.text().catch(() => "");
             if (chatSessionId) {
-              const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
-              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
               const entry = {
                 toolCallId,
+                terminalSessionId: sessionId,
                 path,
                 prompt,
                 beforeContent,
@@ -1081,7 +2046,10 @@ function registerDefaultTools() {
                 error: txt || data?.error || "write failed",
                 at: Date.now()
               };
-              window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+              updateSessionAnnotations(chatSessionId, (prev) => {
+                const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+                return { ...prev, writeHistory: [...list, entry] };
+              });
             }
             return `HTTP ${res.status}: ${txt || data?.error || "write failed"}`;
           }
@@ -1089,10 +2057,9 @@ function registerDefaultTools() {
           // fp[path] = { complete: true, hash: await sha256Hex(content), at: Date.now() };
           // setFpStore(fp);
           if (chatSessionId) {
-            const prev = window.zion?.state?.get(`sessions.annotations.${chatSessionId}`) || {};
-            const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
             const entry = {
               toolCallId,
+              terminalSessionId: sessionId,
               path,
               prompt,
               beforeContent,
@@ -1106,7 +2073,10 @@ function registerDefaultTools() {
               ok: true,
               at: Date.now()
             };
-            window.zion?.state?.set(`sessions.annotations.${chatSessionId}`, { ...prev, writeHistory: [...list, entry] });
+            updateSessionAnnotations(chatSessionId, (prev) => {
+              const list = Array.isArray(prev.writeHistory) ? prev.writeHistory : [];
+              return { ...prev, writeHistory: [...list, entry] };
+            });
           }
           const out = { ...(data || {}), path, prompt };
           return JSON.stringify(out, null, 2);
@@ -1268,7 +2238,7 @@ function registerDefaultTools() {
         try {
           const sid = window.zion?.state?.get("sessions.currentId");
           if (!sid) return "No session";
-          const ann = window.zion?.state?.get(`sessions.annotations.${sid}`) || {};
+          const ann = getSessionAnnotations(sid);
           const items = Array.isArray(ann.tools) ? ann.tools : [];
           const it = items.find(x => String(x.id) === toolId);
           if (!it) return "Not found";
@@ -1495,8 +2465,8 @@ function registerDefaultTools() {
           const installer = (window.zion || {}).pluginInstaller;
 
           const readServiceUrl = () => {
-            try { return (localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8765").replace(/\/$/, ""); }
-            catch { return "http://127.0.0.1:8765"; }
+            try { return (localStorage.getItem("zion.pluginServiceUrl") || "http://127.0.0.1:8767").replace(/\/$/, ""); }
+            catch { return "http://127.0.0.1:8767"; }
           };
 
           const ensurePM = () => {
@@ -1504,7 +2474,52 @@ function registerDefaultTools() {
             if (!installer) throw new Error("PluginInstaller not ready");
           };
 
-          const connectDevWS = (serviceBase, devId, baseUrlAbs, pluginId) => {
+          const listDevSessionRecords = () => {
+            if (typeof pm?.listDevSessionRecords === "function") {
+              return pm.listDevSessionRecords();
+            }
+            try {
+              return JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}");
+            } catch {
+              return {};
+            }
+          };
+
+          const saveDevSessionRecord = (record) => {
+            if (typeof pm?.saveDevSessionRecord === "function") {
+              return pm.saveDevSessionRecord(record);
+            }
+            try {
+              const records = listDevSessionRecords();
+              records[record.pluginId] = {
+                devId: record.devId,
+                baseUrl: record.baseUrl,
+                dir: record.dir
+              };
+              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(records));
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const removeDevSessionRecord = (devId) => {
+            if (typeof pm?.removeDevSessionRecord === "function") {
+              return pm.removeDevSessionRecord({ devId });
+            }
+            try {
+              const records = listDevSessionRecords();
+              for (const [pluginId, record] of Object.entries(records)) {
+                if (record?.devId === devId) delete records[pluginId];
+              }
+              localStorage.setItem("zion.plugins.devSessionsInfo", JSON.stringify(records));
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const connectDevWS = (serviceBase, devId, baseUrlAbs, pluginId, sourceDir) => {
             try {
               const wsUrl = serviceBase.replace(/^http/, "ws") + `/plugins/dev/ws/${devId}`;
               const ws = new WebSocket(wsUrl);
@@ -1512,7 +2527,7 @@ function registerDefaultTools() {
                 try {
                   const msg = JSON.parse(ev.data);
                   if (msg?.type === "dev:change" && msg?.devId === devId) {
-                    const ret = await installer.installFromDevBase(baseUrlAbs, devId);
+                    const ret = await installer.installFromDevBase(baseUrlAbs, devId, { sourceDir });
                     if (ret.success && ret.plugin) {
                       try {
                         // 使用热重载方法（不检查版本变化）
@@ -1528,7 +2543,7 @@ function registerDefaultTools() {
               ws.onclose = () => { /* optional log */ };
 
               const sessions = window.zion.state.get("plugins.devSessions") || {};
-              sessions[devId] = { ws, baseUrl: baseUrlAbs, pluginId };
+              sessions[devId] = { ws, baseUrl: baseUrlAbs, pluginId, dir: sourceDir };
               window.zion.state.set("plugins.devSessions", sessions);
             } catch (e) { /* ignore ws error */ }
           };
@@ -1547,8 +2562,7 @@ function registerDefaultTools() {
             ensurePM();
             // Gather dev sessions mapping (runtime + persisted)
             const sessionsState = window.zion?.state?.get("plugins.devSessions") || {};
-            let persisted = {};
-            try { persisted = JSON.parse(localStorage.getItem("zion.plugins.devSessionsInfo") || "{}"); } catch {}
+            const persisted = listDevSessionRecords();
             const items = pm.list().map(p => {
               const run = Object.values(sessionsState).find((s) => s && s.pluginId === p.id) || null;
               const saved = persisted[p.id] || null;
@@ -1622,11 +2636,18 @@ function registerDefaultTools() {
             if (!devId || !baseUrlRel) return "Invalid dev start response";
 
             const baseAbs = serviceUrl.replace(/\/$/, "") + baseUrlRel;
-            const ret = await installer.installFromDevBase(baseAbs, devId);
+            const devDir = data?.data?.dir || path;
+            const ret = await installer.installFromDevBase(baseAbs, devId, { sourceDir: devDir });
             if (!ret.success || !ret.plugin) return `Install failed: ${ret.error?.message || "Unknown"}`;
             await pm.installFromInfo(ret.plugin, { enabled: true });
 
-            connectDevWS(serviceUrl, devId, baseAbs, ret.plugin.id);
+            connectDevWS(serviceUrl, devId, baseAbs, ret.plugin.id, devDir);
+            saveDevSessionRecord({
+              pluginId: ret.plugin.id,
+              devId,
+              baseUrl: baseAbs,
+              dir: devDir
+            });
 
             return JSON.stringify({ ok: true, devId, plugin: ret.plugin.id, baseUrl: baseAbs }, null, 2);
           }
@@ -1645,12 +2666,16 @@ function registerDefaultTools() {
               } catch {}
               try { sessions[id]?.ws?.close?.(); } catch {}
               delete sessions[id];
+              removeDevSessionRecord(id);
             };
 
             if (devId) {
               await stopOne(devId);
             } else {
-              const ids = Object.keys(sessions);
+              const ids = new Set(Object.keys(sessions));
+              for (const record of Object.values(listDevSessionRecords())) {
+                if (record?.devId) ids.add(record.devId);
+              }
               for (const id of ids) { await stopOne(id); }
             }
             window.zion.state.set("plugins.devSessions", sessions);
@@ -1664,7 +2689,7 @@ function registerDefaultTools() {
       };
     }
 
-    // 包装工具处理器：自动注入 terminal 上下文
+    // 包装终端感知工具：校验显式 session_id 并记录 execution context
     const wrappedHandlers = wrapHandlersWithTerminalContext(handlers);
     window.zion.state.set("chat.toolHandlers", wrappedHandlers);
 
@@ -1676,52 +2701,46 @@ function registerDefaultTools() {
 }
 
 /**
- * 包装工具处理器：自动注入当前 active terminal 的 session_id
+ * 包装终端感知工具处理器：强制要求显式 session_id，并记录执行上下文。
  * 
  * 设计原则：
  * 1. 插件间依赖最小：只读取状态，不依赖具体实现
- * 2. 向后兼容：用户仍可显式传递 session_id 来覆盖
- * 3. 集中管理：便于维护和扩展
+ * 2. 不读取 Terminal Panel 的 UI 焦点
+ * 3. 集中管理：便于维护、审计和扩展
  */
 function wrapHandlersWithTerminalContext(handlers) {
-  // 需要自动注入 session_id 的工具列表
-  const terminalAwareTools = [
-    'tree',      // 目录树
-    'read',      // 读取文件
-    'write',     // 写入文件
-    'edit',      // 编辑文件
-    'glob',      // 文件模式匹配
-    'grep',      // 内容搜索
-    'Bash'       // Shell 命令
-  ];
-  
-  for (const toolName of terminalAwareTools) {
+  for (const toolName of TERMINAL_AWARE_TOOL_NAMES) {
     if (handlers[toolName]) {
       const originalHandler = handlers[toolName];
       
-      // 创建包装后的处理器
-      handlers[toolName] = async function(args) {
+      handlers[toolName] = async function(args, ...rest) {
         try {
-          // 如果用户没有显式传递 session_id，则自动从 terminal.activeSessionId 获取
-          // 注意：只在 args 不存在或为 undefined 时自动注入
-          // 如果用户显式传递了 null 或空字符串，则视为用户意图不使用 session
-          if (args && args.session_id === undefined) {
-            const activeSessionId = window.zion?.state?.get("terminal.activeSessionId");
-            if (activeSessionId) {
-              // 创建新的 args 对象，避免修改原参数
-              args = { ...args, session_id: activeSessionId };
-            }
+          const terminalSessions = window.zion?.state?.get("terminal.sessions") || [];
+          const requirementError = getTerminalSessionRequirementError(toolName, args, terminalSessions);
+          if (requirementError) return requirementError;
+          const executionContext = createTerminalToolExecutionContext(
+            args,
+            terminalSessions
+          );
+          if (executionContext) {
+            const meta = rest[0] || {};
+            window.zion?.events?.emit?.("chat/toolArgsResolved", {
+              sessionId: meta.sessionId || null,
+              runId: meta.runId || null,
+              cardId: meta.cardId || null,
+              toolCallId: meta.toolCallId || null,
+              toolName,
+              args,
+              executionContext
+            });
           }
-          
-          // 调用原始处理器
-          return originalHandler(args);
+          return originalHandler(args, ...rest);
         } catch (e) {
           console.error(`[dev.tools] Wrapped handler for ${toolName} failed:`, e);
           throw e;
         }
       };
       
-      // 保持原始处理器的引用（便于调试）
       handlers[toolName].originalHandler = originalHandler;
     }
   }

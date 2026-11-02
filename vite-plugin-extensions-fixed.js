@@ -2,12 +2,31 @@ import { resolve, dirname, relative } from 'path';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { createRequire } from 'module';
 
+function collectCssFiles(root, current = root, files = []) {
+  for (const entry of readdirSync(current, { withFileTypes: true })) {
+    const path = resolve(current, entry.name);
+    if (entry.isDirectory()) {
+      collectCssFiles(root, path, files);
+    } else if (entry.isFile() && entry.name.endsWith('.css')) {
+      files.push({
+        path,
+        fileName: `extensions/${relative(root, path).replaceAll('\\', '/')}`
+      });
+    }
+  }
+  return files;
+}
+
 /**
  * 改进的 Zion Extensions 打包插件
  * 处理extensions目录下插件的依赖打包，确保插件内部的import被正确打包
  */
 export function zionExtensionsPlugin() {
   const require = createRequire(import.meta.url);
+  const externalizedBuiltinExtensions = new Set([
+    'dev.identity',
+    'dev.byteintl-model'
+  ]);
   
   return {
     name: 'zion-extensions-fixed',
@@ -31,6 +50,7 @@ export function zionExtensionsPlugin() {
       // 扫描所有插件
       const extensions = readdirSync(extensionsDir)
         .filter(dir => {
+          if (externalizedBuiltinExtensions.has(dir)) return false;
           const dirPath = resolve(extensionsDir, dir);
           try {
             return statSync(dirPath).isDirectory() && 
@@ -219,6 +239,20 @@ export function zionExtensionsPlugin() {
     },
     
     generateBundle(options, bundle) {
+      const extensionsRoot = resolve(globalThis.process.cwd(), 'extensions');
+      if (existsSync(extensionsRoot)) {
+        for (const style of collectCssFiles(extensionsRoot)) {
+          const extensionId = relative(extensionsRoot, style.path)
+            .split(/[\\/]/)[0];
+          if (externalizedBuiltinExtensions.has(extensionId)) continue;
+          this.emitFile({
+            type: 'asset',
+            fileName: style.fileName,
+            source: readFileSync(style.path)
+          });
+        }
+      }
+
       // 验证所有插件chunk都已生成
       const extensionChunks = Object.keys(bundle).filter(fileName => 
         fileName.includes('extensions/') && bundle[fileName].type === 'chunk'

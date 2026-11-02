@@ -1,0 +1,17 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sandbox:ListTemplates",
+        "sandbox:GetTemplate",
+        "sandbox:UpdateTemplate"
+      ],
+      "Resource": [
+        "acs:sandbox:cn-shanghai:1803625616810276:teams/a650d94a-8add-4c40-9995-6d94d99cf4d6",
+        "acs:sandbox:cn-shanghai:1803625616810276:teams/a650d94a-8add-4c40-9995-6d94d99cf4d6/templates/*"
+      ]
+    }
+  ]
+}

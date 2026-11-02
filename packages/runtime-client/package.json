@@ -1,0 +1,19 @@
+{
+  "name": "@zion/runtime-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Transport-neutral client helpers for Zion Runtime consumers",
+  "exports": {
+    "./sse": "./src/sse.mjs",
+    "./run-stream": "./src/run-stream.mjs",
+    "./extensions": "./src/extensions.mjs",
+    "./plugin-development": "./src/plugin-development.mjs",
+    "./extension-package": "./src/extension-package.mjs",
+    "./skill-package": "./src/skill-package.mjs"
+  },
+  "dependencies": {
+    "acorn": "8.15.0",
+    "eventsource-parser": "^4.1.0"
+  }
+}

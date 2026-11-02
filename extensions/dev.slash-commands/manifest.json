@@ -1,7 +1,7 @@
 {
   "name": "dev.slash-commands",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: Slash commands for quick action invocation",
+  "description": "Register slash command entries for quickly invoking common actions.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
@@ -9,12 +9,37 @@
     "name": "Slash Commands",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "斜杠命令",
+        "en-US": "Slash Commands"
+      },
+      "description": {
+        "zh-CN": "注册斜杠命令入口以快速触发常用动作。",
+        "en-US": "Register slash command entries for quickly invoking common actions."
+      },
+      "icon": "terminal",
+      "category": "productivity",
+      "features": {
+        "zh-CN": [
+          "注册斜杠命令入口以快速触发常用动作。"
+        ],
+        "en-US": [
+          "Register slash command entries for quickly invoking common actions."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "slash.show",
-          "title": "Show Slash Commands"
+          "title": "Show Slash Commands",
+          "titleKey": "dev.slash-commands.cmd.show",
+          "categoryKey": "dev.slash-commands.category.slash"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [
@@ -22,6 +47,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.slash-commands",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.slash-commands"
   }
 }

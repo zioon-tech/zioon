@@ -1,31 +1,69 @@
 {
   "name": "dev.langchain-chat",
-  "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.langchain-chat",
+  "version": "0.0.3",
+  "description": "Provide chat run, stop, retry, and model configuration capabilities.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.langchain-chat",
-    "name": "dev.langchain-chat",
-    "version": "0.0.1",
+    "name": "Chat",
+    "version": "0.0.3",
     "main": "./main.js",
+    "dependencies": {
+      "dev.session-manager": "*"
+    },
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "聊天",
+        "en-US": "Chat"
+      },
+      "description": {
+        "zh-CN": "提供聊天运行、停止、重试和模型配置能力。",
+        "en-US": "Provide chat run, stop, retry, and model configuration capabilities."
+      },
+      "icon": "comment-discussion",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "提供聊天运行、停止、重试和模型配置能力。"
+        ],
+        "en-US": [
+          "Provide chat run, stop, retry, and model configuration capabilities."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "chat.runSelection",
-          "title": "Run Chat (Selection)"
+          "title": "Run Chat (Selection)",
+          "titleKey": "dev.langchain-chat.cmd.runSelection",
+          "categoryKey": "dev.langchain-chat.category.chat"
         },
         {
           "id": "chat.run",
-          "title": "Run Chat"
+          "title": "Run Chat",
+          "titleKey": "dev.langchain-chat.cmd.run",
+          "categoryKey": "dev.langchain-chat.category.chat"
         },
         {
           "id": "chat.stop",
-          "title": "Stop Chat"
+          "title": "Stop Chat",
+          "titleKey": "dev.langchain-chat.cmd.stop",
+          "categoryKey": "dev.langchain-chat.category.chat"
         },
         {
           "id": "chat.retry",
-          "title": "Retry Chat"
+          "title": "Retry Chat",
+          "titleKey": "dev.langchain-chat.cmd.retry",
+          "categoryKey": "dev.langchain-chat.category.chat"
         }
       ],
       "keybindings": [
@@ -38,11 +76,6 @@
           "command": "chat.stop",
           "key": "Escape",
           "when": "editorFocus"
-        },
-        {
-          "command": "chat.retry",
-          "key": "Mod-Shift-r",
-          "when": "editorFocus"
         }
       ]
     },
@@ -51,6 +84,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.langchain-chat",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.langchain-chat"
   }
 }

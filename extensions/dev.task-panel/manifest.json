@@ -1,28 +1,57 @@
 {
   "name": "dev.task-panel",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.task-panel",
+  "description": "Manage tasks and todos and continue unfinished work.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.task-panel",
-    "name": "dev.task-panel",
+    "name": "Task Panel",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "任务面板",
+        "en-US": "Task Panel"
+      },
+      "description": {
+        "zh-CN": "管理任务和待办，并继续执行未完成工作。",
+        "en-US": "Manage tasks and todos and continue unfinished work."
+      },
+      "icon": "checklist",
+      "category": "productivity",
+      "features": {
+        "zh-CN": [
+          "管理任务和待办，并继续执行未完成工作。"
+        ],
+        "en-US": [
+          "Manage tasks and todos and continue unfinished work."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "tasks.togglePanel",
-          "title": "Toggle Tasks Panel"
+          "title": "Toggle Tasks Panel",
+          "titleKey": "dev.task-panel.cmd.togglePanel",
+          "categoryKey": "dev.task-panel.category.tasks"
         },
         {
           "id": "tasks.addTask",
-          "title": "Add Task"
+          "title": "Add Task",
+          "titleKey": "dev.task-panel.cmd.addTask",
+          "categoryKey": "dev.task-panel.category.tasks"
         },
         {
           "id": "tasks.clearTasks",
-          "title": "Clear All Tasks"
+          "title": "Clear All Tasks",
+          "titleKey": "dev.task-panel.cmd.clearTasks",
+          "categoryKey": "dev.task-panel.category.tasks"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [
@@ -30,6 +59,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.task-panel",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.task-panel"
   }
 }

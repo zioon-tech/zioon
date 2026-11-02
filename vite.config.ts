@@ -1,10 +1,30 @@
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 import { zionExtensionsPlugin } from "./vite-plugin-extensions-fixed.js";
 import { VitePWA } from 'vite-plugin-pwa';
+import { createRequire } from "node:module";
+import { WORKBENCH_NAVIGATION_FALLBACK_DENYLIST } from "./src/pwa-navigation";
+
+const require = createRequire(import.meta.url);
+const reactPath = require.resolve("react");
+const reactJsxRuntimePath = require.resolve("react/jsx-runtime");
+const reactJsxDevRuntimePath = require.resolve("react/jsx-dev-runtime");
+const reactDomPath = require.resolve("react-dom");
+const reactDomClientPath = require.resolve("react-dom/client");
 
 export default defineConfig({
+  resolve: {
+    dedupe: ["react", "react-dom"],
+    alias: [
+      { find: /^react-dom\/client$/, replacement: reactDomClientPath },
+      { find: /^react-dom$/, replacement: reactDomPath },
+      { find: /^react\/jsx-runtime$/, replacement: reactJsxRuntimePath },
+      { find: /^react\/jsx-dev-runtime$/, replacement: reactJsxDevRuntimePath },
+      { find: /^react$/, replacement: reactPath }
+    ]
+  },
   server: {
-    port: 5174,
+    port: 5177,
     strictPort: false,
     host: true  // 允许局域网访问
   },
@@ -14,7 +34,7 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
-    emptyOutDir: false,
+    emptyOutDir: true,
     // 增加chunk大小限制警告
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
@@ -26,6 +46,7 @@ export default defineConfig({
       // 不排除任何依赖，全部打包
       external: [], 
       output: {
+        onlyExplicitManualChunks: true,
         // 为插件创建独立的chunk
         manualChunks: (id) => {
           // 插件代码单独打包
@@ -50,16 +71,22 @@ export default defineConfig({
     copyPublicDir: true
   },
   plugins: [
+    react(),
     zionExtensionsPlugin() as any,
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
+      workbox: {
+        importScripts: ["/sw-client-refresh.js"],
+        navigateFallbackDenylist: WORKBENCH_NAVIGATION_FALLBACK_DENYLIST,
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
+      },
       manifest: {
         name: 'Zion Next',
         short_name: 'Zion',
         description: 'Zion Next - A modern editor playground',
         theme_color: '#282a36',
-        background_color: '#ffffff',
+        background_color: '#282a36',
         display: 'standalone',
         icons: [
           {

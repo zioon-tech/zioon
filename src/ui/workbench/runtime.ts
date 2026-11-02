@@ -5,6 +5,7 @@ export type ActivityBarItem = {
   pluginId: string;
   icon: string;
   tooltip?: string;
+  tooltipKey?: string;
   order?: number;
   when?: string;
   sideBarViewId?: string;
@@ -17,15 +18,30 @@ export type SideBarViewComponent = {
   render: (container: HTMLElement) => { dispose?: () => void } | void;
 };
 
+export type SideBarHeaderLeadingContext = {
+  setVisible(visible: boolean): void;
+  setWidth(px: number): void;
+};
+
+export type SideBarHeaderLeading = {
+  render: (
+    container: HTMLElement,
+    context: SideBarHeaderLeadingContext
+  ) => { dispose?: () => void } | void;
+};
+
 export type SideBarView = {
   id: string;
   pluginId: string;
   title: string;
+  titleKey?: string;
   icon?: string;
   order?: number;
   when?: string;
   canClose?: boolean;
-  headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+  showHideAction?: boolean;
+  headerLeading?: SideBarHeaderLeading;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
   component: SideBarViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;
@@ -41,11 +57,13 @@ export type BottomPanelView = {
   id: string;
   pluginId: string;
   title: string;
+  titleKey?: string;
   icon?: string;
   order?: number;
   when?: string;
   keepWhenActive?: boolean;
   maximizable?: boolean;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
   component: BottomPanelViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;
@@ -61,18 +79,79 @@ export type AuxiliaryBarView = {
   id: string;
   pluginId: string;
   title: string;
+  titleKey?: string;
   icon?: string;
   order?: number;
   when?: string;
   canClose?: boolean;
   keepWhenActive?: boolean;
-  headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+  headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
   component: AuxiliaryBarViewComponent;
   onActivate?: () => void | Promise<void>;
   onDeactivate?: () => void | Promise<void>;
   onResize?: (size: { width: number; height: number }) => void;
   onDispose?: () => void;
 };
+
+export type InspectorFile = {
+  kind?: "loading" | "error" | "text" | "image" | "pdf" | "binary";
+  content?: string;
+  blob?: Blob;
+  message?: string;
+  size?: number;
+  truncated?: boolean;
+  loadedBytes?: number;
+  previewContent?: string;
+  loadFullContent?: () => Promise<string>;
+};
+
+export type InspectorItem = {
+  id: string;
+  ownerId?: string;
+  title: string;
+  path?: string;
+  displayPath?: string;
+  url?: string;
+  browserStartPage?: boolean;
+  language?: string;
+  file?: InspectorFile;
+  editable?: boolean;
+  onSave?: (content: string) => void | Promise<void>;
+  actions?: Array<{
+    id: string;
+    title: string;
+    icon?: string;
+    run: (item: InspectorItem) => void | Promise<void>;
+  }>;
+  render?: (
+    container: HTMLElement,
+    context: {
+      item: InspectorItem;
+      update: (patch: Partial<InspectorItem>) => boolean;
+      close: () => void;
+      openInEditor: () => void;
+    }
+  ) => void | { dispose?: () => void };
+};
+
+export type InspectorRenderer = {
+  id: string;
+  priority?: number;
+  canRender: (item: InspectorItem) => boolean;
+  render: NonNullable<InspectorItem["render"]>;
+};
+
+export type InspectorTextEditorDecorator = {
+  id: string;
+  priority?: number;
+  createExtension: (editor: any, item: InspectorItem) => any;
+};
+
+export function getInspectorTextSessionId(item: Pick<InspectorItem, "id" | "ownerId" | "path" | "displayPath">): string {
+  const owner = encodeURIComponent(String(item?.ownerId || "core"));
+  const source = encodeURIComponent(String(item?.path || item?.displayPath || item?.id || "untitled"));
+  return `inspector-file:${owner}:${source}`;
+}
 
 type StateLike = {
   get: <T = unknown>(key: string) => T | undefined;
@@ -104,6 +183,41 @@ function evalWhen(expr?: string): boolean {
   if (s === "true") return true;
   if (s === "false") return false;
   return true;
+}
+
+function readViewOrder(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map((item) => String(item || "")).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeViewOrder(key: string, ids: string[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(ids.map((id) => String(id || "")).filter(Boolean)));
+  } catch {}
+}
+
+function sortViewsWithCustomOrder<T extends { id: string; order?: number }>(views: T[], storageKey: string): T[] {
+  const defaults = [...views].sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
+  const custom = readViewOrder(storageKey);
+  if (!custom.length) return defaults;
+  const byId = new Map(defaults.map((view) => [view.id, view]));
+  const used = new Set<string>();
+  const ordered: T[] = [];
+  for (const id of custom) {
+    const view = byId.get(id);
+    if (!view || used.has(id)) continue;
+    ordered.push(view);
+    used.add(id);
+  }
+  for (const view of defaults) {
+    if (!used.has(view.id)) ordered.push(view);
+  }
+  return ordered;
 }
 
 type FocusSnapshot =
@@ -452,7 +566,9 @@ class ActivityBarRuntime {
   }
 
   getItems(): ActivityBarItem[] {
-    const arr = Array.from(this.items.values()).filter(it => evalWhen(it.when));
+    const arr = Array.from(this.items.values()).filter(it =>
+      evalWhen(it.when) && !it.auxiliaryBarViewId
+    );
     arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
     return arr;
   }
@@ -534,6 +650,16 @@ class ActivityBarRuntime {
     }
   }
 
+  syncActiveByBottomPanelViewId(viewId: string) {
+    const match = Array.from(this.items.values())
+      .filter(it => it.bottomPanelViewId === viewId)
+      .sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id))[0];
+    if (match) {
+      core?.state.set("ui.activityBar.activeItemId", match.id);
+      this.emitter.emit();
+    }
+  }
+
   getActiveItemId(): string | null {
     return (core?.state.get<string>("ui.activityBar.activeItemId") ?? null) as any;
   }
@@ -597,8 +723,8 @@ class SideBarRuntime {
   }
 
   show(): void {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.sideBar.visible", true);
     this.emitter.emit();
   }
@@ -650,6 +776,8 @@ class AuxiliaryBarRuntime {
   private views = new Map<string, AuxiliaryBarView>();
   private emitter = new ChangeEmitter();
   private returnFocus: FocusSnapshot = null;
+  private readonly orderKey = "zion.ui.auxiliaryBar.viewOrder";
+  private transientWidth: { baseWidth: number; appliedWidth: number; owners: Map<string, number> } | null = null;
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -681,8 +809,18 @@ class AuxiliaryBarRuntime {
 
   getViews(): AuxiliaryBarView[] {
     const arr = Array.from(this.views.values()).filter(v => evalWhen(v.when));
-    arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
-    return arr;
+    return sortViewsWithCustomOrder(arr, this.orderKey);
+  }
+
+  setViewOrder(ids: string[]): void {
+    const alive = new Set(Array.from(this.views.keys()));
+    const normalized = ids.filter((id) => alive.has(id));
+    const present = new Set(normalized);
+    for (const view of this.getViews()) {
+      if (!present.has(view.id)) normalized.push(view.id);
+    }
+    writeViewOrder(this.orderKey, normalized);
+    this.emitter.emit();
   }
 
   getView(id: string): AuxiliaryBarView | null {
@@ -717,8 +855,8 @@ class AuxiliaryBarRuntime {
   }
 
   show() {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();
   }
@@ -744,11 +882,56 @@ class AuxiliaryBarRuntime {
     return v == null ? false : !!v;
   }
 
-  setWidth(px: number): void {
-    const w = Math.max(240, Math.min(960, Math.round(px)));
+  private clampWidth(px: number): number {
+      const width = Math.round(px);
+      return Number.isFinite(width) ? Math.max(240, width) : 240;
+  }
+
+  private applyWidth(px: number, options: { preserveTransient?: boolean } = {}): number {
+    const w = this.clampWidth(px);
+    if (!options.preserveTransient) this.transientWidth = null;
     core?.state.set("ui.auxiliaryBar.width", w);
     core?.state.set("ui.auxiliaryBar.visible", true);
     this.emitter.emit();
+    return w;
+  }
+
+  setWidth(px: number): void {
+    this.applyWidth(px);
+  }
+
+  requestTemporaryWidth(ownerId: string, px: number): void {
+    const owner = String(ownerId || "default");
+    const target = this.clampWidth(px);
+    const current = this.getWidth();
+    if (!this.transientWidth && current >= target) return;
+    if (!this.transientWidth) {
+      this.transientWidth = { baseWidth: current, appliedWidth: current, owners: new Map() };
+    }
+    this.transientWidth.owners.set(owner, target);
+    const desired = Math.max(...Array.from(this.transientWidth.owners.values()));
+    if (desired > current) {
+      this.transientWidth.appliedWidth = this.applyWidth(desired, { preserveTransient: true });
+    }
+  }
+
+  releaseTemporaryWidth(ownerId: string): void {
+    const transient = this.transientWidth;
+    if (!transient) return;
+    transient.owners.delete(String(ownerId || "default"));
+    const current = this.getWidth();
+    const canRestore = Math.abs(current - transient.appliedWidth) <= 2;
+    if (!canRestore) {
+      this.transientWidth = null;
+      return;
+    }
+    if (transient.owners.size > 0) {
+      const desired = Math.max(...Array.from(transient.owners.values()));
+      if (desired < current) transient.appliedWidth = this.applyWidth(desired, { preserveTransient: true });
+      return;
+    }
+    this.transientWidth = null;
+    if (transient.baseWidth < current) this.applyWidth(transient.baseWidth, { preserveTransient: true });
   }
 
   getWidth(): number {
@@ -757,11 +940,277 @@ class AuxiliaryBarRuntime {
   }
 }
 
+type InspectorWidthOptions = {
+  emit?: boolean;
+};
+
+class InspectorRuntime {
+  private readonly items = new Map<string, InspectorItem>();
+  private readonly renderers = new Map<string, InspectorRenderer>();
+  private readonly textEditorDecorators = new Map<string, InspectorTextEditorDecorator>();
+  private readonly textEditors = new Map<string, any>();
+  private textRevealHandler: ((itemId: string, options?: { from?: number; to?: number; focus?: boolean }) => any) | null = null;
+  private textEditorDecoratorVersion = 0;
+  private readonly emitter = new ChangeEmitter();
+
+  onDidChange(fn: () => void): Disposable {
+    return this.emitter.onDidChange(fn);
+  }
+
+  registerRenderer(renderer: InspectorRenderer): Disposable {
+    const id = String(renderer?.id || "").trim();
+    if (!id || typeof renderer.canRender !== "function" || typeof renderer.render !== "function") {
+      return { dispose() {} };
+    }
+    const registered = { ...renderer, id };
+    this.renderers.set(id, registered);
+    this.emitter.emit();
+    return {
+      dispose: () => {
+        if (this.renderers.get(id) !== registered) return;
+        this.renderers.delete(id);
+        this.emitter.emit();
+      }
+    };
+  }
+
+  registerTextEditorDecorator(decorator: InspectorTextEditorDecorator): Disposable {
+    const id = String(decorator?.id || "").trim();
+    if (!id || typeof decorator.createExtension !== "function") return { dispose() {} };
+    const registered = { ...decorator, id };
+    this.textEditorDecorators.set(id, registered);
+    this.textEditorDecoratorVersion += 1;
+    this.emitter.emit();
+    return {
+      dispose: () => {
+        if (this.textEditorDecorators.get(id) !== registered) return;
+        this.textEditorDecorators.delete(id);
+        this.textEditorDecoratorVersion += 1;
+        this.emitter.emit();
+      }
+    };
+  }
+
+  getTextEditorExtensions(editor: any, item: InspectorItem): any[] {
+    return Array.from(this.textEditorDecorators.values())
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      .flatMap((decorator) => {
+        try {
+          const extension = decorator.createExtension(editor, item);
+          return extension == null ? [] : [extension];
+        } catch {
+          return [];
+        }
+      });
+  }
+
+  getTextEditorDecoratorVersion(): number {
+    return this.textEditorDecoratorVersion;
+  }
+
+  attachTextEditor(itemId: string, editor: any): Disposable {
+    const id = String(itemId || "");
+    if (!id || !editor) return { dispose() {} };
+    this.textEditors.set(id, editor);
+    return {
+      dispose: () => {
+        if (this.textEditors.get(id) === editor) this.textEditors.delete(id);
+      }
+    };
+  }
+
+  getTextEditor(itemIdOrSessionId?: string): any | null {
+    const target = String(itemIdOrSessionId || "");
+    if (!target) {
+      const activeId = this.getActiveItemId();
+      return activeId ? this.textEditors.get(activeId) || null : null;
+    }
+    const direct = this.textEditors.get(target);
+    if (direct) return direct;
+    for (const editor of this.textEditors.values()) {
+      if (String(editor?.sessionId || "") === target) return editor;
+    }
+    return null;
+  }
+
+  getTextEditorForView(view: any): any | null {
+    if (!view) return null;
+    for (const editor of this.textEditors.values()) {
+      try {
+        if (editor?.getView?.() === view) return editor;
+      } catch {}
+    }
+    return null;
+  }
+
+  getTextSource(itemIdOrSessionId?: string): { item: InspectorItem; sessionId: string; content: string } | null {
+    const target = String(itemIdOrSessionId || "");
+    const item = target
+      ? this.items.get(target)
+        || this.getItems().find((candidate) => getInspectorTextSessionId(candidate) === target)
+        || null
+      : this.getActiveItem();
+    if (!item || item.url || item.file?.kind !== "text") return null;
+    return {
+      item,
+      sessionId: getInspectorTextSessionId(item),
+      content: String(item.file.content || "")
+    };
+  }
+
+  setTextRevealHandler(handler: ((itemId: string, options?: { from?: number; to?: number; focus?: boolean }) => any) | null): Disposable {
+    this.textRevealHandler = typeof handler === "function" ? handler : null;
+    return {
+      dispose: () => {
+        if (this.textRevealHandler === handler) this.textRevealHandler = null;
+      }
+    };
+  }
+
+  revealText(itemIdOrSessionId: string, options?: { from?: number; to?: number; focus?: boolean }): any {
+    try {
+      const target = String(itemIdOrSessionId || "");
+      const item = this.items.get(target)
+        || this.getItems().find((candidate) => getInspectorTextSessionId(candidate) === target)
+        || null;
+      return this.textRevealHandler?.(item?.id || target, options) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  getRenderer(item: InspectorItem): InspectorRenderer | null {
+    return Array.from(this.renderers.values())
+      .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+      .find((renderer) => {
+        try { return renderer.canRender(item); } catch { return false; }
+      }) || null;
+  }
+
+  open(input: InspectorItem): string {
+    const id = String(input?.id || "").trim();
+    if (!id) return "";
+    const next: InspectorItem = {
+      ...input,
+      id,
+      ownerId: String(input.ownerId || "core"),
+      title: String(input.title || input.path || "Untitled"),
+      path: String(input.path || ""),
+      displayPath: String(input.displayPath || input.path || ""),
+      language: String(input.language || "text")
+    };
+    const ownerId = next.ownerId || "core";
+    const pathKey = next.path || next.displayPath || next.title;
+    for (const [existingId, existing] of this.items) {
+      if (existingId === id) continue;
+      if (existing.ownerId !== ownerId) continue;
+      const existingPath = existing.path || existing.displayPath || existing.title;
+      if (!pathKey || existingPath !== pathKey) continue;
+      this.items.delete(existingId);
+      if (this.getActiveItemId() === existingId) {
+        core?.state.set("ui.inspector.activeItemId", id);
+      }
+    }
+    this.items.set(id, next);
+    core?.state.set("ui.inspector.activeItemId", id);
+    core?.state.set("ui.inspector.visible", true);
+    this.emitter.emit();
+    return id;
+  }
+
+  update(id: string, patch: Partial<InspectorItem>): boolean {
+    const current = this.items.get(id);
+    if (!current) return false;
+    this.items.set(id, { ...current, ...patch, id });
+    this.emitter.emit();
+    return true;
+  }
+
+  close(id: string): void {
+    const items = this.getItems();
+    const closedIndex = items.findIndex((item) => item.id === id);
+    if (!this.items.delete(id)) return;
+    const remaining = this.getItems();
+    if (this.getActiveItemId() === id) {
+      core?.state.set("ui.inspector.activeItemId", remaining[Math.min(Math.max(0, closedIndex), remaining.length - 1)]?.id || null);
+    }
+    if (remaining.length === 0) {
+      core?.state.set("ui.inspector.visible", false);
+    }
+    this.emitter.emit();
+  }
+
+  clearOwner(ownerId: string): void {
+    const owner = String(ownerId || "");
+    let changed = false;
+    for (const [id, item] of this.items) {
+      if (item.ownerId !== owner) continue;
+      this.items.delete(id);
+      changed = true;
+    }
+    if (changed) {
+      if (!this.items.has(this.getActiveItemId() || "")) {
+        core?.state.set("ui.inspector.activeItemId", this.getItems()[0]?.id || null);
+      }
+      this.emitter.emit();
+    }
+  }
+
+  getItems(): InspectorItem[] {
+    return Array.from(this.items.values());
+  }
+
+  getActiveItemId(): string | null {
+    return (core?.state.get<string>("ui.inspector.activeItemId") ?? null) as string | null;
+  }
+
+  getActiveItem(): InspectorItem | null {
+    const id = this.getActiveItemId();
+    return id ? this.items.get(id) || null : null;
+  }
+
+  activate(id: string): void {
+    if (!this.items.has(id)) return;
+    core?.state.set("ui.inspector.activeItemId", id);
+    core?.state.set("ui.inspector.visible", true);
+    this.emitter.emit();
+  }
+
+  show(): void {
+    core?.state.set("ui.inspector.visible", true);
+    this.emitter.emit();
+  }
+
+  hide(): void {
+    core?.state.set("ui.inspector.visible", false);
+    this.emitter.emit();
+  }
+
+  isVisible(): boolean {
+    return !!core?.state.get<boolean>("ui.inspector.visible");
+  }
+
+  setWidth(px: number, options: InspectorWidthOptions = {}): void {
+    const width = Math.round(px);
+    core?.state.set("ui.inspector.width", Number.isFinite(width) ? Math.max(340, width) : 340);
+    if (!this.isVisible()) core?.state.set("ui.inspector.visible", true);
+    if (options.emit !== false) this.emitter.emit();
+  }
+
+  getWidth(): number {
+    const value = core?.state.get<number>("ui.inspector.width");
+    return typeof value === "number" && Number.isFinite(value)
+      ? Math.max(340, value)
+      : 480;
+  }
+}
+
 class BottomPanelRuntime {
   private views = new Map<string, BottomPanelView>();
   private emitter = new ChangeEmitter();
   private lastNonMaximizedHeight: number | null = null;
   private returnFocus: FocusSnapshot = null;
+  private readonly orderKey = "zion.ui.bottomPanel.viewOrder";
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
@@ -793,8 +1242,18 @@ class BottomPanelRuntime {
 
   getViews(): BottomPanelView[] {
     const arr = Array.from(this.views.values()).filter(v => evalWhen(v.when));
-    arr.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.id.localeCompare(b.id));
-    return arr;
+    return sortViewsWithCustomOrder(arr, this.orderKey);
+  }
+
+  setViewOrder(ids: string[]): void {
+    const alive = new Set(Array.from(this.views.keys()));
+    const normalized = ids.filter((id) => alive.has(id));
+    const present = new Set(normalized);
+    for (const view of this.getViews()) {
+      if (!present.has(view.id)) normalized.push(view.id);
+    }
+    writeViewOrder(this.orderKey, normalized);
+    this.emitter.emit();
   }
 
   getView(id: string): BottomPanelView | null {
@@ -805,11 +1264,18 @@ class BottomPanelRuntime {
     return (core?.state.get<string>("ui.bottomPanel.activeViewId") ?? null) as any;
   }
 
+  getLastOpenedViewId(): string | null {
+    const id = (core?.state.get<string>("ui.bottomPanel.lastOpenedViewId") ?? null) as any;
+    return id && this.views.has(id) ? id : null;
+  }
+
   activateView(id: string): void {
     if (!this.views.has(id)) return;
     this.show();
     core?.state.set("ui.bottomPanel.activeViewId", id);
+    core?.state.set("ui.bottomPanel.lastOpenedViewId", id);
     core?.events.emit("ui/bottomPanelActiveViewChanged", { id });
+    activityBarRuntime.syncActiveByBottomPanelViewId(id);
     this.emitter.emit();
   }
 
@@ -829,8 +1295,8 @@ class BottomPanelRuntime {
   }
 
   show() {
-    const wasVisible = this.isVisible();
-    if (!wasVisible) this.returnFocus = captureFocusSnapshot();
+    if (this.isVisible()) return;
+    this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.bottomPanel.visible", true);
     this.emitter.emit();
   }
@@ -859,7 +1325,7 @@ class BottomPanelRuntime {
   setHeight(px: number): void {
     const h = Math.max(120, Math.min(700, Math.round(px)));
     core?.state.set("ui.bottomPanel.height", h);
-    core?.state.set("ui.bottomPanel.visible", true);
+    if (!this.isVisible()) core?.state.set("ui.bottomPanel.visible", true);
     if (!this.isMaximized()) this.lastNonMaximizedHeight = h;
     this.emitter.emit();
   }
@@ -895,5 +1361,6 @@ class BottomPanelRuntime {
 export const activityBarRuntime = new ActivityBarRuntime();
 export const sideBarRuntime = new SideBarRuntime();
 export const auxiliaryBarRuntime = new AuxiliaryBarRuntime();
+export const inspectorRuntime = new InspectorRuntime();
 export const bottomPanelRuntime = new BottomPanelRuntime();
 export const responsiveRuntime = new ResponsiveRuntime();

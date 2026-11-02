@@ -1,8 +1,12 @@
 /**
  * LLM 代理工具
- * 智能降级：优先使用 zion-local-tools 后端代理，失败时自动降级为直接请求
+ * 智能降级：优先使用 Zion Runtime 模型网关，失败时自动降级为直接请求
  * 解决 CORS 问题，支持流式/非流式请求
  */
+import {
+  DEFAULT_WORKBENCH_RUNTIME_BASE_URL,
+  readWorkbenchRuntimeConfig
+} from "../../src/runtime/workbench-runtime-config";
 
 // 大模型提供商配置
 const LLM_PROVIDERS: Record<string, { name: string; baseURL: string }> = {
@@ -48,14 +52,13 @@ let backendHealthCache: {
 } | null = null;
 
 const HEALTH_CHECK_CACHE_TTL = 5000; // 缓存 5 秒
-const DEFAULT_BACKEND_URL = 'http://127.0.0.1:8765';
+const DEFAULT_BACKEND_URL = DEFAULT_WORKBENCH_RUNTIME_BASE_URL;
 
 function getBackendUrl(): string {
-  try {
-    const v = (window as any)?.zion?.state?.get?.("localTools.baseUrl");
-    if (typeof v === "string" && v.trim()) return v.trim();
-  } catch {}
-  return DEFAULT_BACKEND_URL;
+  return readWorkbenchRuntimeConfig({
+    state: (window as any)?.zion?.state,
+    storage: globalThis.localStorage
+  }).baseUrl || DEFAULT_BACKEND_URL;
 }
 
 /**
@@ -94,7 +97,10 @@ async function checkBackendAvailable(): Promise<boolean> {
     
     clearTimeout(timeoutId);
     
-    const available = response.ok;
+    const payload = await response.json().catch(() => null);
+    const available = response.ok
+      && payload?.ok === true
+      && payload?.service === "zion-runtime";
     backendHealthCache = { available, checkedAt: now, backendUrl };
     
     if (available) {
@@ -130,9 +136,19 @@ export function detectProviderFromURL(url: string): string | null {
 /**
  * 构建代理 URL
  */
-function buildProxyURL(provider: string, originalURL: string): string {
+function buildProxyURL(
+  _provider: string,
+  originalURL: string,
+  modelProfileId = ""
+): string {
   const backendUrl = getBackendUrl();
-  return `${backendUrl}/llm/proxy/any/${encodeURIComponent(String(originalURL || ""))}`;
+  const query = new URLSearchParams({
+    target: String(originalURL || "")
+  });
+  if (modelProfileId) {
+    query.set("profileId", modelProfileId);
+  }
+  return `${backendUrl}/v1/model-gateway/proxy?${query}`;
 }
 
 /**
@@ -144,6 +160,7 @@ export interface LLMProxyRequestConfig {
   headers: Record<string, string>;
   body: any;
   signal?: AbortSignal;
+  modelProfileId?: string;
 }
 
 /**
@@ -166,7 +183,11 @@ export async function proxyLLMRequest(config: LLMProxyRequestConfig): Promise<Re
  * 通过代理发送请求
  */
 async function proxyRequest(config: LLMProxyRequestConfig): Promise<Response> {
-  const proxyURL = buildProxyURL("any", config.url);
+  const proxyURL = buildProxyURL(
+    "any",
+    config.url,
+    String(config.modelProfileId || "").trim()
+  );
   
   const body = typeof config.body === 'string' ? config.body : JSON.stringify(config.body);
   

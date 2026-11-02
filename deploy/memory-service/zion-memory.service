@@ -1,0 +1,24 @@
+[Unit]
+Description=Zion Memory (agent-fs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zion-memory
+Group=zion-memory
+WorkingDirectory=/opt/zion-memory/apps/memory-service
+EnvironmentFile=/etc/zion-memory/service.env
+# OSS credentials are supplied transiently under /run, never in the checkout.
+EnvironmentFile=-/run/zion-memory/oss.env
+ExecStart=/opt/bun-1.4.1/bun src/main.ts
+Restart=on-failure
+RestartSec=5
+StateDirectory=zion-memory
+UMask=0077
+MemoryHigh=384M
+MemoryMax=512M
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

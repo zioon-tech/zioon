@@ -19,14 +19,151 @@ import { TokenCounter } from './token-counter.js';
 import { KVCacheOptimizer } from './kv-cache-optimizer.js';
 import { CompressionSettingsPanel } from './ui/settings-panel.js';
 import { CompressionStatus } from './ui/compression-status.js';
+import { stripAssistantBlockIdComment } from '../../src/chat/restore.ts';
+import { isContinuationBoundaryLine } from '../../src/chat/session-document-format.js';
+import { readWorkbenchRuntimeConfig } from '../../src/runtime/workbench-runtime-config.ts';
+import { runtimePluginCommand } from '../../src/runtime/runtime-plugin-commands.ts';
+import {
+  compressionSettingsSyncDirection,
+  loadCompressionSettingsFromRuntime,
+  syncCompressionSettingsToRuntime
+} from './compression-runtime-state.js';
+
+const I18N_NS = 'dev.context-compression';
+const I18N_MESSAGES = {
+  'zh-CN': {
+    'category.compression': '压缩',
+    'cmd.manual': '压缩对话（手动）',
+    'cmd.strategy.opencode': '使用 OpenCode 策略压缩',
+    'cmd.strategy.claudeCode': '使用 Claude Code 策略压缩',
+    'cmd.strategy.cursor': '使用 Cursor 策略压缩',
+    'cmd.strategy.manus': '使用 Manus 策略压缩',
+    'cmd.strategy.focusAgent': '使用 Focus Agent 策略压缩',
+    'cmd.settings': '打开压缩设置',
+    'cmd.stats': '显示压缩统计',
+    'settings.title': '压缩',
+    'settings.description': '上下文压缩与摘要策略',
+    'settings.basics': '基础设置',
+    'settings.actions': '更多操作',
+    'settings.autoCompression.label': '自动压缩',
+    'settings.autoCompression.description': '在上下文过长时自动触发压缩',
+    'settings.strategy.label': '默认策略',
+    'settings.strategy.description': '决定自动压缩优先采用的方式',
+    'settings.strategy.auto': '自动选择',
+    'settings.threshold.label': '触发阈值',
+    'settings.threshold.description': '达到上下文比例后触发压缩，通常建议 0.8',
+    'settings.limit.label': '上下文上限',
+    'settings.limit.description': '压缩计算时参考的 token 上限',
+    'settings.advanced.label': '高级压缩配置',
+    'settings.advanced.description': '打开完整压缩设置面板',
+    'settings.advanced.action': '打开高级配置',
+    'settings.stats.label': '压缩统计',
+    'settings.stats.description': '查看压缩次数与节省情况',
+    'settings.stats.action': '查看统计',
+    'slash.compress.title': '压缩',
+    'slash.compress.description': '压缩当前编辑器对话',
+    'slash.settings.title': '压缩设置',
+    'slash.settings.description': '打开压缩设置',
+    'slash.stats.title': '压缩统计',
+    'slash.stats.description': '显示压缩统计',
+    'status.text': '上下文：{saved}',
+    'status.title': '上下文压缩：{saved}',
+    'status.tooltip': '已节省 tokens：{saved}'
+  },
+  'en-US': {
+    'category.compression': 'Compression',
+    'cmd.manual': 'Compress Conversation (Manual)',
+    'cmd.strategy.opencode': 'Compress with OpenCode Strategy',
+    'cmd.strategy.claudeCode': 'Compress with Claude Code Strategy',
+    'cmd.strategy.cursor': 'Compress with Cursor Strategy',
+    'cmd.strategy.manus': 'Compress with Manus Strategy',
+    'cmd.strategy.focusAgent': 'Compress with Focus Agent Strategy',
+    'cmd.settings': 'Open Compression Settings',
+    'cmd.stats': 'Show Compression Statistics',
+    'settings.title': 'Compression',
+    'settings.description': 'Context compression and summary strategy',
+    'settings.basics': 'Basics',
+    'settings.actions': 'More Actions',
+    'settings.autoCompression.label': 'Auto Compression',
+    'settings.autoCompression.description': 'Automatically compress when context gets too long',
+    'settings.strategy.label': 'Default Strategy',
+    'settings.strategy.description': 'Choose the preferred strategy for automatic compression',
+    'settings.strategy.auto': 'Auto',
+    'settings.threshold.label': 'Trigger Threshold',
+    'settings.threshold.description': 'Trigger compression when context ratio reaches this value',
+    'settings.limit.label': 'Context Limit',
+    'settings.limit.description': 'Token limit used for compression calculation',
+    'settings.advanced.label': 'Advanced Compression',
+    'settings.advanced.description': 'Open full compression settings',
+    'settings.advanced.action': 'Open Advanced',
+    'settings.stats.label': 'Compression Stats',
+    'settings.stats.description': 'View compression count and savings',
+    'settings.stats.action': 'View Stats',
+    'slash.compress.title': 'Compress',
+    'slash.compress.description': 'Compress current editor conversation',
+    'slash.settings.title': 'Compression Settings',
+    'slash.settings.description': 'Open compression settings',
+    'slash.stats.title': 'Compression Stats',
+    'slash.stats.description': 'Show compression statistics',
+    'status.text': 'Ctx: {saved}',
+    'status.title': 'Context Compression: {saved}',
+    'status.tooltip': 'Tokens saved: {saved}'
+  }
+};
+
+function t(key, fallback, values) {
+  try {
+    const translated = window.zion?.i18n?.t?.(`${I18N_NS}.${key}`, values);
+    if (translated && translated !== `${I18N_NS}.${key}`) return translated;
+  } catch {}
+  return fallback;
+}
 
 let __settingsPanelSingleton = null;
+let __runtimeSettingsSyncTimer = 0;
+
+function usesRuntimeCompression() {
+  const config = readWorkbenchRuntimeConfig({ state: window.zion?.state, storage: globalThis.localStorage });
+  return config.mode !== 'browser' && (config.mode === 'runtime'
+    || window.zion?.state?.get?.('runtime.connection')?.backend === 'runtime');
+}
+
+async function runtimeCompact() {
+  await window.zion?.commands?.executeCommand?.('zion.sessions.flushPendingSave');
+  const result = await runtimePluginCommand('dev.context-compression', { action: 'compact' });
+  window.zion?.state?.set?.('compression.runtimeStatus', result);
+  const status = await runtimePluginCommand('dev.context-compression', { action: 'status' });
+  if (status) window.zion.state.set('compression.stats', {
+    compressionCount: status.count, totalTokensSaved: status.tokensSaved,
+    lastCompressionTime: status.status?.at, runtimeStatus: status.status
+  });
+  window.zion.notification?.show?.(`上下文已压缩，预计节省 ${result.savedTokens} tokens。`, { type: 'success' });
+  window.zion?.events?.emit?.('compression/runtimeCompleted', result);
+  return { ok: true, ...result };
+}
 
 const __compressionMem = { kv: {}, versions: {} };
 
+function getActivePanelContext() {
+  try {
+    const panelId = window.zion?.panels?.getActivePanelId?.() || null;
+    const panels = window.zion?.panels?.list?.() || [];
+    const panel = panelId ? panels.find(p => p?.id === panelId) : null;
+    const sessionId = panel?.activeTabId || window.zion?.state?.get?.('sessions.currentId') || null;
+    const editor = panelId ? (window.zion?.panels?.getEditor?.(panelId) || window.zion?.window?.activeEditor) : window.zion?.window?.activeEditor;
+    return { panelId, sessionId, editor };
+  } catch {
+    return {
+      panelId: null,
+      sessionId: null,
+      editor: window.zion?.window?.activeEditor
+    };
+  }
+}
+
 function getSessionKey() {
   try {
-    const sid = window.zion?.state?.get?.('sessions.currentId');
+    const sid = getActivePanelContext().sessionId || window.zion?.state?.get?.('sessions.currentId');
     if (sid) return `session:${String(sid)}`;
   } catch {}
   return 'global';
@@ -203,35 +340,27 @@ async function listVersionsForActiveSession() {
 }
 
 async function restoreVersionForActiveSession(id) {
-  const editor = window.zion.window.activeEditor;
+  const { panelId, sessionId: activePanelSessionId, editor } = getActivePanelContext();
   if (!editor) return { ok: false, error: 'no_editor' };
   const sessionKey = getSessionKey();
   const rec = await storageGetVersion(String(id));
   if (!rec || rec.sessionKey !== sessionKey) return { ok: false, error: 'not_found' };
 
-  const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
+  const sessionId = activePanelSessionId || (sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null);
   const annotations = rec.annotations && typeof rec.annotations === 'object' ? rec.annotations : null;
-
-  try { window.zion?.events?.emit('toolcards/clear'); } catch {}
-  try { window.zion?.events?.emit('thinking/clear'); } catch {}
 
   editor.setValue(String(rec.text ?? ''));
   await setActiveVersionId(sessionKey, String(id));
 
   if (sessionId) {
-    try { window.zion?.state?.set(`sessions.annotations.${sessionId}`, annotations || {}); } catch {}
-    try { window.zion?.state?.set(`sessions.pendingRestore.tools.${sessionId}`, Array.isArray(annotations?.tools) ? annotations.tools : null); } catch {}
-    try { window.zion?.state?.set(`sessions.pendingRestore.thinking.${sessionId}`, Array.isArray(annotations?.thinking) ? annotations.thinking : null); } catch {}
     setTimeout(() => {
       try {
-        if (Array.isArray(annotations?.tools) && annotations.tools.length) {
-          window.zion?.events?.emit('toolcards/restore', { items: annotations.tools });
-        }
-      } catch {}
-      try {
-        if (Array.isArray(annotations?.thinking) && annotations.thinking.length) {
-          window.zion?.events?.emit('thinking/restore', { items: annotations.thinking });
-        }
+        window.zion?.commands?.executeCommand?.('zion.chatCards.restoreSession', {
+          sessionId,
+          panelId,
+          annotations: annotations || {},
+          clearFirst: true
+        });
       } catch {}
     }, 0);
   }
@@ -245,7 +374,7 @@ function buildMessagesForCompression(docText, sessionId) {
 
   const ann = (() => {
     try {
-      const v = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`);
+      const v = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId);
       return v && typeof v === 'object' ? v : {};
     } catch {
       return {};
@@ -420,7 +549,41 @@ async function clearVersionsForActiveSession() {
   return { ok: true };
 }
 
+function scheduleCompressionSettingsSync(settings) {
+  try {
+    if (__runtimeSettingsSyncTimer) window.clearTimeout(__runtimeSettingsSyncTimer);
+    __runtimeSettingsSyncTimer = window.setTimeout(() => {
+      __runtimeSettingsSyncTimer = 0;
+      void syncCompressionSettingsToRuntime({ settings }).catch(() => {});
+    }, 200);
+  } catch {}
+}
+
+async function reconcileCompressionSettingsWithRuntime() {
+  const local = await getCompressionSettings();
+  const runtime = await loadCompressionSettingsFromRuntime();
+  const direction = compressionSettingsSyncDirection(local, runtime);
+  if (direction === 'restore') {
+    const restored = {
+      ...local,
+      ...runtime
+    };
+    await storageSetKV('compression.settings', restored);
+    try { window.zion?.state?.set?.('compression.settings', restored); } catch {}
+    return restored;
+  }
+  if (direction === 'upload') {
+    await syncCompressionSettingsToRuntime({ settings: local });
+  }
+  return runtime || local;
+}
+
 export async function activate(ctx) {
+  try {
+    const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
+
   console.log('dev.context-compression plugin activated');
   const log = (...args) => console.log('[context-compression]', ...args);
   const warn = (...args) => console.warn('[context-compression]', ...args);
@@ -496,7 +659,7 @@ export async function activate(ctx) {
         const sessionKey = getSessionKey();
         const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
         if (!sessionId) return { ok: false, error: 'no_session' };
-        const ann = window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || {};
+        const ann = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || {};
         const items = Array.isArray(ann.tools) ? ann.tools : [];
         const it = items.find(x => String(x.id) === toolId);
         if (!it) return { ok: false, error: 'not_found' };
@@ -559,7 +722,15 @@ export async function activate(ctx) {
   );
 
   ctx.subscriptions.push(
-    window.zion.commands.registerCommand('compression.stats', () => {
+    window.zion.commands.registerCommand('compression.stats', async () => {
+      if (usesRuntimeCompression()) {
+        const result = await runtimePluginCommand('dev.context-compression', { action: 'status' });
+        window.zion.state.set('compression.runtimeStatus', result);
+        if (result) window.zion.state.set('compression.stats', {
+          compressionCount: result.count, totalTokensSaved: result.tokensSaved,
+          lastCompressionTime: result.status?.at, runtimeStatus: result.status
+        });
+      }
       showCompressionStats();
     })
   );
@@ -568,8 +739,13 @@ export async function activate(ctx) {
     window.zion.commands.registerCommand('compression.settings.save', async (settings) => {
       try {
         if (settings && typeof settings === 'object') {
-          try { window.zion?.state?.set?.('compression.settings', settings); } catch {}
-          await storageSetKV(SETTINGS_KV_KEY, settings);
+          const next = {
+            ...settings,
+            updatedAt: Date.now()
+          };
+          try { window.zion?.state?.set?.('compression.settings', next); } catch {}
+          await storageSetKV(SETTINGS_KV_KEY, next);
+          scheduleCompressionSettingsSync(next);
           return { ok: true };
         }
         return { ok: false, error: 'invalid_settings' };
@@ -603,41 +779,164 @@ export async function activate(ctx) {
     })
   );
 
-  if (window.zion.slash?.registerCommand) {
+  let slashRegistered = false;
+  const registerSlashCommands = () => {
+    if (slashRegistered || !window.zion.slash?.registerCommand) return;
+    slashRegistered = true;
     ctx.subscriptions.push(
       window.zion.slash.registerCommand({
         id: 'compression.slash.compress',
         trigger: ['compress', 'compact'],
-        title: 'Compress',
-        description: 'Compress current editor conversation',
-        category: 'compression',
-        execute: () => window.zion.commands.executeCommand('compression.preview')
+        title: t('slash.compress.title', 'Compress'),
+        description: t('slash.compress.description', 'Compress current editor conversation'),
+        category: t('category.compression', 'compression'),
+        execute: () => window.zion.commands.executeCommand('compression.manual')
       }),
       window.zion.slash.registerCommand({
         id: 'compression.slash.settings',
         trigger: ['compressSettings', 'compressionSettings'],
-        title: 'Compression Settings',
-        description: 'Open compression settings',
-        category: 'compression',
+        title: t('slash.settings.title', 'Compression Settings'),
+        description: t('slash.settings.description', 'Open compression settings'),
+        category: t('category.compression', 'compression'),
         execute: () => window.zion.commands.executeCommand('compression.settings')
       }),
       window.zion.slash.registerCommand({
         id: 'compression.slash.stats',
         trigger: ['compressStats', 'compressionStats'],
-        title: 'Compression Stats',
-        description: 'Show compression statistics',
-        category: 'compression',
+        title: t('slash.stats.title', 'Compression Stats'),
+        description: t('slash.stats.description', 'Show compression statistics'),
+        category: t('category.compression', 'compression'),
         execute: () => window.zion.commands.executeCommand('compression.stats')
       })
     );
-  }
-  
-  ensureDefaultSettings(SETTINGS_KV_KEY);
+  };
+  registerSlashCommands();
+  const slashReady = window.zion.state?.onDidChange?.('workbench.pluginsReady', registerSlashCommands);
+  if (slashReady) ctx.subscriptions.push(slashReady);
+
+  await ensureDefaultSettings(SETTINGS_KV_KEY);
 
   try {
-    const initialSettings = await getCompressionSettings();
+    const initialSettings = await reconcileCompressionSettingsWithRuntime();
     syncEngineFromSettings(compressionEngine, initialSettings);
   } catch {}
+
+  const updateCompressionSetting = async (key, value, parser) => {
+    const current = await getCompressionSettings();
+    const nextValue = typeof parser === 'function' ? parser(value) : value;
+    const next = { ...current, [key]: nextValue };
+    await window.zion.commands.executeCommand('compression.settings.save', next);
+    syncEngineFromSettings(compressionEngine, next);
+  };
+
+  try {
+    window.zion.settings.registerPage({
+      id: 'compression.preferences',
+      pluginId: 'dev.context-compression',
+      category: 'workspace',
+      title: 'Compression',
+      titleKey: 'dev.context-compression.settings.title',
+      description: '上下文压缩与摘要策略',
+      descriptionKey: 'dev.context-compression.settings.description',
+      order: 30,
+      sections: [
+        {
+          id: 'compression.basics',
+          title: '基础设置',
+          titleKey: 'dev.context-compression.settings.basics',
+          settings: [
+            {
+              id: 'compression.autoCompression',
+              kind: 'boolean',
+              label: '自动压缩',
+              labelKey: 'dev.context-compression.settings.autoCompression.label',
+              description: '在上下文过长时自动触发压缩',
+              descriptionKey: 'dev.context-compression.settings.autoCompression.description',
+              getValue: async () => !!(await getCompressionSettings()).autoCompression,
+              setValue: async (value) => updateCompressionSetting('autoCompression', !!value)
+            },
+            {
+              id: 'compression.defaultStrategy',
+              kind: 'select',
+              label: '默认策略',
+              labelKey: 'dev.context-compression.settings.strategy.label',
+              description: '决定自动压缩优先采用的方式',
+              descriptionKey: 'dev.context-compression.settings.strategy.description',
+              enumOptions: [
+                { value: 'handoff', label: 'Runtime 交接摘要（推荐）' },
+                { value: 'auto', label: '自动选择', labelKey: 'dev.context-compression.settings.strategy.auto' },
+                { value: 'opencode', label: 'OpenCode' },
+                { value: 'claude-code', label: 'Claude Code' },
+                { value: 'cursor', label: 'Cursor' },
+                { value: 'manus', label: 'Manus' },
+                { value: 'focus-agent', label: 'Focus Agent' },
+                { value: 'progressive', label: 'Progressive' }
+              ],
+              getValue: async () => String((await getCompressionSettings()).defaultStrategy || 'auto'),
+              setValue: async (value) => updateCompressionSetting('defaultStrategy', String(value || 'auto'))
+            },
+            {
+              id: 'compression.threshold',
+              kind: 'number',
+              label: '触发阈值',
+              labelKey: 'dev.context-compression.settings.threshold.label',
+              description: '达到上下文比例后触发压缩，通常建议 0.8',
+              descriptionKey: 'dev.context-compression.settings.threshold.description',
+              getValue: async () => String((await getCompressionSettings()).threshold ?? 0.8),
+              setValue: async (value) => updateCompressionSetting('threshold', value, (raw) => {
+                const parsed = Number(raw);
+                return Number.isFinite(parsed) ? parsed : 0.8;
+              })
+            },
+            {
+              id: 'compression.contextLimitTokens',
+              kind: 'number',
+              label: '上下文上限',
+              labelKey: 'dev.context-compression.settings.limit.label',
+              description: '压缩计算时参考的 token 上限',
+              descriptionKey: 'dev.context-compression.settings.limit.description',
+              getValue: async () => String((await getCompressionSettings()).contextLimitTokens ?? 200000),
+              setValue: async (value) => updateCompressionSetting('contextLimitTokens', value, (raw) => {
+                const parsed = Number(raw);
+                return Number.isFinite(parsed) ? parsed : 200000;
+              })
+            }
+          ]
+        },
+        {
+          id: 'compression.actions',
+          title: '更多操作',
+          titleKey: 'dev.context-compression.settings.actions',
+          settings: [
+            {
+              id: 'compression.openAdvanced',
+              kind: 'action',
+              label: '高级压缩配置',
+              labelKey: 'dev.context-compression.settings.advanced.label',
+              description: '打开完整压缩设置面板',
+              descriptionKey: 'dev.context-compression.settings.advanced.description',
+              actionLabel: '打开高级配置',
+              actionLabelKey: 'dev.context-compression.settings.advanced.action',
+              action: async () => window.zion.commands.executeCommand('compression.settings')
+            },
+            {
+              id: 'compression.openStats',
+              kind: 'action',
+              label: '压缩统计',
+              labelKey: 'dev.context-compression.settings.stats.label',
+              description: '查看压缩次数与节省情况',
+              descriptionKey: 'dev.context-compression.settings.stats.description',
+              actionLabel: '查看统计',
+              actionLabelKey: 'dev.context-compression.settings.stats.action',
+              action: async () => window.zion.commands.executeCommand('compression.stats')
+            }
+          ]
+        }
+      ]
+    });
+  } catch (e) {
+    warn('register compression settings page failed', e);
+  }
 
   log('settings', window.zion?.state?.get?.('compression.settings'));
 
@@ -646,6 +945,7 @@ export async function activate(ctx) {
     order: 90,
     stage: 'post',
     contribute: async (messages) => {
+      if (usesRuntimeCompression()) return messages;
       const settings = await getCompressionSettings();
       const debug = !!settings?.debugLogging;
       const safeLen = Array.isArray(messages) ? messages.length : 0;
@@ -742,22 +1042,63 @@ export async function activate(ctx) {
   });
   ctx.subscriptions.push(dispContributor);
   log('registered message contributor', { id: 'dev.context-compression', stage: 'post', order: 90 });
+  try {
+    const runtimeConnectionDisposable = window.zion?.state?.onDidChange?.(
+      'runtime.connection',
+      () => {
+        void reconcileCompressionSettingsWithRuntime()
+          .then((settings) => syncEngineFromSettings(compressionEngine, settings))
+          .catch(() => {});
+      }
+    );
+    if (runtimeConnectionDisposable) ctx.subscriptions.push(runtimeConnectionDisposable);
+  } catch {}
+  ctx.subscriptions.push({
+    dispose() {
+      if (__runtimeSettingsSyncTimer) window.clearTimeout(__runtimeSettingsSyncTimer);
+      __runtimeSettingsSyncTimer = 0;
+    }
+  });
 
   let statusDisp = null;
   const updateStatus = () => {
     const stats = window.zion.state.get('compression.stats') || {};
     const saved = stats.totalTokensSaved || 0;
+    const savedText = formatTokens(saved);
     try { statusDisp?.dispose?.(); } catch {}
-    statusDisp = window.zion.statusBar.registerItem({
+    statusDisp = window.zion.bottomStatusBar?.registerItem?.({
       id: 'compression.status',
-      text: `📦 ${formatTokens(saved)}`,
-      tooltip: `Tokens saved: ${saved}`,
+      text: t('status.text', 'Ctx: {saved}', { saved: savedText }),
+      tooltip: t('status.tooltip', 'Tokens saved: {saved}', { saved }),
+      priority: 60,
+      onClick: () => openCompressionPanel()
+    }) || window.zion.editorHeaderMenu?.register?.({
+      id: 'compression.status',
+      title: t('status.title', 'Context Compression: {saved}', { saved: savedText }),
+      section: 'Chat',
+      order: 30,
+      onClick: () => openCompressionPanel()
+    }) || window.zion.statusBar.registerItem({
+      id: 'compression.status',
+      text: t('status.text', 'Ctx: {saved}', { saved: savedText }),
+      tooltip: t('status.tooltip', 'Tokens saved: {saved}', { saved }),
       onClick: () => openCompressionPanel()
     });
   };
   updateStatus();
   ctx.subscriptions.push({ dispose: () => { try { statusDisp?.dispose?.(); } catch {} } });
   ctx.subscriptions.push(window.zion.state.onDidChange('compression.stats', updateStatus));
+  ctx.subscriptions.push(window.zion.events.on('i18n/changed', updateStatus));
+  const runtimeCompressionStatus = window.zion.events.on('runtime/sessionRunEvent', (event = {}) => {
+    if (!usesRuntimeCompression() || !['run.completed', 'run.failed', 'run.aborted'].includes(event.type)) return;
+    void runtimePluginCommand('dev.context-compression', { action: 'status' }).then(result => {
+      if (result) window.zion.state.set('compression.stats', {
+        compressionCount: result.count, totalTokensSaved: result.tokensSaved,
+        lastCompressionTime: result.status?.at, runtimeStatus: result.status
+      });
+    }).catch(() => {});
+  });
+  if (runtimeCompressionStatus) ctx.subscriptions.push(runtimeCompressionStatus);
   
   return {
     deactivate: () => {
@@ -901,12 +1242,13 @@ async function computeCompressionPreview(compressionEngine, opts) {
 }
 
 async function applyCompressionToActiveEditor(compressionEngine, opts) {
+  if (usesRuntimeCompression()) return await runtimeCompact();
   const editor = window.zion.window.activeEditor;
   if (!editor) return { ok: false, error: 'no_editor' };
   const docText = editor.getValue();
   const sessionKey = getSessionKey();
   const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
-  const annotations = sessionId ? (window.zion?.state?.get?.(`sessions.annotations.${sessionId}`) || null) : null;
+  const annotations = sessionId ? (window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || null) : null;
   const messages = buildMessagesForCompression(docText, sessionId);
   if (!messages.length) return { ok: false, error: 'no_messages' };
 
@@ -1163,8 +1505,9 @@ function sanitizeChatMessages(compressed, original, opts = {}) {
 
   const lastRole = out.length > 0 ? out[out.length - 1].role : null;
   const shouldAppendFinalUser = opts?.appendFinalUser !== false;
-  if (shouldAppendFinalUser && lastRole !== 'user') {
-    const orig = Array.isArray(original) ? original : [];
+  const orig = Array.isArray(original) ? original : [];
+  const originalLastRole = orig.length > 0 ? String(orig[orig.length - 1]?.role || '') : null;
+  if (shouldAppendFinalUser && originalLastRole === 'user' && lastRole !== 'user') {
     for (let i = orig.length - 1; i >= 0; i--) {
       if (orig[i]?.role === 'user') {
         out.push({ role: 'user', content: normalizeContent(orig[i]?.content) });
@@ -1194,11 +1537,15 @@ function stripWidgetStubs(text) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (/^(思考|调用\s+\S+|Thinking|Call\s+\S+)/.test(trimmed)) continue;
+    if (isContinuationBoundaryLine(line)) continue;
+    if (/^(思考|Thinking)(?:\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->)?$/i.test(trimmed)) continue;
+    if (/^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?$/i.test(trimmed)) continue;
     // Strip leading role headers like "system|user|assistant <content>"
     const roleMatch = trimmed.match(/^(system|user|assistant)\s+(.*)$/);
     if (roleMatch) {
-      const body = roleMatch[2].trim();
+      const body = (roleMatch[1] === 'assistant'
+        ? stripAssistantBlockIdComment(roleMatch[2])
+        : roleMatch[2]).trim();
       if (body) out.push(body);
       continue;
     }
@@ -1217,6 +1564,7 @@ function parseMessages(content) {
   for (const line of lines) {
     const roleMatch = line.match(/^(system|user|assistant)\s+(.*)$/);
     const imageMatch = line.match(/^!\[.*\]\((.*)\)$/);
+    const continuation = isContinuationBoundaryLine(line);
 
     if (roleMatch) {
       if (currentContent.length > 0 || currentImages.length > 0) {
@@ -1234,7 +1582,11 @@ function parseMessages(content) {
         currentImages = [];
       }
       currentRole = roleMatch[1];
-      const contentPart = roleMatch[2];
+      const contentPart = continuation
+        ? ""
+        : currentRole === 'assistant'
+        ? stripAssistantBlockIdComment(roleMatch[2])
+        : roleMatch[2];
       if (contentPart.trim()) currentContent.push(contentPart);
     } else if (imageMatch) {
       const imageUrl = imageMatch[1];
@@ -1322,16 +1674,17 @@ function openStatsOverlay() {
     position: 'fixed',
     top: '48px',
     right: '12px',
-    width: '380px',
-    maxHeight: '75vh',
+    width: '360px',
+    maxWidth: 'calc(100vw - 16px)',
+    maxHeight: '65vh',
     overflow: 'auto',
     background: 'var(--panel)',
     color: 'var(--fg)',
     border: '1px solid var(--border)',
     borderRadius: '8px',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-    padding: '12px',
-    fontFamily: 'var(--font-sans)',
+    boxShadow: '0 12px 32px rgba(0,0,0,0.32)',
+    padding: '8px',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
     pointerEvents: 'auto'
   });
 
@@ -1425,6 +1778,7 @@ function openStatsOverlay() {
   panel.appendChild(container);
   root.appendChild(panel);
   document.body.appendChild(root);
+  positionStatsOverlayPanel(panel);
 
   // Event handlers
   root.addEventListener('click', (e) => {
@@ -1444,4 +1798,33 @@ function openStatsOverlay() {
     });
     root.remove();
   });
+}
+
+function positionStatsOverlayPanel(panel) {
+  const btn = document.querySelector('[data-zion-status-id="compression.status"]')
+    || Array.from(document.querySelectorAll('#bottombar .status-item, #statusbar .status-item'))
+      .find((b) => b.textContent?.includes('Ctx:'));
+  const pad = 8;
+  const vw = window.innerWidth || 0;
+  const vh = window.innerHeight || 0;
+  panel.style.left = '';
+  panel.style.right = '';
+  panel.style.top = '';
+  panel.style.bottom = '';
+  panel.style.maxHeight = 'min(75vh, calc(100vh - 24px))';
+  if (!btn) {
+    panel.style.right = '12px';
+    panel.style.bottom = '36px';
+    return;
+  }
+  const rect = btn.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const mw = Math.min(panelRect.width || 380, Math.max(240, vw - pad * 2));
+  const spaceAbove = Math.max(180, rect.top - pad * 2);
+  panel.style.maxHeight = `${Math.min(Math.round(vh * 0.75), spaceAbove)}px`;
+  const mh = Math.min(panelRect.height || 420, spaceAbove);
+  const left = Math.max(pad, Math.min(Math.round(rect.right - mw), Math.max(pad, vw - mw - pad)));
+  const top = Math.max(pad, Math.round(rect.top - pad - mh));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
 }

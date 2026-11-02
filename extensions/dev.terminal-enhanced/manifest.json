@@ -1,32 +1,121 @@
 {
   "name": "dev.terminal-enhanced",
-  "version": "0.1.0",
-  "description": "AI-enhanced terminal with output visualization and smart assistance",
+  "version": "0.1.1",
+  "description": "Provide an enhanced terminal panel, command history, and smart assistance.",
   "author": "Zion Next Team",
   "license": "MIT",
   "zion": {
     "id": "dev.terminal-enhanced",
     "name": "Terminal Enhanced",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "main": "./main.js",
-    "contributes": {
-      "commands": [
-        { "id": "terminal.openPanel", "title": "Open Terminal Panel" },
-        { "id": "terminal.togglePanel", "title": "Toggle Terminal Panel" },
-        { "id": "terminal.switchSession", "title": "Terminal: Switch Session", "description": "Open terminal session switcher", "category": "Terminal" },
-        { "id": "terminal.executeCommand", "title": "Execute Terminal Command" },
-        { "id": "terminal.quickCommand", "title": "Quick Command Selector" },
-        { "id": "terminal.toggleContext", "title": "Toggle Terminal Context in Chat" }
+    "presentation": {
+      "displayName": {
+        "zh-CN": "增强终端",
+        "en-US": "Terminal Enhanced"
+      },
+      "description": {
+        "zh-CN": "提供增强终端面板、命令历史和智能辅助。",
+        "en-US": "Provide an enhanced terminal panel, command history, and smart assistance."
+      },
+      "icon": "terminal",
+      "category": "integration",
+      "features": {
+        "zh-CN": [
+          "提供增强终端面板、命令历史和智能辅助。"
+        ],
+        "en-US": [
+          "Provide an enhanced terminal panel, command history, and smart assistance."
+        ]
+      },
+      "permissions": [
+        {
+          "id": "processes",
+          "label": {
+            "zh-CN": "终端进程",
+            "en-US": "Terminal processes"
+          },
+          "description": {
+            "zh-CN": "创建终端会话并执行用户命令。",
+            "en-US": "Create terminal sessions and execute user commands."
+          }
+        }
       ],
-      "keybindings": [
-        { "command": "terminal.openPanel", "key": "Mod-`" },
-        { "command": "terminal.togglePanel", "key": "Mod-j" },
-        { "command": "terminal.quickCommand", "key": "Mod-Shift-P" }
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开终端",
+            "en-US": "Open Terminal"
+          },
+          "command": "terminal.openPanel",
+          "icon": "terminal"
+        }
       ]
     },
-    "activationEvents": ["onStartupFinished"],
+    "contributes": {
+      "commands": [
+        {
+          "id": "terminal.openPanel",
+          "title": "Open Terminal Panel",
+          "titleKey": "dev.terminal-enhanced.cmd.openPanel",
+          "categoryKey": "dev.terminal-enhanced.category.terminal"
+        },
+        {
+          "id": "terminal.togglePanel",
+          "title": "Toggle Terminal Panel",
+          "titleKey": "dev.terminal-enhanced.cmd.togglePanel",
+          "categoryKey": "dev.terminal-enhanced.category.terminal"
+        },
+        {
+          "id": "terminal.switchSession",
+          "title": "Terminal: Switch Session",
+          "titleKey": "dev.terminal-enhanced.cmd.switchSession",
+          "description": "Open terminal session switcher",
+          "descriptionKey": "dev.terminal-enhanced.cmd.switchSession.description",
+          "category": "Terminal",
+          "categoryKey": "dev.terminal-enhanced.category.terminal"
+        },
+        {
+          "id": "terminal.executeCommand",
+          "title": "Execute Terminal Command",
+          "titleKey": "dev.terminal-enhanced.cmd.executeCommand",
+          "categoryKey": "dev.terminal-enhanced.category.terminal"
+        },
+        {
+          "id": "terminal.quickCommand",
+          "title": "Quick Command Selector",
+          "titleKey": "dev.terminal-enhanced.cmd.quickCommand",
+          "categoryKey": "dev.terminal-enhanced.category.terminal"
+        },
+        {
+          "id": "terminal.toggleContext",
+          "title": "Toggle Terminal Context in Chat",
+          "titleKey": "dev.terminal-enhanced.cmd.toggleContext",
+          "categoryKey": "dev.terminal-enhanced.category.terminal"
+        }
+      ],
+      "keybindings": [
+        {
+          "command": "terminal.openPanel",
+          "key": "Mod-`"
+        },
+        {
+          "command": "terminal.togglePanel",
+          "key": "Mod-j"
+        },
+        {
+          "command": "terminal.quickCommand",
+          "key": "Mod-Shift-P"
+        }
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.terminal-enhanced",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.terminal-enhanced"
   }
 }

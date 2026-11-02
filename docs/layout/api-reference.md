@@ -213,6 +213,8 @@ function registerItem(
 ): Disposable;
 ```
 
+`auxiliaryBarViewId` 仅保留调用兼容性。此类项目不会出现在左侧可见列表中；Auxiliary 视图会通过自身注册信息显示在右侧导航栏。
+
 **示例**：
 
 ```javascript
@@ -417,7 +419,7 @@ function setWidth(width: number): void;
 
 ## Auxiliary Bar API
 
-右侧辅助边栏 API，用于管理辅助视图区域。
+右侧辅助边栏 API，用于管理辅助视图区域。每个通过 `registerView` 注册的视图都会自动获得一个右侧导航项，使用注册信息中的 `icon` 和 `title`/`titleKey` 展示，无需单独注册。
 
 ### window.zion.auxiliaryBar
 

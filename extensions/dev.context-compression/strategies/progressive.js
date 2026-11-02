@@ -149,6 +149,8 @@ export class ProgressiveStrategy {
     const name = toolNameById.get(id) || String(msg.toolName || '');
     const args = toolArgsById.get(id) || '';
     const raw = typeof msg?.content === 'string' ? msg.content : JSON.stringify(msg?.content || '');
+    // Without a durable recovery reference, retain the complete output.
+    if (!msg.recovery || msg.toolResultStatus?.ok !== true || msg.toolResultStatus?.failureCode) return msg;
     const prompt = raw.slice(0, this.options.maxRecordPromptChars);
     const urlMatch = raw.match(/https?:\/\/[^\s)]+/i);
     const fileMatch = raw.match(/(?:[A-Za-z0-9_.\/-]+)\.(?:js|ts|tsx|jsx|py|md|json|yaml|yml|html|css|scss|go|rs|java|kt|c|h|cpp|cc|cs|sh|bash|zsh|ps1)/i);
@@ -156,7 +158,7 @@ export class ProgressiveStrategy {
     let argObj = {};
     try { argObj = args ? JSON.parse(args) : {}; } catch { argObj = {}; }
     const argPrompt = typeof argObj?.prompt === 'string' ? argObj.prompt : '';
-    let record = { tool_call_id: id, tool: name || 'unknown', status: raw ? 'ok' : 'fail', note: '[Output pruned for context optimization]', viewer_tool: 'viewToolResult' };
+    let record = { tool_call_id: id, tool: name || 'unknown', status: msg.toolResultStatus, note: '[Output pruned for context optimization]', recovery: msg.recovery };
     if (kind.includes('read')) {
       record.file_path = fileMatch ? fileMatch[0] : undefined;
     } else if (kind.includes('websearch')) {

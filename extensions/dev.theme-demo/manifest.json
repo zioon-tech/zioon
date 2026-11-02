@@ -1,0 +1,44 @@
+{
+  "name": "dev.theme-demo",
+  "version": "0.0.1",
+  "description": "Demonstrate custom Zion Next theme variant registration.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.theme-demo",
+    "name": "Theme Demo",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "主题演示",
+        "en-US": "Theme Demo"
+      },
+      "description": {
+        "zh-CN": "演示 Zion Next 自定义主题变体注册能力。",
+        "en-US": "Demonstrate custom Zion Next theme variant registration."
+      },
+      "icon": "symbol-color",
+      "category": "system",
+      "features": {
+        "zh-CN": [
+          "演示 Zion Next 自定义主题变体注册能力。"
+        ],
+        "en-US": [
+          "Demonstrate custom Zion Next theme variant registration."
+        ]
+      }
+    },
+    "contributes": {
+      "styles": [
+        "./theme.css"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

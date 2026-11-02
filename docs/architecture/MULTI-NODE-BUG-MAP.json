@@ -1,0 +1,38 @@
+{
+  "BUG_MAP": [
+    {
+      "defect_type": "Security",
+      "scenario": "[defect-probing] 显式资源约束与全局终端引用不一致时必须拒绝调用",
+      "description": "第一版仅检查 nodeId 冲突，同节点的 resourceId 约束会被终端引用覆盖。",
+      "file_path": "apps/runtime/src/node-broker.mjs",
+      "target_func": "NodeBroker.invoke",
+      "bug_range": "308-323",
+      "evidence": "新 target 合并代码只比较 explicit.nodeId，再用引用中的 resourceId 覆盖显式 resourceId；同节点两个 resource 注册后会投递到与请求约束不同的绑定。",
+      "expect_outcome": "正确行为是投递前拒绝不一致目标；当前会排队；测试验证 pendingInvocations 为零且调用拒绝。",
+      "severity": "P1",
+      "status": "confirmed",
+      "resolution": "Fixed after unit-test workflow; original assertion now passes.",
+      "test": "rejects conflicting resource constraints before dispatch"
+    },
+    {
+      "defect_type": "Logic Errors",
+      "scenario": "[defect-probing] 两个已注册节点能力不同时，裸 session_id 仍不能据工具能力猜测终端所属节点",
+      "description": "先按 capability 过滤再判断唯一目标，会把其他节点的裸终端 ID 发给唯一支持该工具的节点。",
+      "file_path": "apps/runtime/src/node-broker.mjs",
+      "target_func": "NodeBroker.invoke",
+      "bug_range": "308-323",
+      "evidence": "新 selectTarget(projectId, toolName) 只在 capability 过滤后的 targets 检查歧义；A 提供 read、B 只提供 Bash 时，B 的旧裸终端 ID 会被 read 路由到 A，不符合裸 ID 必须唯一归属的约定。",
+      "expect_outcome": "正确行为是在缺少显式目标时按全部注册资源拒绝裸 ID；当前按工具过滤后排队到 A；测试验证拒绝且没有投递。",
+      "severity": "P1",
+      "status": "confirmed",
+      "resolution": "Fixed after unit-test workflow; original assertion now passes.",
+      "test": "does not infer native session ownership from capability availability"
+    }
+  ],
+  "filtered_candidates": [
+    "同机无 Broker 保留原生 ID 是明确的兼容约定，不是缺陷。",
+    "离线节点返回状态但不返回缓存终端是首期失败关闭设计，不是持久化恢复缺陷。",
+    "重连失效全局引用是保守生命周期边界，不应为了兼容静默迁移。",
+    "控制平面多租户和持久化等待属于后续里程碑，不反向当作本次缺陷。"
+  ]
+}

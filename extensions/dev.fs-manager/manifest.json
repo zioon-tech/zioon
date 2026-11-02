@@ -1,35 +1,78 @@
 {
   "name": "dev.fs-manager",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.fs-manager",
+  "description": "Manage the files and folders that tools are allowed to access.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.fs-manager",
-    "name": "dev.fs-manager",
+    "name": "File Access Manager",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "文件访问管理",
+        "en-US": "File Access Manager"
+      },
+      "description": {
+        "zh-CN": "管理工具可访问的文件和文件夹范围。",
+        "en-US": "Manage the files and folders that tools are allowed to access."
+      },
+      "icon": "shield",
+      "category": "system",
+      "features": {
+        "zh-CN": [
+          "管理工具可访问的文件和文件夹范围。"
+        ],
+        "en-US": [
+          "Manage the files and folders that tools are allowed to access."
+        ]
+      },
+      "permissions": [
+        {
+          "id": "local-files",
+          "label": {
+            "zh-CN": "文件权限管理",
+            "en-US": "File permission management"
+          },
+          "description": {
+            "zh-CN": "维护工具可访问目录的授权列表。",
+            "en-US": "Maintain the allowlist of directories accessible to tools."
+          }
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {
           "id": "fs.showManager",
-          "title": "Open Files Access Manager"
+          "title": "Open Files Access Manager",
+          "titleKey": "dev.fs-manager.cmd.showManager",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.addFile",
-          "title": "Add File Access"
+          "title": "Add File Access",
+          "titleKey": "dev.fs-manager.cmd.addFile",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.addFolder",
-          "title": "Add Folder Access"
+          "title": "Add Folder Access",
+          "titleKey": "dev.fs-manager.cmd.addFolder",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.getEntries",
-          "title": "Get FS Entries"
+          "title": "Get FS Entries",
+          "titleKey": "dev.fs-manager.cmd.getEntries",
+          "categoryKey": "dev.fs-manager.category.fs"
         },
         {
           "id": "fs.clearAll",
-          "title": "Clear All FS Entries"
+          "title": "Clear All FS Entries",
+          "titleKey": "dev.fs-manager.cmd.clearAll",
+          "categoryKey": "dev.fs-manager.category.fs"
         }
       ],
       "keybindings": []
@@ -39,6 +82,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.fs-manager",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.fs-manager"
   }
 }

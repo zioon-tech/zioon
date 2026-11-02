@@ -1,16 +1,51 @@
 {
   "name": "dev.paste-image",
   "version": "0.0.1",
-  "description": "Handle pasted images and insert as markdown images (data URL or remote src).",
+  "description": "Handle clipboard images and insert them as Markdown images.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.paste-image",
-    "name": "dev.paste-image",
+    "name": "Paste Image",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "粘贴图片",
+        "en-US": "Paste Image"
+      },
+      "description": {
+        "zh-CN": "处理剪贴板图片并插入为 Markdown 图片。",
+        "en-US": "Handle clipboard images and insert them as Markdown images."
+      },
+      "icon": "file-media",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "处理剪贴板、文件选择和拖放图片，并插入为 Markdown 图片。"
+        ],
+        "en-US": [
+          "Handle clipboard, file picker, and dropped images as Markdown images."
+        ]
+      },
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "插入图片",
+            "en-US": "Insert Image"
+          },
+          "command": "image.insertFromFile",
+          "icon": "file-media"
+        }
+      ]
+    },
     "contributes": {
-      "commands": [],
+      "commands": [
+        {
+          "id": "image.insertFromFile",
+          "title": "插入图片"
+        }
+      ],
       "keybindings": []
     },
     "activationEvents": [
@@ -18,6 +53,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.paste-image",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.paste-image"
   }
 }

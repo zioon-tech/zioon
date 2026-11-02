@@ -1,7 +1,7 @@
 {
   "name": "dev.skills",
   "version": "2.1.0",
-  "description": "Agent Skills standard implementation - injects skill metadata into system prompt, model autonomously reads full content when needed",
+  "description": "Agent Skills standard implementation - injects skill metadata into chat context as user messages, model autonomously reads full content when needed",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
@@ -9,27 +9,93 @@
     "name": "Skills v2.1",
     "version": "2.1.0",
     "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "技能",
+        "en-US": "Skills"
+      },
+      "description": {
+        "zh-CN": "扫描和管理 Agent Skills，并向模型注入技能元数据。",
+        "en-US": "Scan and manage Agent Skills and inject skill metadata for the model."
+      },
+      "icon": "sparkle",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "扫描标准 SKILL.md 目录",
+          "选择当前会话可用技能",
+          "向模型提供按需读取的技能索引"
+        ],
+        "en-US": [
+          "Scan standard SKILL.md directories",
+          "Select skills available to the current session",
+          "Provide the model with an on-demand skill index"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "local-files",
+          "label": {
+            "zh-CN": "本地文件",
+            "en-US": "Local files"
+          },
+          "description": {
+            "zh-CN": "读取用户配置的技能目录。",
+            "en-US": "Read user-configured skill directories."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开技能面板",
+            "en-US": "Open Skills"
+          },
+          "command": "skills.openPanel",
+          "icon": "sparkle"
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {
           "id": "skills.openPanel",
           "title": "Open Skills Panel",
-          "description": "Manage skills directories, scan SKILL.md, enable/disable skills"
+          "description": "Manage skills directories, scan SKILL.md, enable/disable skills",
+          "titleKey": "dev.skills.cmd.openPanel",
+          "descriptionKey": "dev.skills.cmd.openPanel.description",
+          "categoryKey": "dev.skills.category.skills"
         },
         {
           "id": "skills.scanNow",
           "title": "Scan Skills Now",
-          "description": "Scan configured directories for SKILL.md files"
+          "description": "Scan configured directories for SKILL.md files",
+          "titleKey": "dev.skills.cmd.scanNow",
+          "descriptionKey": "dev.skills.cmd.scanNow.description",
+          "categoryKey": "dev.skills.category.skills"
         },
         {
           "id": "skills.clearCache",
           "title": "Clear Usage History",
-          "description": "Clear usage history statistics"
+          "description": "Clear usage history statistics",
+          "titleKey": "dev.skills.cmd.clearCache",
+          "descriptionKey": "dev.skills.cmd.clearCache.description",
+          "categoryKey": "dev.skills.category.skills"
         },
         {
           "id": "skills.showStats",
           "title": "Show Skills Statistics",
-          "description": "Display usage statistics and performance metrics"
+          "description": "Display usage statistics and performance metrics",
+          "titleKey": "dev.skills.cmd.showStats",
+          "descriptionKey": "dev.skills.cmd.showStats.description",
+          "categoryKey": "dev.skills.category.skills"
         }
       ]
     },
@@ -38,6 +104,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.skills",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.skills"
   }
 }

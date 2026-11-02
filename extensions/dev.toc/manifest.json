@@ -1,35 +1,56 @@
 {
   "name": "dev.toc",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.toc",
+  "description": "Generate and display the current document outline and insert a Markdown TOC.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.toc",
-    "name": "dev.toc",
+    "name": "Table of Contents",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "目录",
+        "en-US": "Table of Contents"
+      },
+      "description": {
+        "zh-CN": "生成并展示当前文档目录，并支持插入 Markdown 目录。",
+        "en-US": "Generate and display the current document outline and insert a Markdown TOC."
+      },
+      "icon": "list-tree",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "生成并展示当前文档目录，并支持插入 Markdown 目录。"
+        ],
+        "en-US": [
+          "Generate and display the current document outline and insert a Markdown TOC."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "toc.show",
-          "title": "Show TOC"
+          "title": "Show TOC",
+          "titleKey": "dev.toc.cmd.show",
+          "categoryKey": "dev.toc.category.toc"
         },
         {
           "id": "toc.insert",
-          "title": "Insert TOC (Markdown)"
+          "title": "Insert TOC (Markdown)",
+          "titleKey": "dev.toc.cmd.insert",
+          "categoryKey": "dev.toc.category.toc"
         },
         {
           "id": "toc.toggleGroupByRole",
-          "title": "Toggle TOC Group by Role"
+          "title": "Toggle TOC Group by Role",
+          "titleKey": "dev.toc.cmd.toggleGroupByRole",
+          "categoryKey": "dev.toc.category.toc"
         }
       ],
       "keybindings": [
-        {
-          "command": "toc.show",
-          "key": "Mod-Shift-t",
-          "when": "editorFocus"
-        },
         {
           "command": "toc.toggleGroupByRole",
           "key": "Mod-Shift-g",
@@ -41,11 +62,13 @@
           {
             "command": "toc.show",
             "title": "Contents",
+            "titleKey": "dev.toc.menu.contents",
             "when": "editorFocus"
           },
           {
             "command": "toc.toggleGroupByRole",
             "title": "TOC: Group by Role",
+            "titleKey": "dev.toc.menu.groupByRole",
             "when": "editorFocus"
           }
         ]
@@ -59,6 +82,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.toc",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.toc"
   }
 }

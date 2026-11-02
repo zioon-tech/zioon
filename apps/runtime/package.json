@@ -1,0 +1,37 @@
+{
+  "name": "@zion/runtime-host",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone local Runtime Host for Zion",
+  "dependencies": {
+    "@alicloud/nas20170626": "3.7.4",
+    "@alicloud/openapi-core": "1.0.8",
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/core": "^2.11.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
+    "jose": "6.2.12",
+    "openid-client": "6.8.8",
+    "pg": "8.16.3"
+  },
+  "bin": {
+    "zion": "bin/zion.mjs",
+    "zioon": "bin/zion.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "access": "node src/access-cli.mjs",
+    "account": "node src/accounts/account-cli.mjs",
+    "chat": "node src/chat-cli.mjs",
+    "cli": "node src/runtime-cli.mjs",
+    "remote": "node src/remote-launcher.mjs",
+    "start": "node src/main.mjs",
+    "test": "vitest run tests"
+  }
+}

@@ -1,5 +1,28 @@
 import { ViewPlugin, EditorView } from "@codemirror/view";
 
+const I18N_NS = "dev.sticky-user-header";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.editor": "编辑器",
+    "cmd.toggle": "切换固定用户头部",
+    "ui.headerMenu": "固定用户头部"
+  },
+  "en-US": {
+    "category.editor": "Editor",
+    "cmd.toggle": "Toggle Sticky Header",
+    "ui.headerMenu": "Sticky User Header"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
 
 function normalize(list) {
@@ -122,6 +145,27 @@ function buildIndexForView(view, prefixes) {
   }
 }
 
+function mapIndexThroughChanges(index, changes) {
+  if (!index?.blocks?.length) return index;
+  return {
+    ...index,
+    blocks: index.blocks.map((block) => ({
+      ...block,
+      from: changes.mapPos(block.from, 1),
+      startPos: changes.mapPos(block.startPos, 1),
+      endPos: changes.mapPos(block.endPos, -1)
+    }))
+  };
+}
+
+function isLargeDocumentChange(update) {
+  let changed = 0;
+  update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    changed += (toA - fromA) + inserted.length;
+  });
+  return changed > 512;
+}
+
 function findLastIndexLE(blocks, pos) {
   let lo = 0;
   let hi = blocks.length - 1;
@@ -152,23 +196,6 @@ function roleTheme(role) {
   return { fg: "var(--role-user-fg)", bg: "var(--role-user-bg)", bd: "var(--role-user-border)" };
 }
 
-function ensureStyle() {
-  const id = "dev-sticky-user-header-style";
-  if (document.getElementById(id)) return;
-  const style = document.createElement("style");
-  style.id = id;
-  style.textContent = `
-.zion-cm-sticky-user-header{position:absolute;top:0;left:0;right:0;z-index:95;background:var(--bg);border-bottom:none;color:var(--fg);font-family:var(--font-sans);font-size:16px;line-height:1.7;box-shadow:0 1px 2px 0 rgba(0,0,0,0.05);clip-path:inset(0 0 -10px 0);opacity:0.98;display:flex;flex-direction:column;gap:0;padding:0}
-
-.zion-cm-sticky-user-header.is-empty{display:none}
-.zion-cm-sticky-user-header .zion-sticky-line{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;padding:2px 8px}
-.zion-cm-sticky-user-header .zion-sticky-badge{display:inline-flex;flex:0 0 auto;padding:1px 6px;border-radius:6px;font-size:0.8em;font-weight:500;vertical-align:middle;margin-right:6px;border:none}
-.zion-cm-sticky-user-header .zion-sticky-text{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-  `;
-  document.head.appendChild(style);
-}
-
 function stickyUserHeaderView() {
   const prefixes = getEffectivePrefixes();
   const targetRole = "user";
@@ -176,8 +203,7 @@ function stickyUserHeaderView() {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        ensureStyle();
-        this.view = view;
+this.view = view;
         this.prefixes = prefixes;
         this.index = buildIndexForView(view, prefixes);
         this.lastKey = "";
@@ -194,6 +220,7 @@ function stickyUserHeaderView() {
           this.widthModeSub = window?.zion?.state?.onDidChange?.("ui.editorWidthMode", () => this.scheduleSync());
         } catch {}
         this.syncRaf = null;
+        this.indexTimer = 0;
 
         const root = view.dom;
         this.root = root;
@@ -215,6 +242,10 @@ function stickyUserHeaderView() {
         this.headerEl = document.createElement("div");
         this.headerEl.className = "zion-cm-sticky-user-header is-empty";
         this.headerEl.dataset.ownerId = this.ownerId;
+
+        this.contentEl = document.createElement("div");
+        this.contentEl.className = "zion-sticky-content";
+        this.headerEl.appendChild(this.contentEl);
         
         this.headerEl.addEventListener("click", (e) => {
           const lineEl = e.target?.closest?.("[data-pos]");
@@ -242,7 +273,12 @@ function stickyUserHeaderView() {
       update(update) {
         this.view = update.view;
         if (update.docChanged) {
-          this.index = buildIndexForView(update.view, this.prefixes);
+          if (isLargeDocumentChange(update)) {
+            this.index = buildIndexForView(update.view, this.prefixes);
+          } else {
+            this.index = mapIndexThroughChanges(this.index, update.changes);
+            this.scheduleIndexRefresh();
+          }
         }
         // viewportChanged is not enough for precise sticky behavior, relying on scroll event
         if (update.docChanged || update.viewportChanged) {
@@ -252,6 +288,15 @@ function stickyUserHeaderView() {
 
       onScroll() {
         this.scheduleSync();
+      }
+
+      scheduleIndexRefresh() {
+        if (this.indexTimer) window.clearTimeout(this.indexTimer);
+        this.indexTimer = window.setTimeout(() => {
+          this.indexTimer = 0;
+          this.index = buildIndexForView(this.view, this.prefixes);
+          this.scheduleSync();
+        }, 120);
       }
 
       scheduleSync() {
@@ -331,7 +376,7 @@ function stickyUserHeaderView() {
         if (key === this.lastKey) return;
         this.lastKey = key;
 
-        this.headerEl.textContent = "";
+        this.contentEl.textContent = "";
         if (!items.length) {
           this.headerEl.classList.add("is-empty");
           this.updateHeight(0);
@@ -342,6 +387,9 @@ function stickyUserHeaderView() {
           const line = document.createElement("div");
           line.className = "zion-sticky-line";
           line.setAttribute("data-pos", String(Number(it.pos) || 0));
+
+          const rail = document.createElement("span");
+          rail.className = `zion-sticky-rail zion-sticky-rail-${it.role}`;
 
           const badge = document.createElement("span");
           badge.className = "zion-sticky-badge";
@@ -355,9 +403,10 @@ function stickyUserHeaderView() {
           const preview = it.preview || "(empty)";
           text.textContent = preview.length > 140 ? preview.slice(0, 137) + "..." : preview;
 
+          line.appendChild(rail);
           line.appendChild(badge);
           line.appendChild(text);
-          this.headerEl.appendChild(line);
+          this.contentEl.appendChild(line);
         }
         this.headerEl.classList.remove("is-empty");
 
@@ -372,39 +421,69 @@ function stickyUserHeaderView() {
           const root = this.root;
           const header = this.headerEl;
           const scroller = this.view?.scrollDOM || root?.querySelector?.(".cm-scroller");
-          if (!root || !header || !scroller) return;
+          const content = root?.querySelector?.(".cm-content");
+          if (!root || !header || !this.contentEl || !scroller) return;
 
           const rootRect = root.getBoundingClientRect();
-          const scrollerRect = scroller.getBoundingClientRect();
-          
-          // Get the content width by measuring the actual editor content area
-          // In standard/wide modes, scroller has padding for centering
-          // We need to calculate the actual content width
-          const scrollerStyle = getComputedStyle(scroller);
-          const scrollerWidth = scrollerRect.width;
-          
-          // Calculate padding values
-          let paddingLeft = 0;
-          let paddingRight = 0;
+          let textLeft = 0;
+          let textRight = 0;
+          if (content) {
+            const contentRect = content.getBoundingClientRect();
+            const contentStyle = getComputedStyle(content);
+            let pl = 0;
+            let pr = 0;
+            try {
+              pl = parseFloat(contentStyle.paddingLeft) || 0;
+              pr = parseFloat(contentStyle.paddingRight) || 0;
+            } catch {}
+            textLeft = contentRect.left + pl;
+            textRight = contentRect.right - pr;
+          } else {
+            const scrollerRect = scroller.getBoundingClientRect();
+            const scrollerStyle = getComputedStyle(scroller);
+            let paddingLeft = 0;
+            let paddingRight = 0;
+            try {
+              paddingLeft = parseFloat(scrollerStyle.paddingLeft) || 0;
+              paddingRight = parseFloat(scrollerStyle.paddingRight) || 0;
+            } catch {}
+
+            const clientWidth = Number(scroller.clientWidth) || scrollerRect.width;
+            const visibleContentLeft = scrollerRect.left + paddingLeft;
+            const visibleContentRight = scrollerRect.left + clientWidth - paddingRight;
+
+            const gutters = root?.querySelector?.(".cm-gutters");
+            textLeft = visibleContentLeft;
+            if (gutters) {
+              const guttersRect = gutters.getBoundingClientRect();
+              if (Number.isFinite(guttersRect.right)) textLeft = Math.max(textLeft, guttersRect.right);
+            }
+            textRight = visibleContentRight;
+          }
+
+          const left = Math.round(textLeft - rootRect.left);
+          const width = Math.round(Math.max(0, textRight - textLeft));
+          let guttersLeft = 0;
           try {
-            paddingLeft = parseFloat(scrollerStyle.paddingLeft) || 0;
-            paddingRight = parseFloat(scrollerStyle.paddingRight) || 0;
+            const gutters = root?.querySelector?.(".cm-gutters");
+            if (gutters) {
+              const guttersRect = gutters.getBoundingClientRect();
+              guttersLeft = Math.round(guttersRect.left - rootRect.left);
+            }
           } catch {}
-          
-          // Content width = scroller width - padding (accounting for centering)
-          const contentWidth = scrollerWidth - paddingLeft - paddingRight;
-          
-          // Left position = scroller's left offset + left padding
-          const left = Math.round(scrollerRect.left - rootRect.left) + Math.round(paddingLeft);
-          
-          // Width = content width (scroller width minus padding)
-          const width = Math.round(contentWidth);
+
+          header.style.left = "0px";
+          header.style.right = "0px";
+          header.style.width = "auto";
 
           if (Number.isFinite(left) && Number.isFinite(width) && width > 0) {
-            header.style.left = `${Math.max(0, left)}px`;
-            header.style.right = "auto";
-            header.style.width = `${width}px`;
-            header.style.boxSizing = "border-box";
+            this.contentEl.style.marginLeft = `${Math.max(0, left)}px`;
+            this.contentEl.style.width = `${width}px`;
+            this.contentEl.style.boxSizing = "border-box";
+            try {
+              this.contentEl.style.setProperty("--zion-sticky-text-left", `${Math.max(0, left)}px`);
+              this.contentEl.style.setProperty("--zion-sticky-gutters-left", `${Math.max(0, guttersLeft)}px`);
+            } catch {}
           }
 
 
@@ -427,6 +506,7 @@ function stickyUserHeaderView() {
           if (this.resizeHandler) window.removeEventListener("resize", this.resizeHandler);
           try { this.widthModeSub?.dispose?.(); } catch {}
           if (this.syncRaf) window.cancelAnimationFrame(this.syncRaf);
+          if (this.indexTimer) window.clearTimeout(this.indexTimer);
           if (this.view?.scrollDOM && this.scrollHandler) {
             this.view.scrollDOM.removeEventListener("scroll", this.scrollHandler);
           }
@@ -449,6 +529,10 @@ function stickyUserHeaderView() {
 }
 
 export async function activate(ctx) {
+  try {
+    const dispI18n = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (dispI18n) ctx.subscriptions.push(dispI18n);
+  } catch {}
   const disp = window.zion.editor.registerDecorator({
     id: "dev.sticky-user-header.decorator",
     apply(editor) {
@@ -479,8 +563,8 @@ export async function activate(ctx) {
     if (reg?.register) {
       const menuDisp = reg.register({
         id: "dev.sticky-user-header.menu",
-        title: "Sticky User Header",
-        section: "Editor",
+        title: t("ui.headerMenu", "Sticky User Header"),
+        section: t("category.editor", "Editor"),
         kind: "toggle",
         order: 48,
         getChecked: () => isEnabled(),

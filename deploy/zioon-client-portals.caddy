@@ -1,0 +1,24 @@
+workbench.zioon.tech {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8778 {
+        flush_interval -1
+    }
+    header Strict-Transport-Security "max-age=31536000"
+}
+mobile.zioon.tech {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8779 {
+        flush_interval -1
+    }
+    header Strict-Transport-Security "max-age=31536000"
+}
+admin.zioon.tech {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8780 {
+        flush_interval -1
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Robots-Tag "noindex, nofollow"
+    }
+}

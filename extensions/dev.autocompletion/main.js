@@ -3,9 +3,39 @@
  *
  * Manages editor autocompletion state and commands.
  */
+const I18N_NS = "dev.autocompletion";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.editor": "编辑器",
+    "cmd.toggle": "编辑器：切换自动补全",
+    "cmd.enable": "编辑器：启用自动补全",
+    "cmd.disable": "编辑器：禁用自动补全",
+    "ui.headerMenu": "自动补全"
+  },
+  "en-US": {
+    "category.editor": "Editor",
+    "cmd.toggle": "Editor: Toggle Autocompletion",
+    "cmd.enable": "Editor: Enable Autocompletion",
+    "cmd.disable": "Editor: Disable Autocompletion",
+    "ui.headerMenu": "Autocompletion"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 export async function activate(ctx) {
   const z = window.zion;
+  try {
+    const disp = z.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   
   // State management
   let autocompletionEnabled = (() => {
@@ -92,8 +122,8 @@ export async function activate(ctx) {
       ctx.subscriptions.push(
         registry.register({
           id: "editor.autocompletion.headerMenu",
-          title: "Autocompletion",
-          section: "Editor",
+          title: t("ui.headerMenu", "Autocompletion"),
+          section: t("category.editor", "Editor"),
           order: 20,
           kind: "toggle",
           getChecked: () => autocompletionEnabled,

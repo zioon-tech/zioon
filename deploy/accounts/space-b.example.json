@@ -1,0 +1,11 @@
+{
+  "spaceId": "space:team-b",
+  "spaceName": "Team B",
+  "dataDirectory": "../../.account-data/team-b",
+  "host": "127.0.0.1",
+  "port": 8867,
+  "publicUrl": "https://team-b.zion.example.com",
+  "issuer": "https://accounts.example.com",
+  "clientId": "REPLACE_WITH_OIDC_CLIENT_ID",
+  "ownerSubject": "REPLACE_WITH_VERIFIED_OWNER_SUBJECT"
+}

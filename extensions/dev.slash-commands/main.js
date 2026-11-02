@@ -23,57 +23,38 @@
  * });
  * ```
  */
+const I18N_NS = "dev.slash-commands";
+const I18N_MESSAGES = {
+  "zh-CN": {
+    "category.slash": "斜杠命令",
+    "cmd.show": "显示斜杠命令"
+  },
+  "en-US": {
+    "category.slash": "Slash Commands",
+    "cmd.show": "Show Slash Commands"
+  }
+};
+
+function t(key, fallback, values) {
+  const fullKey = `${I18N_NS}.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
 
 export async function activate(ctx) {
+  try {
+    const disp = window.zion?.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
+    if (disp) ctx.subscriptions.push(disp);
+  } catch {}
   // ===== Slash Command Registry =====
   const commands = new Map(); // id -> SlashCommand
   const commandsByTrigger = new Map(); // trigger -> SlashCommand[]
   const changeHandlers = new Set(); // Set<() => void>
 
-  const injectSlashStyles = () => {
-    try {
-      const styleId = 'zion-slash-commands-style';
-      if (document.getElementById(styleId)) return;
-      const style = document.createElement('style');
-      style.id = styleId;
-      style.textContent = `
-.zion-slash-panel{font-family:var(--font-sans,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif);font-size:12px;animation:zionSlashFadeIn .15s ease-out}
-@keyframes zionSlashFadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
-.zion-slash-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border,#3c3c3c)}
-.zion-slash-query{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:11px;opacity:.9}
-.zion-slash-hint{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace);font-size:10px;opacity:.6;white-space:nowrap}
-.zion-slash-empty{color:rgba(248,248,242,.7)}
-:root[data-theme="light"] .zion-slash-empty{color:rgba(0,0,0,.55)}
-.zion-slash-category{color:rgba(248,248,242,.55)}
-:root[data-theme="light"] .zion-slash-category{color:rgba(0,0,0,.45)}
-.zion-slash-item{transition:background-color .1s ease;color:var(--fg,#cccccc);box-sizing:border-box}
-.zion-slash-item:hover{background-color:rgba(98,114,164,.10)}
-:root[data-theme="light"] .zion-slash-item:hover{background-color:rgba(59,130,246,.10)}
-.zion-slash-item:active{background-color:rgba(98,114,164,.14)}
-:root[data-theme="light"] .zion-slash-item:active{background-color:rgba(59,130,246,.14)}
-.zion-slash-item.is-active{background-color:var(--role-user-bg,rgba(98,114,164,.18));color:var(--fg,#cccccc)}
-.zion-slash-item.is-active:hover{background-color:var(--role-user-bg,rgba(98,114,164,.18))}
-.zion-slash-item.is-active:active{background-color:var(--role-user-bg,rgba(98,114,164,.18))}
-.zion-slash-title{color:inherit}
-.zion-slash-desc{color:rgba(248,248,242,.7)}
-:root[data-theme="light"] .zion-slash-desc{color:rgba(0,0,0,.6)}
-.zion-slash-item.is-active .zion-slash-desc{color:inherit;opacity:.85}
-.zion-slash-trigger{color:var(--accent,#007acc)}
-.zion-slash-item.is-active .zion-slash-trigger{color:var(--accent,#007acc);opacity:1}
 
-.zion-slash-list{padding:6px;box-sizing:border-box;scrollbar-color:transparent transparent;scrollbar-width:thin}
-.zion-slash-list:hover{scrollbar-color:var(--scrollbar-thumb,var(--border,#44475a)) transparent}
-.zion-slash-list::-webkit-scrollbar{width:10px;height:10px}
-.zion-slash-list::-webkit-scrollbar-track{background:transparent}
-.zion-slash-list::-webkit-scrollbar-thumb{background:transparent;border-radius:6px;border:2px solid transparent;background-clip:content-box;transition:background .15s ease}
-.zion-slash-list:hover::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb,var(--border,#44475a));background-clip:content-box}
-.zion-slash-list::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover,var(--accent,#6272a4));background-clip:content-box}
-      `;
-      document.head.appendChild(style);
-    } catch {}
-  };
-
-  injectSlashStyles();
 
   const registerSlashCommand = (cmd) => {
     // Validate command
@@ -202,7 +183,7 @@ export async function activate(ctx) {
         title: `${i}级标题`,
         description: `插入 ${i} 级标题 (${hashes})`,
         category: 'markdown',
-        icon: '📌',
+        icon: '$(symbol-property)',
         priority: 100 - i,
         execute: (params, editor) => {
           if (!editor) return;
@@ -218,7 +199,7 @@ export async function activate(ctx) {
       title: '标题',
       description: '插入标题（可选级别 1-6）',
       category: 'markdown',
-      icon: '📌',
+      icon: '$(symbol-property)',
       params: [
         {
           name: 'level',
@@ -245,7 +226,7 @@ export async function activate(ctx) {
       title: '粗体',
       description: '插入粗体文本 (**text**)',
       category: 'markdown',
-      icon: '🔤',
+      icon: '$(symbol-string)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -265,7 +246,7 @@ export async function activate(ctx) {
       title: '斜体',
       description: '插入斜体文本 (*text*)',
       category: 'markdown',
-      icon: '🔤',
+      icon: '$(symbol-string)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -285,7 +266,7 @@ export async function activate(ctx) {
       title: '删除线',
       description: '插入删除线文本 (~~text~~)',
       category: 'markdown',
-      icon: '🔤',
+      icon: '$(symbol-string)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -306,7 +287,7 @@ export async function activate(ctx) {
       title: '无序列表',
       description: '插入无序列表 (- item)',
       category: 'markdown',
-      icon: '📋',
+      icon: '$(list-tree)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('- ');
@@ -319,7 +300,7 @@ export async function activate(ctx) {
       title: '有序列表',
       description: '插入有序列表 (1. item)',
       category: 'markdown',
-      icon: '📋',
+      icon: '$(list-tree)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('1. ');
@@ -332,7 +313,7 @@ export async function activate(ctx) {
       title: '任务列表',
       description: '插入任务列表 (- [ ] item)',
       category: 'markdown',
-      icon: '✅',
+      icon: '$(check)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('- [ ] ');
@@ -346,7 +327,7 @@ export async function activate(ctx) {
       title: '引用',
       description: '插入引用块 (> quote)',
       category: 'markdown',
-      icon: '💬',
+      icon: '$(comment-discussion)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('> ');
@@ -359,7 +340,7 @@ export async function activate(ctx) {
       title: '代码块',
       description: '插入代码块',
       category: 'markdown',
-      icon: '💻',
+      icon: '$(file-code)',
       execute: (params, editor) => {
         if (!editor) return;
         const codeblock = `\`\`\`\n\n\`\`\``;
@@ -375,7 +356,7 @@ export async function activate(ctx) {
       title: '分隔线',
       description: '插入分隔线 (---)',
       category: 'markdown',
-      icon: '➖',
+      icon: '$(horizontal-rule)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('\n---\n');
@@ -389,7 +370,7 @@ export async function activate(ctx) {
       title: '链接',
       description: '插入链接 ([text](url))',
       category: 'markdown',
-      icon: '🔗',
+      icon: '$(link)',
       execute: (params, editor) => {
         if (!editor) return;
         const selection = editor.getSelection();
@@ -409,7 +390,7 @@ export async function activate(ctx) {
       title: '图片',
       description: '插入图片\n![alt](url)',
       category: 'markdown',
-      icon: '🖼️',
+      icon: '$(file-media)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection('\n![alt](url)\n');
@@ -424,7 +405,7 @@ export async function activate(ctx) {
       title: '表格',
       description: '插入表格模板',
       category: 'markdown',
-      icon: '📊',
+      icon: '$(table)',
       execute: (params, editor) => {
         if (!editor) return;
         const table = `
@@ -445,7 +426,7 @@ export async function activate(ctx) {
       title: '时间戳',
       description: '插入当前时间戳',
       category: 'utility',
-      icon: '⏰',
+      icon: '$(clock)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection(new Date().toISOString());
@@ -458,7 +439,7 @@ export async function activate(ctx) {
       title: '日期',
       description: '插入当前日期',
       category: 'utility',
-      icon: '📅',
+      icon: '$(calendar)',
       execute: (params, editor) => {
         if (!editor) return;
         editor.replaceSelection(new Date().toLocaleDateString('zh-CN'));
@@ -619,6 +600,23 @@ export async function activate(ctx) {
     slashActiveCommand = slashCurrentCommands[slashSelectedIndex] || null;
   };
 
+  const setSlashIcon = (target, value, fallback = 'zap') => {
+    target.textContent = '';
+    const raw = String(value || '').trim();
+    const codiconMatch = raw.match(/^\$\(([^)]+)\)$/);
+    const name = codiconMatch ? codiconMatch[1] : raw || fallback;
+    try {
+      const icon = window.zionIcons?.has?.(name)
+        ? window.zionIcons.createFromCodicon(name)
+        : window.zionIcons?.createFromCodicon?.(fallback);
+      if (icon) {
+        target.appendChild(icon);
+        return;
+      }
+    } catch {}
+    target.textContent = raw || fallback;
+  };
+
   const renderSlashCommands = (filter = '') => {
     if (!slashList) return;
 
@@ -653,7 +651,7 @@ export async function activate(ctx) {
 
         const icon = document.createElement('div');
         icon.className = 'zion-slash-icon';
-        icon.textContent = cmd.icon || (cmd.__navBack ? '↩︎' : (hasSubmenu(cmd) ? '›' : '⚡'));
+        setSlashIcon(icon, cmd.icon || (cmd.__navBack ? '$(chevron-left)' : (hasSubmenu(cmd) ? '$(chevron-right)' : '$(zap)')));
         icon.style.fontSize = '18px';
         icon.style.flexShrink = '0';
 
@@ -700,7 +698,7 @@ export async function activate(ctx) {
           __navBack: true,
           title: 'Back',
           description: getBreadcrumbText(),
-          icon: '←'
+          icon: '$(chevron-left)'
         });
       }
 
@@ -797,7 +795,7 @@ export async function activate(ctx) {
         // Icon
         const icon = document.createElement('div');
         icon.className = 'zion-slash-icon';
-        icon.textContent = cmd.icon || '⚡';
+        setSlashIcon(icon, cmd.icon || '$(zap)');
         icon.style.fontSize = '18px';
         icon.style.flexShrink = '0';
 
@@ -1144,7 +1142,9 @@ export async function activate(ctx) {
       await waitForNextFrame();
     }
 
-    cleanSlashTrigger();
+    // Some commands complete text in the editor and need the original input intact.
+    if (cmd.retainTrigger) slashStartPos = null;
+    else cleanSlashTrigger();
 
     try {
       if (typeof cmd.execute === 'function') {
@@ -1152,6 +1152,7 @@ export async function activate(ctx) {
       }
     } catch (e) {
       console.error(`[dev.slash-commands] Error executing command ${cmd.id}:`, e);
+      window.zion.notification?.show?.(e.message || String(e), { type: "error", duration: 6000 });
     }
 
     try {

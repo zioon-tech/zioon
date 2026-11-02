@@ -1,7 +1,7 @@
 {
   "name": "dev.tools",
   "version": "0.0.1",
-  "description": "Tool management: parse, switch, and call tools from AI assistant responses",
+  "description": "Manage tool parsing, switches, and tool calls from AI responses.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
@@ -9,11 +9,96 @@
     "name": "Tools",
     "version": "0.0.1",
     "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "工具",
+        "en-US": "Tools"
+      },
+      "description": {
+        "zh-CN": "管理工具解析、开关和 AI 响应中的工具调用。",
+        "en-US": "Manage tool parsing, switches, and tool calls from AI responses."
+      },
+      "icon": "tools",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "解析并运行工具调用",
+          "浏览上下文、文件和变更",
+          "管理可用工具与会话级工具状态"
+        ],
+        "en-US": [
+          "Parse and run tool calls",
+          "Browse context, files, and changes",
+          "Manage available tools and session tool state"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "local-files",
+          "label": {
+            "zh-CN": "本地文件",
+            "en-US": "Local files"
+          },
+          "description": {
+            "zh-CN": "通过已授权目录读取和写入文件。",
+            "en-US": "Read and write files through authorized directories."
+          }
+        },
+        {
+          "id": "processes",
+          "label": {
+            "zh-CN": "本地进程",
+            "en-US": "Local processes"
+          },
+          "description": {
+            "zh-CN": "通过工具运行受控命令和终端操作。",
+            "en-US": "Run controlled commands and terminal operations through tools."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开上下文",
+            "en-US": "Open Context"
+          },
+          "command": "tools.openContext",
+          "icon": "references"
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {
           "id": "tools.parseFromContent",
-          "title": "Parse Tools From Content"
+          "title": "Parse Tools From Content",
+          "titleKey": "dev.tools.cmd.parseFromContent",
+          "categoryKey": "dev.tools.category.tools"
+        },
+        {
+          "id": "tools.openChanges",
+          "title": "Open Changes",
+          "titleKey": "dev.tools.cmd.openChanges",
+          "categoryKey": "dev.tools.category.tools"
+        },
+        {
+          "id": "tools.openFiles",
+          "title": "Open Files",
+          "titleKey": "dev.tools.cmd.openFiles",
+          "categoryKey": "dev.tools.category.tools"
+        },
+        {
+          "id": "tools.openContext",
+          "title": "Open Context",
+          "titleKey": "dev.tools.cmd.openContext",
+          "categoryKey": "dev.tools.category.tools"
         }
       ]
     },
@@ -22,6 +107,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.tools",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.tools"
   }
 }

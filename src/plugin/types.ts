@@ -2,6 +2,20 @@
  * 插件系统类型定义
  */
 
+import type {
+  NormalizedPluginManifest,
+  PluginCapabilityKind,
+  PluginEntryKind,
+  PluginHostKind
+} from '../../packages/plugin-sdk/src/manifest.mjs';
+
+export type {
+  NormalizedPluginManifest,
+  PluginCapabilityKind,
+  PluginEntryKind,
+  PluginHostKind
+} from '../../packages/plugin-sdk/src/manifest.mjs';
+
 /**
  * 可销毁对象
  */
@@ -21,6 +35,16 @@ export type PluginState =
   | 'deactivating' // 正在停用
   | 'error'        // 错误状态
   | 'uninstalled'; // 已卸载
+
+export type PluginOrigin = 'builtin' | 'dev' | 'external' | 'account';
+
+export interface PluginDevSessionRecord {
+  pluginId: string;
+  devId: string;
+  baseUrl: string;
+  dir: string;
+  nodeId?: string;
+}
 
 /**
  * 插件错误类型
@@ -46,6 +70,23 @@ export interface PluginError {
   timestamp: number;
 }
 
+export type PluginEntries = Partial<Record<PluginEntryKind, string>> & {
+  /** @deprecated Use workbench. */
+  ui?: string;
+  /** @deprecated Use resource. */
+  tools?: string;
+  /** @deprecated Use resource. */
+  device?: string;
+};
+
+export type PluginCapabilityDeclaration = {
+  id: string;
+  kind: PluginCapabilityKind;
+  host: PluginHostKind;
+  risk?: string;
+  requiredScopes?: string[];
+};
+
 /**
  * 插件清单（新格式）
  */
@@ -59,7 +100,40 @@ export interface PluginManifest {
     id: string;
     name: string;
     version: string;
-    main: string;
+    /** @deprecated Use entries.workbench. */
+    main?: string;
+    manifestVersion?: number;
+    entries?: PluginEntries;
+    hosts?: Partial<Record<PluginHostKind, boolean>>;
+    capabilities?: PluginCapabilityDeclaration[];
+    runtime?: {
+      apiVersion: number;
+    };
+    compatibility?: {
+      pluginApi?: number;
+      runtimeProtocol?: number;
+    };
+    presentation?: {
+      displayName?: string | Record<string, string>;
+      description?: string | Record<string, string>;
+      icon?: string;
+      category?: string;
+      features?: string[] | Record<string, string[]>;
+      permissions?: Array<{
+        id: string;
+        label: string | Record<string, string>;
+        description?: string | Record<string, string>;
+      }>;
+      dataLocations?: Array<{
+        label: string | Record<string, string>;
+        path: string;
+      }>;
+      entrypoints?: Array<{
+        title: string | Record<string, string>;
+        command: string;
+        icon?: string;
+      }>;
+    };
     contributes?: {
       commands?: Array<{
         id: string;
@@ -89,6 +163,8 @@ export interface PluginManifest {
         uiTheme: 'vs-dark' | 'vs-light';
         path: string;
       }>;
+      styles?: string[];
+      skills?: string[];
       languages?: Array<{
         id: string;
         extensions: string[];
@@ -114,6 +190,7 @@ export interface ExtensionManifest {
   description?: string;
   author?: string;
   main?: string;
+  presentation?: PluginManifest['zion']['presentation'];
   commands?: Record<string, {
     title?: string;
     handler: (...args: any[]) => any;
@@ -137,7 +214,8 @@ export interface ExtensionManifest {
   pasteHandlers?: Array<{
     id: string;
     priority?: number;
-    handle: (ctx: { clipboardData: DataTransfer; editor: any }) => boolean | Promise<boolean>;
+    claim?: (ctx: { clipboardData: DataTransfer; editor: any }) => unknown | false | null;
+    handle: (ctx: { clipboardData: DataTransfer; editor: any; claim?: unknown }) => boolean | Promise<boolean>;
   }>;
   decorators?: Array<{
     id: string;
@@ -164,8 +242,35 @@ export interface PluginInfo {
   createdAt: number;
   updatedAt: number;
   isLegacy: boolean;
+  /** 插件来源：内置扩展、开发目录或外部分发包 */
+  origin?: PluginOrigin;
+  accountInstallation?: { accountId: string; listingId: string; digest: string; epoch: string };
   /** 是否启用（UI/管理器用） */
   enabled?: boolean;
+  /** ZIP 插件中由 contributes.skills 声明的 SKILL.md 内容 */
+  skillContents?: Record<string, string>;
+  /** ZIP/开发插件中由 contributes.skills 声明的技能目录文本文件 */
+  skillFiles?: Record<string, Record<string, string>>;
+  /** ZIP 插件中由 contributes.styles 声明的样式内容 */
+  styleContents?: Record<string, string>;
+  /** ZIP 插件中 Workbench/renderer JS 模块源码，用于刷新后重建 blob URL */
+  scriptContents?: Record<string, string>;
+  /** ZIP 插件中 Workbench/renderer 原始入口路径 */
+  sourceEntries?: PluginEntries;
+  /** ZIP 插件脚本源码在 IndexedDB 中的持久化 key */
+  scriptStorageKey?: string;
+  /** ZIP 插件脚本源码估算字符大小，用于展示和排障 */
+  scriptContentBytes?: number;
+  /** 当前页面中从 scriptContents 生成的 blob URL，不能跨刷新持久化 */
+  scriptBlobUrls?: Record<string, string>;
+  /** 开发模式插件的本地源码目录 */
+  sourceDir?: string;
+  /** 开发目录所属设备，读取时不能自动切换设备 */
+  sourceNodeId?: string;
+  /** 开发模式插件会话 ID */
+  devId?: string;
+  /** Shared Plugin SDK v2 normalization used by every host. */
+  contract?: NormalizedPluginManifest;
 }
 
 /**
@@ -183,9 +288,11 @@ export interface PluginModule {
 export interface PluginContext {
   subscriptions: Disposable[];
   extensionPath: string;
+  locations: import("./data-locations").PluginLocations;
   globalState: Memento;
   workspaceState: Memento;
   configuration: PluginConfigurationManager;
+  runtime: { command(args: Record<string, unknown>): Promise<any> };
   asAbsolutePath(path: string): string;
   log(message: string, level?: 'debug' | 'info' | 'warn' | 'error'): void;
 }
@@ -298,7 +405,14 @@ export interface PluginPackageInfo {
     id: string;
     name: string;
     version: string;
-    main: string;
+    main?: string;
+    manifestVersion?: number;
+    entries?: PluginEntries;
+    hosts?: Partial<Record<PluginHostKind, boolean>>;
+    capabilities?: PluginCapabilityDeclaration[];
+    runtime?: {
+      apiVersion: number;
+    };
   };
 }
 

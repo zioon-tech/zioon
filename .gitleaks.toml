@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Alibaba NAS access point resource IDs are identifiers, not credentials"
+regexTarget = "secret"
+regexes = ['^ap-[a-z0-9]{17}$']

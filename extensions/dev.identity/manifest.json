@@ -1,0 +1,117 @@
+{
+  "name": "dev.identity",
+  "version": "0.1.15",
+  "description": "Maintain agent identity, user profile, and distilled biography context.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.identity",
+    "name": "Identity",
+    "version": "0.1.15",
+    "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "身份与自传",
+        "en-US": "Identity"
+      },
+      "description": {
+        "zh-CN": "维护 Agent 身份、用户画像、项目工作记忆和蒸馏后的经历上下文。",
+        "en-US": "Maintain agent identity, profile, project working memory, and distilled biography context."
+      },
+      "icon": "account",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "维护 Agent 身份与用户画像",
+          "维护项目索引与项目工作记忆",
+          "按项目授权自动调研、规划与执行",
+          "从会话蒸馏经历事件",
+          "向模型注入可引用的自传摘要"
+        ],
+        "en-US": [
+          "Maintain agent identity and user profile",
+          "Maintain project index and working memory",
+          "Authorize automatic research, planning, and execution per project",
+          "Distill biography events from sessions",
+          "Inject a citable biography digest into model context"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "memory-service",
+          "label": {
+            "zh-CN": "记忆服务",
+            "en-US": "Memory service"
+          },
+          "description": {
+            "zh-CN": "通过认证的 agent-fs 服务读写身份、用户画像、项目工作记忆和自传记忆。",
+            "en-US": "Read and write identity, profile, project, and biography memory through authenticated agent-fs."
+          }
+        },
+        {
+          "id": "model-context",
+          "label": {
+            "zh-CN": "模型上下文",
+            "en-US": "Model context"
+          },
+          "description": {
+            "zh-CN": "在系统上下文中注入身份与经历摘要。",
+            "en-US": "Inject identity and biography summaries into system context."
+          }
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开 Biography",
+            "en-US": "Open Biography"
+          },
+          "command": "identity.openBiography",
+          "icon": "book"
+        }
+      ]
+    },
+    "contributes": {
+      "commands": [
+        {
+          "id": "identity.initialize",
+          "title": "Initialize Identity Profile",
+          "category": "Identity"
+        },
+        {
+          "id": "identity.openBiography",
+          "title": "Open Biography",
+          "category": "Identity"
+        },
+        {
+          "id": "identity.refreshContext",
+          "title": "Refresh Identity Context",
+          "category": "Identity"
+        }
+      ],
+      "styles": [
+        "./styles.css"
+      ],
+      "skills": [
+        "./skills/agentfs-memory"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "dependencies": {
+      "dev.langchain-chat": ">=0.1.0",
+      "dev.session-manager": ">=0.1.0"
+    },
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

@@ -27,7 +27,7 @@ describe("tool-calls reasoning policy", () => {
     expect(shouldForceReasoningContentWithToolCalls({ mode: "always", modelId: "deepseek-chat" })).toBe(true);
     expect(shouldForceReasoningContentWithToolCalls({ mode: "never", modelId: "deepseek-reasoner" })).toBe(false);
     expect(shouldForceReasoningContentWithToolCalls({ mode: "auto", modelId: "deepseek-reasoner" })).toBe(true);
-    expect(shouldForceReasoningContentWithToolCalls({ mode: "auto", modelId: "deepseek-chat" })).toBe(false);
+    expect(shouldForceReasoningContentWithToolCalls({ mode: "auto", modelId: "deepseek-chat" })).toBe(true);
   });
 
   it("patches assistant.tool_calls messages only", () => {

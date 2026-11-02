@@ -128,10 +128,24 @@ describe('Slash commands plugin', () => {
     expect(core.getValue()).toBe('****');
   });
 
-  it('injects styles and marks the first item active', async () => {
-    const style = document.getElementById('zion-slash-commands-style');
-    expect(style).toBeTruthy();
+  it('lets text-completion commands retain and complete their slash trigger', async () => {
+    window.zion.slash.registerCommand({
+      id: 'test.retain-trigger',
+      trigger: 'retain-trigger',
+      title: 'Retain trigger',
+      retainTrigger: true,
+      execute: (_params, editor) => editor.replaceSelection(' completed')
+    });
+    core.replaceSelection('/retain-trigger');
+    const item = [...document.querySelectorAll('.zion-slash-item')]
+      .find((node) => node.textContent.includes('Retain trigger'));
+    expect(item).toBeTruthy();
+    item.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(core.getValue()).toBe('/retain-trigger completed');
+  });
 
+  it('marks the first item active', async () => {
     core.replaceSelection('/');
 
     const items = Array.from(document.querySelectorAll('.zion-slash-item'));

@@ -1,6 +1,9 @@
-import { Prec, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, ViewPlugin, keymap } from "@codemirror/view";
+import { Prec, RangeSetBuilder, StateField } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker, WidgetType } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
+import {
+  isContinuationBoundaryLine
+} from "../../src/chat/session-document-format.js";
 
 /**
  * Roles plugin (standalone, used by dev.roles extension):
@@ -12,6 +15,7 @@ import { foldService } from "@codemirror/language";
 
 // 默认内置角色
 const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
+const ASSISTANT_BLOCK_ID_RE = /^assistant\s+(<!--\s*zion-assistant:id=[^>\s]+\s*-->)\s?/;
 
 /**
  * 从环境读取自定义角色前缀：
@@ -77,17 +81,18 @@ function getEffectivePrefixes(opts) {
   return normalizePrefixes([...BASE_ROLE_PREFIXES, ...extra, ...readCustomPrefixesFromEnv()]);
 }
 
-/** 计算需要块级高亮的角色（默认为空数组，即不启用任何块级高亮） */
+/** 计算需要块级高亮的角色（默认 ["user"]，可被配置覆盖） */
 function getHighlightBlockRoles(opts) {
   const fromEnv = readHighlightBlockRolesFromEnv();
   let list = Array.isArray(opts?.highlightBlockRoles) ? opts.highlightBlockRoles : fromEnv;
-  list = Array.isArray(list) && list.length ? list : [];
+  list = Array.isArray(list) && list.length ? list : ["user"];
   return normalizePrefixes(list);
 }
 
 /** @param {string} text @param {string[]} prefixes */
 function getRoleForLine(text, prefixes) {
   const t = text || "";
+  if (isContinuationBoundaryLine(t)) return "user";
   for (const r of prefixes) {
     if (t.startsWith(r + " ")) return r;
   }
@@ -97,16 +102,119 @@ function getRoleForLine(text, prefixes) {
 /** @param {string} role */
 function tokenClass(role) {
   // 根据 TOC 插件中的颜色方案返回对应的类名
-  // user: '#4caf50' (绿色), assistant: '#2196f3' (蓝色), system: '#9e9e9e' (灰色)
+  // Colors are provided by CSS role tokens so assistant follows the active theme.
   if (role === 'assistant') return "cm-role-token-assistant";
   if (role === 'system') return "cm-role-token-system";
   return "cm-role-token-user"; // 默认为 user
 }
 
- 
+function blockClass(role) {
+  const r = typeof role === "string" ? role : "";
+  const safe = r.trim().replace(/[^a-zA-Z0-9_-]+/g, "-") || "user";
+  return `cm-role-block cm-role-block-${safe}`;
+}
+
+const ROLES_NAV_FLASH_EVENT = "zion:roles-nav-flash";
+
+class RoleBoundarySpacerWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = "zion-role-boundary-spacer";
+    el.setAttribute("aria-hidden", "true");
+    return el;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+const roleBoundarySpacerWidget = new RoleBoundarySpacerWidget();
+
+function buildRoleSpacerDecorations(state, prefixes) {
+  const doc = state.doc;
+  const builder = new RangeSetBuilder();
+  let pos = 1;
+  while (pos <= doc.length) {
+    const line = doc.lineAt(pos);
+    const text = doc.sliceString(line.from, line.to);
+    const roleHere = getRoleForLine(text, prefixes);
+    if (roleHere && !isContinuationBoundaryLine(text) && line.number !== 1) {
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.widget({
+          widget: roleBoundarySpacerWidget,
+          block: true,
+          side: -1
+        })
+      );
+    }
+    pos = line.to + 1;
+  }
+  return builder.finish();
+}
+
+function canMapRoleSpacers(tr, prefixes) {
+  let reusable = true;
+  tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+    if (!reusable) return;
+    if (/[\n\r]/.test(inserted.toString())) {
+      reusable = false;
+      return;
+    }
+
+    const oldFromLine = tr.startState.doc.lineAt(fromA);
+    const oldToLine = tr.startState.doc.lineAt(toA);
+    const newFromLine = tr.state.doc.lineAt(fromB);
+    const newToLine = tr.state.doc.lineAt(toB);
+    if (oldFromLine.number !== oldToLine.number || newFromLine.number !== newToLine.number) {
+      reusable = false;
+      return;
+    }
+
+    const oldRole = getRoleForLine(oldFromLine.text, prefixes);
+    const newRole = getRoleForLine(newFromLine.text, prefixes);
+    const oldOffset = fromA - oldFromLine.from;
+    const newOffset = fromB - newFromLine.from;
+    if (
+      (oldRole && oldOffset < oldRole.length + 1) ||
+      (newRole && newOffset < newRole.length + 1)
+    ) {
+      reusable = false;
+    }
+  });
+  return reusable;
+}
+
+function roleSpacerField(prefixes) {
+  return StateField.define({
+    create(state) {
+      return buildRoleSpacerDecorations(state, prefixes);
+    },
+    update(value, tr) {
+      if (!tr.docChanged || canMapRoleSpacers(tr, prefixes)) return value.map(tr.changes);
+      return buildRoleSpacerDecorations(tr.state, prefixes);
+    },
+    provide: field => EditorView.decorations.from(field)
+  });
+}
+
+function flashRoleNavLine(view, lineIndex) {
+  if (!view || typeof lineIndex !== "number" || lineIndex < 0) return;
+  try {
+    window.dispatchEvent(new CustomEvent(ROLES_NAV_FLASH_EVENT, {
+      detail: { view, lineIndex }
+    }));
+  } catch {}
+}
 
 /** @param {import('@codemirror/view').EditorView} view @param {string[]} prefixes @param {string[]} highlightBlockRoles @param {RegExp|null} atRegex */
-function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
+function buildDecorations(view, prefixes, highlightBlockRoles, atRegex, flashLineIndex = null, flashSerial = 0) {
   const doc = view.state.doc;
   const builder = new RangeSetBuilder();
 
@@ -117,20 +225,86 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
   let pos = Math.max(1, view.viewport.from);
   const endPos = view.viewport.to;
 
+  try {
+    const startLine0 = doc.lineAt(pos).number - 1;
+      const idx = readPublishedRolesIndex(view);
+    const blocks = Array.isArray(idx?.blocks) ? idx.blocks : null;
+    const idxPrefixes = Array.isArray(idx?.prefixes) ? idx.prefixes : null;
+    if (blocks && idxPrefixes && idxPrefixes.join("\n") === prefixes.join("\n")) {
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (!b) continue;
+        const s = typeof b.startLine === "number" ? b.startLine : null;
+        const e = typeof b.endLine === "number" ? b.endLine : null;
+        if (s == null || e == null) continue;
+        if (startLine0 >= s && startLine0 <= e) {
+          currentRole = typeof b.role === "string" ? b.role : null;
+          break;
+        }
+      }
+    } else {
+      let scanPos = doc.lineAt(pos).from;
+      for (let k = 0; k < 200 && scanPos > 1; k++) {
+        const prevLine = doc.lineAt(Math.max(1, scanPos - 1));
+        const prevText = doc.sliceString(prevLine.from, prevLine.to);
+        const r = getRoleForLine(prevText, prefixes);
+        if (r) {
+          currentRole = r;
+          break;
+        }
+        scanPos = prevLine.from;
+      }
+    }
+  } catch {}
+
   while (pos <= endPos) {
     const line = doc.lineAt(pos);
     const text = doc.sliceString(line.from, line.to);
     const roleHere = getRoleForLine(text, prefixes);
+    const continuationHere = isContinuationBoundaryLine(text);
 
     if (roleHere) {
       // 开启新块
       currentRole = roleHere;
-
-      // 同一位置先添加 line，再添加 mark，避免 RangeSetBuilder 顺序问题
-      if (highlightBlockRoles.includes(currentRole)) {
-        builder.add(line.from, line.from, Decoration.line({ class: "cm-role-user-block" }));
+    }
+    const inBlock = !!(currentRole && highlightBlockRoles.includes(currentRole));
+    const shouldStart = !!(roleHere && inBlock);
+    let shouldEnd = false;
+    if (inBlock) {
+      const nextPos = line.to + 1;
+      if (nextPos > doc.length) {
+        shouldEnd = true;
+      } else if (nextPos <= endPos) {
+        try {
+          const nextLine = doc.lineAt(nextPos);
+          const nextText = doc.sliceString(nextLine.from, nextLine.to);
+          const nextRole = getRoleForLine(nextText, prefixes);
+          if (nextRole) shouldEnd = true;
+        } catch {}
       }
+    }
 
+      // 同一位置先添加 line，再添加 mark，避免 RangeSetBuilder 顺序问题。
+      // Every role header gets a boundary class so visual spacing works for all roles,
+      // even when only a subset of roles has block background enabled.
+      const lineClasses = [];
+      if (inBlock) {
+        lineClasses.push(blockClass(currentRole));
+        if (shouldStart) lineClasses.push("cm-role-block-start");
+        if (shouldEnd) lineClasses.push("cm-role-block-end");
+      }
+      if (roleHere) {
+        lineClasses.push("cm-role-boundary-start");
+        if (line.number === 1) lineClasses.push("cm-role-boundary-first");
+      }
+      if (line.number - 1 === flashLineIndex) {
+        lineClasses.push(`cm-role-nav-flash cm-role-nav-flash-${flashSerial % 2 ? "b" : "a"}`);
+      }
+        if (lineClasses.length) {
+        builder.add(line.from, line.from, Decoration.line({ class: lineClasses.join(" ") }));
+    }
+
+    if (roleHere && !continuationHere) {
       // 标记角色前缀为胶囊样式（仅角色词本身，不包含空格）
       // 行首角色 token 额外加 cm-role-token-head
       const tokenLen = roleHere.length;
@@ -139,10 +313,17 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
         line.from + tokenLen,
         Decoration.mark({ class: tokenClass(roleHere) + " cm-role-token-head" })
       );
-    } else {
-      // 在被配置为块级高亮的角色区块内，为后续非角色行添加背景
-      if (currentRole && highlightBlockRoles.includes(currentRole)) {
-        builder.add(line.from, line.from, Decoration.line({ class: "cm-role-user-block" }));
+      if (roleHere === "assistant") {
+        const assistantIdMatch = text.match(ASSISTANT_BLOCK_ID_RE);
+        if (assistantIdMatch) {
+          const comment = assistantIdMatch[1];
+          const commentFrom = line.from + text.indexOf(comment);
+          builder.add(
+            commentFrom,
+            commentFrom + comment.length,
+            Decoration.replace({})
+          );
+        }
       }
     }
 
@@ -171,8 +352,88 @@ function buildDecorations(view, prefixes, highlightBlockRoles, atRegex) {
   return builder.finish();
 }
 
+function getRoleIndexScopeFromView(view) {
+  try {
+    const dom = view?.dom || null;
+    const panelId = dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+    const editorId = dom?.getAttribute?.("data-editor-id") || "";
+    const sessionId = dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+    return { editorId, panelId, sessionId };
+  } catch {
+    return { editorId: "", panelId: "", sessionId: "" };
+  }
+}
+
+function getRoleIndexScopeFromTarget(target) {
+  try {
+    const view = target?.state?.doc && target?.dom
+      ? target
+      : (target?.getView?.() || target?.core?.view || null);
+    if (view?.dom) return getRoleIndexScopeFromView(view);
+    const dom = target instanceof HTMLElement ? target : null;
+    const panelId = target?.panelId || dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+    const editorId = target?.editorId || target?.core?.getEditorId?.() || dom?.getAttribute?.("data-editor-id") || "";
+    const sessionId = target?.sessionId || target?.core?.getSessionId?.() || dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+    return { editorId, panelId, sessionId };
+  } catch {
+    return { editorId: "", panelId: "", sessionId: "" };
+  }
+}
+
+function readPublishedRolesIndex(target) {
+  try {
+    const state = window?.zion?.state;
+    if (!state?.get) return null;
+    const scope = getRoleIndexScopeFromTarget(target);
+    const keys = [
+      scope.editorId ? `roles.index.editor.${scope.editorId}` : "",
+      scope.panelId && scope.sessionId ? `roles.index.panelSession.${scope.panelId}.${scope.sessionId}` : "",
+      scope.panelId ? `roles.index.panel.${scope.panelId}` : "",
+      "roles.index"
+    ].filter(Boolean);
+    for (const key of keys) {
+      const idx = state.get(key);
+      if (!idx || !Array.isArray(idx.blocks)) continue;
+      const idxScope = idx.scope || {};
+      if (key === "roles.index") {
+        if (scope.editorId && idxScope.editorId && idxScope.editorId !== scope.editorId) continue;
+        if (scope.panelId && idxScope.panelId && idxScope.panelId !== scope.panelId) continue;
+        if (scope.sessionId && idxScope.sessionId && idxScope.sessionId !== scope.sessionId) continue;
+      }
+      return idx;
+    }
+  } catch {}
+  return null;
+}
+
+function ensureRolesApi() {
+  try {
+    window.zion = window.zion || {};
+    const prev = window.zion.roles || {};
+    window.zion.roles = {
+      ...prev,
+      getIndex: (target) => readPublishedRolesIndex(target),
+      getBlocks: (target) => readPublishedRolesIndex(target)?.blocks || []
+    };
+  } catch {}
+}
+
+function publishRolesIndex(index, scope = {}) {
+  try {
+    ensureRolesApi();
+    const state = window?.zion?.state;
+    if (!state?.set) return;
+    state.set("roles.index", index);
+    if (scope?.editorId) state.set(`roles.index.editor.${scope.editorId}`, index);
+    if (scope?.panelId) state.set(`roles.index.panel.${scope.panelId}`, index);
+    if (scope?.panelId && scope?.sessionId) {
+      state.set(`roles.index.panelSession.${scope.panelId}.${scope.sessionId}`, index);
+    }
+  } catch {}
+}
+
 /** Build roles index (blocks ranges) for other extensions via StateBus */
-function buildRolesIndexFromState(state, prefixes) {
+function buildRolesIndexFromState(state, prefixes, scope = {}) {
   try {
     const doc = state.doc;
     const blocks = [];
@@ -184,6 +445,7 @@ function buildRolesIndexFromState(state, prefixes) {
       const line = doc.lineAt(pos);
       const text = doc.sliceString(line.from, line.to);
       const roleHere = getRoleForLine(text, prefixes);
+      const continuationHere = isContinuationBoundaryLine(text);
 
       if (roleHere) {
         if (firstRoleLine0 == null) {
@@ -198,16 +460,22 @@ function buildRolesIndexFromState(state, prefixes) {
           current = null;
         }
         const tokenLen = roleHere.length;
-        const contentStart = Math.min(line.to, line.from + tokenLen + 1); // skip "role "
+        const contentStart = continuationHere
+          ? Math.min(doc.length, line.to + 1)
+          : Math.min(line.to, line.from + tokenLen + 1); // skip "role "
         current = {
           role: roleHere,
-          startLine: line.number - 1,
+          startLine: continuationHere
+            ? Math.min(doc.lines - 1, line.number)
+            : line.number - 1,
           from: contentStart,
           startPos: contentStart,
           endPos: contentStart,
           preview: ''
         };
-        const rem = doc.sliceString(contentStart, line.to).trim();
+        const rem = continuationHere
+          ? ""
+          : doc.sliceString(contentStart, line.to).trim();
         if (rem) current.preview = rem.slice(0, 160);
       } else if (current) {
         // extend current block
@@ -268,12 +536,69 @@ function buildRolesIndexFromState(state, prefixes) {
       blocks.push(current);
     }
 
-    const index = { prefixes, blocks, updatedAt: Date.now() };
-    window?.zion?.state?.set?.('roles.index', index);
+    const index = { prefixes, blocks, scope, updatedAt: Date.now() };
+    publishRolesIndex(index, scope);
     return index;
   } catch {
     return null;
   }
+}
+
+function buildRolesIndexFromView(view, prefixes) {
+  ensureRolesApi();
+  return buildRolesIndexFromState(view.state, prefixes, getRoleIndexScopeFromView(view));
+}
+
+class RoleRailMarker extends GutterMarker {
+  constructor(role) {
+    super();
+    this.role = role;
+  }
+  toDOM() {
+    const div = document.createElement("div");
+    div.className = `zion-role-rail zion-role-rail-${this.role}`;
+    return div;
+  }
+}
+
+const userRailMarker = new RoleRailMarker("user");
+
+function rolesRailGutter(prefixes, highlightBlockRoles) {
+  return gutter({
+    class: "zion-gutter-role-rail",
+    lineMarker: (view, line) => {
+      try {
+        const lineNo = view.state.doc.lineAt(line.from).number - 1;
+          const idx = readPublishedRolesIndex(view);
+        const blocks = Array.isArray(idx?.blocks) ? idx.blocks : null;
+        if (blocks) {
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i];
+            if (!b) continue;
+            const s = typeof b.startLine === "number" ? b.startLine : null;
+            const e = typeof b.endLine === "number" ? b.endLine : null;
+            if (s == null || e == null) continue;
+            if (lineNo >= s && lineNo <= e) {
+              if (b.role === "user") return userRailMarker;
+              break;
+            }
+          }
+          return null;
+        }
+        let scanPos = line.from;
+        let currentRole = null;
+        for (let k = 0; k < 800 && scanPos > 1; k++) {
+          const prevLine = view.state.doc.lineAt(Math.max(1, scanPos - 1));
+          const r = getRoleForLine(prevLine.text, prefixes);
+          if (r) { currentRole = r; break; }
+          scanPos = prevLine.from;
+        }
+        if (!currentRole) currentRole = "user";
+        if (currentRole === "user") return userRailMarker;
+      } catch {}
+      return null;
+    }
+  });
 }
 
 function rolesView(opts = {}) {
@@ -292,15 +617,75 @@ function rolesView(opts = {}) {
   return ViewPlugin.fromClass(
     class {
       constructor(view) {
-        this.decorations = buildDecorations(view, prefixes, highlightBlockRoles, atRegex);
-        try { buildRolesIndexFromState(view.state, prefixes); } catch {}
+        this.view = view;
+        this.flashLineIndex = null;
+        this.flashSerial = 0;
+        this.flashTimer = 0;
+        this.indexTimer = 0;
+        this.indexIdle = 0;
+        this.scheduleIndexRefresh = () => {
+          if (this.indexTimer) window.clearTimeout(this.indexTimer);
+          if (this.indexIdle && typeof window.cancelIdleCallback === "function") {
+            window.cancelIdleCallback(this.indexIdle);
+            this.indexIdle = 0;
+          }
+          this.indexTimer = window.setTimeout(() => {
+            this.indexTimer = 0;
+            const refresh = () => {
+              this.indexIdle = 0;
+              try { buildRolesIndexFromView(this.view, prefixes); } catch {}
+            };
+            if (typeof window.requestIdleCallback === "function") {
+              this.indexIdle = window.requestIdleCallback(refresh, { timeout: 400 });
+            } else {
+              refresh();
+            }
+          }, 120);
+        };
+        this.onFlash = (event) => {
+          const detail = event?.detail || {};
+          if (detail.view !== this.view) return;
+          if (typeof detail.lineIndex !== "number" || detail.lineIndex < 0) return;
+          this.flashLineIndex = detail.lineIndex;
+          this.flashSerial += 1;
+          if (this.flashTimer) window.clearTimeout(this.flashTimer);
+          this.decorations = buildDecorations(this.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
+          try {
+            this.view.dispatch({});
+          } catch {}
+          this.flashTimer = window.setTimeout(() => {
+            this.flashLineIndex = null;
+            this.decorations = buildDecorations(this.view, prefixes, highlightBlockRoles, atRegex, null, this.flashSerial);
+            try {
+              this.view.dispatch({});
+            } catch {}
+          }, 900);
+        };
+        try { window.addEventListener(ROLES_NAV_FLASH_EVENT, this.onFlash); } catch {}
+        this.decorations = buildDecorations(view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
+        try { buildRolesIndexFromView(view, prefixes); } catch {}
       }
       update(update) {
         if (update.docChanged || update.viewportChanged) {
-          this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex);
+          this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
         }
         if (update.docChanged) {
-          try { buildRolesIndexFromState(update.view.state, prefixes); } catch {}
+          this.scheduleIndexRefresh();
+        }
+      }
+      destroy() {
+        try { window.removeEventListener(ROLES_NAV_FLASH_EVENT, this.onFlash); } catch {}
+        if (this.flashTimer) {
+          try { window.clearTimeout(this.flashTimer); } catch {}
+          this.flashTimer = 0;
+        }
+        if (this.indexTimer) {
+          try { window.clearTimeout(this.indexTimer); } catch {}
+          this.indexTimer = 0;
+        }
+        if (this.indexIdle && typeof window.cancelIdleCallback === "function") {
+          try { window.cancelIdleCallback(this.indexIdle); } catch {}
+          this.indexIdle = 0;
         }
       }
     },
@@ -308,6 +693,55 @@ function rolesView(opts = {}) {
       decorations: v => v.decorations
     }
   );
+}
+
+export function applyRoleNavigationSelection(view, selection, pos) {
+  try {
+    const p = Math.max(0, Math.min(view.state.doc.length, pos));
+    const scrollDOM = view.scrollDOM;
+    const outerList = view.dom?.closest?.(".zion-comments-list") || null;
+    const outerScrollTop = Number(outerList?.scrollTop) || 0;
+    const block = view.lineBlockAt(p);
+    const viewportTop = Number(scrollDOM?.scrollTop) || 0;
+    const viewportBottom = viewportTop + (Number(scrollDOM?.clientHeight) || 0);
+    const visible = block.top >= viewportTop && block.bottom <= viewportBottom;
+    const targetTop = Math.max(0, Math.min(
+      block.top - Math.floor((scrollDOM.clientHeight || 0) * 0.2),
+      Math.max(0, scrollDOM.scrollHeight - scrollDOM.clientHeight)
+    ));
+    const restoreNestedScroll = () => {
+      try {
+        scrollDOM.scrollTo?.({ top: targetTop, behavior: "auto" });
+        scrollDOM.scrollTop = targetTop;
+        if (outerList) {
+          outerList.__zionProgrammaticScrollUntil = Math.max(
+            Number(outerList.__zionProgrammaticScrollUntil) || 0,
+            Date.now() + 180
+          );
+          outerList.scrollTop = outerScrollTop;
+        }
+      } catch {}
+    };
+
+    if (visible || outerList) {
+      view.dispatch({ selection });
+    } else {
+      view.dispatch({
+        selection,
+        effects: EditorView.scrollIntoView(p, { y: "center", yMargin: 48 })
+      });
+    }
+    restoreNestedScroll();
+    try {
+      requestAnimationFrame(() => {
+        restoreNestedScroll();
+        requestAnimationFrame(restoreNestedScroll);
+      });
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -318,30 +752,26 @@ function rolesView(opts = {}) {
 export function roles(opts = {}) {
   const prefixes = getEffectivePrefixes(opts);
 
-  const isMacLike = (() => {
-    try {
-      const p = String(globalThis?.navigator?.platform || "");
-      const ua = String(globalThis?.navigator?.userAgent || "");
-      return /Mac|iPhone|iPad|iPod/i.test(p) || /Mac\s*OS\s*X|Macintosh|iPhone|iPad|iPod/i.test(ua);
-    } catch {
-      return false;
-    }
-  })();
-
-  const jumpToPos = (view, pos) => {
+  const jumpToPos = (view, pos, flashLineIndex = null) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
-    view.dispatch({
-      selection: { anchor: p },
-      scrollIntoView: true
-    });
+    const selection = { anchor: p };
+    applyRoleNavigationSelection(view, selection, p);
+    if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
 
-  const getRolesBlocksFromIndex = () => {
-    const idx = window?.zion?.state?.get?.("roles.index");
-    if (!idx || !Array.isArray(idx.blocks) || !Array.isArray(idx.prefixes)) return null;
-    if (idx.prefixes.join("\n") !== prefixes.join("\n")) return null;
-    return idx.blocks.filter(b => b && b.role !== "system");
+  const getRolesBlocksFromView = (view) => {
+    const idx = buildRolesIndexFromView(view, prefixes);
+    if (!idx || !Array.isArray(idx.blocks)) return null;
+    return idx.blocks.filter((block) =>
+      block
+      && ["user", "assistant"].includes(block.role)
+      && typeof block.startLine === "number"
+    );
+  };
+
+  const noRoleNavTarget = () => {
+    return true;
   };
 
   const computeNav = (view, blocks) => {
@@ -364,49 +794,58 @@ export function roles(opts = {}) {
     return { curLine0, nextIndex, prevIndex, inside, currentIndex, currentStartLine };
   };
 
-  const setSelectionToPos = (view, pos) => {
+  const setSelectionToPos = (view, pos, flashLineIndex = null) => {
     const p = Math.max(0, Math.min(view.state.doc.length, pos));
     const main = view.state.selection.main;
-    view.dispatch({
-      selection: { anchor: main.anchor, head: p },
-      scrollIntoView: true
-    });
+    const selection = { anchor: main.anchor, head: p };
+    applyRoleNavigationSelection(view, selection, p);
+    if (typeof flashLineIndex === "number") flashRoleNavLine(view, flashLineIndex);
     return true;
   };
 
   const jumpToPrevRole = (view) => {
-    const blocks = getRolesBlocksFromIndex();
-    if (!blocks || blocks.length === 0) return jumpToPos(view, 0);
+    const blocks = getRolesBlocksFromView(view);
+    if (!blocks || blocks.length === 0) {
+      return noRoleNavTarget();
+    }
     const nav = computeNav(view, blocks);
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.inside ? nav.currentIndex - 1 : nav.prevIndex;
-    if (targetIndex < 0) return jumpToPos(view, 0);
+    if (targetIndex < 0 && nav.inside && typeof nav.currentStartLine === "number") {
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
+    }
+    if (targetIndex < 0) return noRoleNavTarget();
     const line0 = blocks[targetIndex].startLine;
-    return jumpToPos(view, view.state.doc.line(line0 + 1).from);
+    return jumpToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const selectToPrevRole = (view) => {
-    const blocks = getRolesBlocksFromIndex();
-    if (!blocks || blocks.length === 0) return setSelectionToPos(view, 0);
+    const blocks = getRolesBlocksFromView(view);
+    if (!blocks || blocks.length === 0) return noRoleNavTarget();
     const nav = computeNav(view, blocks);
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.inside ? nav.currentIndex - 1 : nav.prevIndex;
-    if (targetIndex < 0) return setSelectionToPos(view, 0);
+    if (targetIndex < 0 && nav.inside && typeof nav.currentStartLine === "number") {
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
+    }
+    if (targetIndex < 0) return noRoleNavTarget();
     const line0 = blocks[targetIndex].startLine;
-    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
+    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const jumpToNextRole = (view) => {
-    const blocks = getRolesBlocksFromIndex();
-    if (!blocks || blocks.length === 0) return jumpToPos(view, view.state.doc.length);
+    const blocks = getRolesBlocksFromView(view);
+    if (!blocks || blocks.length === 0) {
+      return noRoleNavTarget();
+    }
     const nav = computeNav(view, blocks);
 
     if (nav.nextIndex >= blocks.length) {
@@ -414,18 +853,18 @@ export function roles(opts = {}) {
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return jumpToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.nextIndex;
-    if (targetIndex >= blocks.length) return jumpToPos(view, view.state.doc.length);
+    if (targetIndex >= blocks.length) return noRoleNavTarget();
     const line0 = blocks[targetIndex].startLine;
-    return jumpToPos(view, view.state.doc.line(line0 + 1).from);
+    return jumpToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
   const selectToNextRole = (view) => {
-    const blocks = getRolesBlocksFromIndex();
-    if (!blocks || blocks.length === 0) return setSelectionToPos(view, view.state.doc.length);
+    const blocks = getRolesBlocksFromView(view);
+    if (!blocks || blocks.length === 0) return noRoleNavTarget();
     const nav = computeNav(view, blocks);
 
     if (nav.nextIndex >= blocks.length) {
@@ -433,32 +872,25 @@ export function roles(opts = {}) {
     }
 
     if (nav.inside && nav.curLine0 !== nav.currentStartLine) {
-      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from);
+      return setSelectionToPos(view, view.state.doc.line(nav.currentStartLine + 1).from, nav.currentStartLine);
     }
 
     const targetIndex = nav.nextIndex;
-    if (targetIndex >= blocks.length) return setSelectionToPos(view, view.state.doc.length);
+    if (targetIndex >= blocks.length) return noRoleNavTarget();
     const line0 = blocks[targetIndex].startLine;
-    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from);
+    return setSelectionToPos(view, view.state.doc.line(line0 + 1).from, line0);
   };
 
+  const roleNavigationModifier = /Mac|iPhone|iPad|iPod/i.test(
+    String(globalThis.navigator?.platform || "")
+  ) ? "Alt" : "Mod";
   const navBindings = [];
-
-  if (isMacLike) {
-    navBindings.push(
-      { key: "Alt-ArrowUp", run: jumpToPrevRole },
-      { key: "Alt-ArrowDown", run: jumpToNextRole },
-      { key: "Alt-Shift-ArrowUp", run: selectToPrevRole },
-      { key: "Alt-Shift-ArrowDown", run: selectToNextRole }
-    );
-  } else {
-    navBindings.push(
-      { key: "Mod-ArrowUp", run: jumpToPrevRole },
-      { key: "Mod-ArrowDown", run: jumpToNextRole },
-      { key: "Mod-Shift-ArrowUp", run: selectToPrevRole },
-      { key: "Mod-Shift-ArrowDown", run: selectToNextRole }
-    );
-  }
+  navBindings.push(
+    { key: `${roleNavigationModifier}-ArrowUp`, run: jumpToPrevRole },
+    { key: `${roleNavigationModifier}-ArrowDown`, run: jumpToNextRole },
+    { key: `${roleNavigationModifier}-Shift-ArrowUp`, run: selectToPrevRole },
+    { key: `${roleNavigationModifier}-Shift-ArrowDown`, run: selectToNextRole }
+  );
 
   const navKeymap = Prec.highest(keymap.of(navBindings));
 
@@ -497,5 +929,5 @@ export function roles(opts = {}) {
     }
   });
 
-  return [navKeymap, foldExt, rolesView(opts)];
+    return [roleSpacerField(prefixes), rolesView(opts), rolesRailGutter(prefixes, getHighlightBlockRoles(opts)), navKeymap, foldExt];
 }

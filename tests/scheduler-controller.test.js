@@ -1,0 +1,608 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  buildSchedulerTask,
+  mergeSchedulerTask,
+  SchedulerController,
+  validateSchedulerTask
+} from "../extensions/dev.scheduler/controller.js";
+import { LocalSchedulerStore } from "../extensions/dev.scheduler/store.js";
+
+const NOW = new Date(2026, 6, 27, 8, 0, 0).getTime();
+
+function createController({ service = {}, engine = null, cancelRuntimeRun } = {}) {
+  const store = new LocalSchedulerStore();
+  const onChange = vi.fn();
+  const onServiceStatus = vi.fn();
+  const controller = new SchedulerController({
+    store,
+    service,
+    cancelRuntimeRun,
+    onChange,
+    onServiceStatus,
+    now: () => NOW
+  });
+  if (engine) controller.setEngine(engine);
+  return { controller, store, onChange, onServiceStatus };
+}
+
+describe("scheduler controller", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("normalizes task input and rejects unsafe capability combinations", () => {
+    const task = buildSchedulerTask({
+      title: "Daily summary",
+      prompt: "Summarize project updates",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+
+    expect(task.executionMode).toBe("local-only");
+    expect(task.interactionProfileId).toBe("scheduled.default");
+    expect(task.modelProfileId).toBe("");
+    expect(task.capability).toMatchObject({ preset: "read-only", allowedTools: [] });
+    expect(validateSchedulerTask(task)).toBe("");
+
+    const tagged = buildSchedulerTask({
+      title: "Tagged summary",
+      prompt: "Summarize project updates",
+      sessionTag: "定时任务",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+    expect(mergeSchedulerTask(tagged, { title: "Tagged summary v2" }, NOW)).toMatchObject({
+      title: "Tagged summary v2",
+      sessionTag: "定时任务"
+    });
+
+    const migrated = mergeSchedulerTask(task, {
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["fsWrite", "fsEdit", "terminalExecute"],
+        fileRoots: ["/workspace/project"],
+        allowedCommandPrefixes: ["npm test"]
+      }
+    }, NOW);
+    expect(migrated.modelProfileId)
+      .toBe("workbench.deepseek.deepseek-v4-flash");
+    expect(migrated.capability.allowedTools).toEqual(["write", "edit", "Bash"]);
+    expect(validateSchedulerTask(migrated)).toBe("");
+    expect(validateSchedulerTask(mergeSchedulerTask(task, {
+      modelProfileId: "../invalid"
+    }, NOW))).toContain("模型 Profile ID");
+
+    const unsafe = mergeSchedulerTask(task, {
+      capability: { preset: "read-only", allowedTools: ["Bash"] }
+    }, NOW);
+    expect(validateSchedulerTask(unsafe)).toContain("只读权限");
+
+    const trusted = mergeSchedulerTask(task, {
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"],
+        allowedCommandPrefixes: ["npm test"]
+      }
+    }, NOW);
+    expect(validateSchedulerTask(trusted)).toBe("");
+
+    const unrestrictedBash = mergeSchedulerTask(task, {
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"]
+      }
+    }, NOW);
+    expect(validateSchedulerTask(unrestrictedBash)).toBe("");
+
+    const recursive = mergeSchedulerTask(task, {
+      capability: { preset: "trusted-automation", allowedTools: ["schedulerManage"] }
+    }, NOW);
+    expect(validateSchedulerTask(recursive)).toContain("schedulerManage");
+
+    const missingTerminalTool = mergeSchedulerTask(task, {
+      capability: {
+        preset: "trusted-automation",
+        allowedCommandPrefixes: ["bash"]
+      }
+    }, NOW);
+    expect(validateSchedulerTask(missingTerminalTool)).toContain("Bash");
+
+    const commandTask = buildSchedulerTask({
+      taskType: "command",
+      executionMode: "service-backed",
+      nodeId: "node:macbook",
+      title: "Parking monitor",
+      command: "bash /tmp/parking_monitor.sh",
+      schedule: { kind: "interval", intervalMinutes: 5 }
+    }, null, NOW);
+    expect(commandTask).toMatchObject({
+      taskType: "command",
+      executionMode: "service-backed",
+      nodeId: "node:macbook",
+      prompt: "",
+      modelProfileId: "",
+      capability: {
+        preset: "trusted-automation",
+        allowedTools: ["Bash"],
+        allowedCommandPrefixes: ["bash /tmp/parking_monitor.sh"]
+      }
+    });
+    expect(validateSchedulerTask(commandTask)).toBe("");
+
+    expect(validateSchedulerTask(buildSchedulerTask({
+      taskType: "command",
+      executionMode: "service-backed",
+      title: "Missing Node",
+      command: "/usr/bin/true",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW))).toContain("必须选择执行 Node");
+
+    expect(validateSchedulerTask(mergeSchedulerTask(task, {
+      executionMode: "service-backed",
+      nodeId: "node:server"
+    }, NOW))).toBe("");
+  });
+
+  it("calls randomUUID with the correct browser API binding", () => {
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: {
+        randomUUID() {
+          if (this !== globalThis.crypto) throw new TypeError("Illegal invocation");
+          return "uuid-1";
+        }
+      }
+    });
+    try {
+      const task = buildSchedulerTask({
+        title: "Bound uuid",
+        prompt: "Check uuid binding",
+        schedule: { kind: "daily", time: "09:00" }
+      }, null, NOW);
+      expect(task.id).toBe("sched_uuid-1");
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: originalCrypto
+      });
+    }
+  });
+
+  it("uses the same local lifecycle for save, pause, manual run, and delete", async () => {
+    const engine = {
+      reconcile: vi.fn(),
+      execute: vi.fn(async (task) => ({ status: "completed", taskId: task.id }))
+    };
+    const { controller, store, onChange } = createController({ engine });
+    const task = buildSchedulerTask({
+      title: "Local task",
+      prompt: "Read the workspace",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+
+    const saved = await controller.saveTask(task);
+    expect(store.getTask(saved.id)).toMatchObject({ title: "Local task", enabled: true });
+
+    const paused = await controller.setEnabled(saved.id, false);
+    expect(paused).toMatchObject({ enabled: false, nextRun: null });
+
+    await controller.runNow(saved.id);
+    expect(engine.execute).toHaveBeenCalledWith(expect.objectContaining({ id: saved.id, enabled: false }));
+
+    await expect(controller.deleteTask(saved.id)).resolves.toEqual({ id: saved.id, deleted: true });
+    expect(store.getTask(saved.id)).toBeNull();
+    expect(onChange).toHaveBeenCalled();
+  });
+
+  it("rolls back a newly created service task when local task persistence fails", async () => {
+    const store = {
+      getTask: vi.fn(() => null),
+      listTasks: vi.fn(() => []),
+      saveTask: vi.fn(() => { throw new Error("local storage unavailable"); })
+    };
+    const service = {
+      createTask: vi.fn(async () => ({
+        id: "remote-task",
+        revision: 1,
+        nextRun: NOW + 60_000,
+        enabled: true
+      })),
+      deleteTask: vi.fn(async () => undefined)
+    };
+    const controller = new SchedulerController({
+      store,
+      service,
+      now: () => NOW
+    });
+    const task = buildSchedulerTask({
+      title: "Service task",
+      prompt: "Produce a report",
+      executionMode: "service-backed",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+
+    await expect(controller.saveTask(task)).rejects.toThrow("local storage unavailable");
+    expect(service.createTask).toHaveBeenCalledTimes(1);
+    expect(service.deleteTask).toHaveBeenCalledWith(expect.objectContaining({
+      remoteTaskId: "remote-task"
+    }));
+  });
+
+  it("rejects local manual runs while a previous active run is still present", async () => {
+    const engine = {
+      reconcile: vi.fn(),
+      isRunning: vi.fn(() => false),
+      execute: vi.fn(async (task) => ({ status: "completed", taskId: task.id }))
+    };
+    const { controller, store } = createController({ engine });
+    const task = buildSchedulerTask({
+      id: "task-active",
+      title: "Local task",
+      prompt: "Read the workspace",
+      schedule: { kind: "daily", time: "09:00" },
+      timeoutSeconds: 60
+    }, null, NOW);
+    store.saveTask(task);
+    store.saveRun({
+      id: "run-active",
+      taskId: task.id,
+      taskTitle: task.title,
+      executionMode: "local-only",
+      status: "running",
+      startedAt: NOW,
+      completedAt: null,
+      output: "",
+      events: []
+    });
+
+    await expect(controller.runNow(task.id)).rejects.toThrow("任务正在运行");
+    expect(engine.execute).not.toHaveBeenCalled();
+  });
+
+  it("fails stale local runs before enforcing overlap", async () => {
+    const engine = {
+      reconcile: vi.fn(),
+      isRunning: vi.fn(() => false),
+      execute: vi.fn(async (task) => ({ status: "completed", taskId: task.id }))
+    };
+    const { controller, store } = createController({ engine });
+    const task = buildSchedulerTask({
+      id: "task-stale",
+      title: "Local task",
+      prompt: "Read the workspace",
+      schedule: { kind: "daily", time: "09:00" },
+      timeoutSeconds: 60
+    }, null, NOW);
+    store.saveTask(task);
+    store.saveRun({
+      id: "run-stale",
+      taskId: task.id,
+      taskTitle: task.title,
+      executionMode: "local-only",
+      status: "running",
+      startedAt: NOW - 700_000,
+      completedAt: null,
+      sessionId: "session-stale",
+      output: "",
+      events: []
+    });
+
+    await expect(controller.runNow(task.id)).resolves.toMatchObject({
+      queued: false,
+      result: { status: "completed", taskId: task.id }
+    });
+    expect(store.getRun("run-stale")).toMatchObject({
+      status: "failed",
+      completedAt: NOW,
+      stale: true,
+      error: "运行超过超时时间，已自动标记为失败"
+    });
+    expect(engine.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps saved data when UI change notification fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const store = new LocalSchedulerStore();
+    const controller = new SchedulerController({
+      store,
+      onChange: () => { throw new TypeError("Illegal invocation"); },
+      now: () => NOW
+    });
+    const task = buildSchedulerTask({
+      title: "Notification failure",
+      prompt: "Persist despite UI notification failure",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+
+    try {
+      await expect(controller.saveTask(task)).resolves.toMatchObject({ id: task.id });
+      expect(store.getTask(task.id)).toMatchObject({ title: "Notification failure" });
+      expect(warn).toHaveBeenCalledWith("[scheduler] change notification failed", expect.any(TypeError));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("persists service-backed identity and merges remote run history", async () => {
+    const service = {
+      createTask: vi.fn(async () => ({ id: "remote-task", revision: 4, nextRun: NOW + 60_000, enabled: true })),
+      updateTask: vi.fn(async () => ({ id: "remote-task", revision: 5, nextRun: null, enabled: false })),
+      deleteTask: vi.fn(async () => undefined),
+      runNow: vi.fn(async () => ({ id: "remote-run", status: "pending" })),
+      listTasks: vi.fn(async () => []),
+      listRuns: vi.fn(async () => [{
+        id: "remote-run",
+        taskId: "remote-task",
+        status: "success",
+        createdAt: NOW,
+        completedAt: NOW + 10,
+        output: "remote output"
+      }])
+    };
+    const { controller, store, onServiceStatus } = createController({ service });
+    const task = buildSchedulerTask({
+      title: "Service task",
+      prompt: "Produce a report",
+      executionMode: "service-backed",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+      schedule: { kind: "daily", time: "09:00" }
+    }, null, NOW);
+
+    const saved = await controller.saveTask(task);
+    expect(service.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Service task",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
+    }));
+    expect(saved).toMatchObject({
+      remoteTaskId: "remote-task",
+      remoteRevision: 4,
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+      nextRun: NOW + 60_000
+    });
+
+    store.saveRun({
+      id: "remote-run",
+      taskId: saved.id,
+      taskTitle: saved.title,
+      status: "success",
+      startedAt: NOW,
+      output: "local output",
+      events: []
+    });
+    const runs = await controller.listRuns({ taskId: saved.id });
+    expect(service.listRuns).toHaveBeenCalledWith("remote-task", { limit: 50 });
+    expect(runs[0]).toMatchObject({ id: "remote-run", taskId: saved.id, output: "local output" });
+
+    const paused = await controller.setEnabled(saved.id, false);
+    expect(service.updateTask).toHaveBeenCalledWith(expect.objectContaining({ remoteTaskId: "remote-task", enabled: false }));
+    expect(paused.remoteRevision).toBe(5);
+
+    await expect(controller.runNow(saved.id)).resolves.toMatchObject({
+      queued: true,
+      run: { id: "remote-run", taskId: saved.id, taskTitle: saved.title, status: "pending" }
+    });
+    expect(store.getRun("remote-run")).toMatchObject({
+      taskId: saved.id,
+      taskTitle: saved.title,
+      status: "pending"
+    });
+    await expect(controller.runNow(saved.id)).rejects.toThrow("任务已在排队中");
+    expect(service.runNow).toHaveBeenCalledTimes(1);
+    await expect(controller.refreshServiceRuns()).resolves.toMatchObject({ online: true });
+    expect(store.getRun("remote-run")).toMatchObject({ taskId: saved.id, status: "success" });
+    await expect(controller.runNow(saved.id)).resolves.toMatchObject({
+      queued: true,
+      run: { id: "remote-run", taskId: saved.id, status: "pending" }
+    });
+    expect(service.runNow).toHaveBeenCalledTimes(2);
+    await controller.deleteTask(saved.id);
+    expect(service.deleteTask).toHaveBeenCalledWith(expect.objectContaining({ remoteTaskId: "remote-task" }));
+    expect(onServiceStatus).toHaveBeenCalledWith(true);
+  });
+
+  it("imports Runtime task model and interaction profile assignments", async () => {
+    const service = {
+      listTasks: vi.fn(async () => [{
+        id: "remote-model-task",
+        clientTaskId: "local-model-task",
+        revision: 3,
+        taskType: "agent",
+        title: "Model task",
+        prompt: "Summarize",
+        interactionProfileId: "scheduled.default",
+        modelProfileId: "workbench.deepseek.deepseek-v4-flash",
+        schedule: {
+          kind: "daily",
+          time: "09:00",
+          timeZone: "Asia/Shanghai",
+          misfirePolicy: "run-once",
+          overlapPolicy: "forbid"
+        },
+        capability: { preset: "read-only", allowedTools: [] },
+        timeoutSeconds: 300,
+        enabled: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+        nextRun: NOW + 60_000
+      }])
+    };
+    const { controller, store } = createController({ service });
+
+    await expect(controller.refreshServiceTasks()).resolves.toMatchObject({
+      online: true
+    });
+    expect(store.getTask("local-model-task")).toMatchObject({
+      remoteTaskId: "remote-model-task",
+      interactionProfileId: "scheduled.default",
+      modelProfileId: "workbench.deepseek.deepseek-v4-flash"
+    });
+  });
+
+  it("loads full service run details only for summary records", async () => {
+    const service = {
+      getRun: vi.fn(async () => ({
+        id: "remote-run",
+        taskId: "remote-task",
+        status: "success",
+        createdAt: NOW,
+        output: "full output",
+        events: [{ type: "run.finished", ts: NOW }]
+      }))
+    };
+    const { controller, store } = createController({ service });
+    store.saveTask({
+      id: "local-task",
+      remoteTaskId: "remote-task",
+      title: "Service task",
+      executionMode: "service-backed",
+      createdAt: NOW
+    });
+    store.saveRun({
+      id: "remote-run",
+      taskId: "local-task",
+      taskTitle: "Service task",
+      status: "success",
+      startedAt: NOW,
+      isSummary: true,
+      output: "",
+      events: []
+    });
+
+    await expect(controller.getRunDetails("remote-run")).resolves.toMatchObject({
+      id: "remote-run",
+      taskId: "local-task",
+      isSummary: false,
+      output: "full output",
+      events: [{ type: "run.finished", ts: NOW }]
+    });
+    expect(service.getRun).toHaveBeenCalledTimes(1);
+
+    await controller.getRunDetails("remote-run");
+    expect(service.getRun).toHaveBeenCalledTimes(1);
+  });
+
+    it("fails stale service-backed pending runs before enforcing overlap", async () => {
+      const service = {
+        cancel: vi.fn(async () => ({ ok: true })),
+        runNow: vi.fn(async () => ({
+          id: "remote-run-next",
+          taskId: "remote-task",
+          status: "pending",
+          startedAt: NOW
+        }))
+      };
+      const { controller, store } = createController({ service });
+      const task = buildSchedulerTask({
+        id: "task-service",
+        title: "Service task",
+        prompt: "Produce a report",
+        executionMode: "service-backed",
+        schedule: { kind: "daily", time: "09:00" },
+        timeoutSeconds: 60
+      }, null, NOW);
+      store.saveTask({ ...task, remoteTaskId: "remote-task" });
+      store.saveRun({
+        id: "run-stale",
+        taskId: task.id,
+        taskTitle: task.title,
+        executionMode: "service-backed",
+        status: "pending",
+        scheduledFor: NOW - 700_000,
+        startedAt: NOW - 700_000,
+        completedAt: null,
+        sessionId: null,
+        output: "",
+        events: []
+      });
+
+      await expect(controller.runNow(task.id)).resolves.toMatchObject({
+        queued: true,
+        run: { id: "remote-run-next", status: "pending" }
+      });
+      expect(store.getRun("run-stale")).toMatchObject({
+        status: "failed",
+        completedAt: NOW,
+        stale: true,
+        error: "运行在分配执行会话前超时，已自动清理"
+      });
+      expect(service.cancel).toHaveBeenCalledWith("run-stale", "timeout");
+      expect(service.runNow).toHaveBeenCalledTimes(1);
+    });
+
+    it("aborts active service-backed runs through the shared controller", async () => {
+      const service = {
+        cancel: vi.fn(async () => ({ ok: true })),
+        runNow: vi.fn(async () => ({ id: "run-next", taskId: "remote-task", status: "pending" }))
+      };
+      const { controller, store } = createController({ service });
+      const task = buildSchedulerTask({
+        id: "task-service",
+        title: "Service task",
+        prompt: "Produce a report",
+        executionMode: "service-backed",
+        schedule: { kind: "daily", time: "09:00" }
+      }, null, NOW);
+      store.saveTask({ ...task, remoteTaskId: "remote-task" });
+      store.saveRun({
+        id: "run-active",
+        taskId: task.id,
+        taskTitle: task.title,
+        executionMode: "service-backed",
+        status: "pending",
+        startedAt: NOW,
+        completedAt: null,
+        output: "",
+        events: []
+      });
+
+      await expect(controller.cancelRun("run-active")).resolves.toMatchObject({
+        id: "run-active",
+        status: "aborted",
+        completedAt: NOW,
+        error: "运行已取消"
+      });
+      expect(service.cancel).toHaveBeenCalledWith("run-active", "user");
+      expect(store.getTask(task.id).lastRun).toMatchObject({ id: "run-active", status: "aborted" });
+
+      await expect(controller.runNow(task.id)).resolves.toMatchObject({
+        queued: true,
+        run: { id: "run-next", status: "pending" }
+      });
+      expect(service.runNow).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves and cancels active Runtime-backed runs through Runtime", async () => {
+      const cancelRuntimeRun = vi.fn(async () => undefined);
+      const { controller, store } = createController({ cancelRuntimeRun });
+      const task = buildSchedulerTask({
+        id: "task-runtime",
+        title: "Runtime task",
+        prompt: "Produce a report",
+        schedule: { kind: "daily", time: "09:00" },
+        timeoutSeconds: 60
+      }, null, NOW);
+      store.saveTask(task);
+      store.saveRun({
+        id: "run-runtime",
+        taskId: task.id,
+        taskTitle: task.title,
+        executionMode: "local-only",
+        backend: "runtime",
+        runtimeRunId: "runtime-run-1",
+        status: "running",
+        startedAt: NOW - 700_000,
+        completedAt: null,
+        output: "",
+        events: []
+      });
+
+      expect(controller.reconcileStaleRuns()).toBe(false);
+      expect(store.getRun("run-runtime").status).toBe("running");
+      await expect(controller.cancelRun("run-runtime", "user")).resolves.toMatchObject({
+        status: "aborted",
+        completedAt: NOW
+      });
+      expect(cancelRuntimeRun).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeRunId: "runtime-run-1" }),
+        "user"
+      );
+    });
+});

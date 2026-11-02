@@ -2,24 +2,23 @@
  * dev.session-manager: session tools for LLM (IDB-backed via main extension)
  * - Delegate storage to main session-manager commands and state
  */
+import {
+  sessionGetToolDefinition,
+  sessionCreateToolDefinition,
+  sessionUpdateToolDefinition,
+  sessionDeleteToolDefinition,
+  sessionListToolDefinition,
+  listSessionsFromSnapshot
+} from "./session-runtime-shared.js";
+
 export function registerSessionTools() {
   try {
     /* ===== Utils ===== */
-    function safeJSONParse(text, fallback) { try { return JSON.parse(text); } catch { return fallback; } }
-    function deepCloneNode(node) { try { return JSON.parse(JSON.stringify(node)); } catch { return node; } }
-    function markCurrentInTree(node, currentId) {
-      try {
-        if (!node || !currentId) return;
-        if (node.type === "session") { if (node.id === currentId) node.current = true; return; }
-        if (node.type === "folder" && Array.isArray(node.children)) {
-          let has = false;
-          node.children.forEach(ch => {
-            markCurrentInTree(ch, currentId);
-            if (ch && (ch.current || ch.hasCurrent)) has = true;
-          });
-          if (has) node.hasCurrent = true;
-        }
-      } catch {}
+    function workbenchSessionSnapshot() {
+      return {
+        tree: window.zion?.state?.get("sessions.treeMem") || { id: "root", type: "folder", title: "Sessions", children: [] },
+        index: window.zion?.state?.get("sessions.catalog") || []
+      };
     }
 
     /* ===== Tools definitions ===== */
@@ -27,86 +26,41 @@ export function registerSessionTools() {
       {
         type: "function",
         function: {
-          name: "sessionList",
-          description: "List sessions. Supports two view modes: 'index' (flat list) or 'tree' (folder hierarchy). Returns id, title, updatedAt, size, hash, createdAt for each session.",
-          parameters: {
-            type: "object",
-            properties: {
-              view_type: { type: "string", enum: ["index", "tree"], description: "View type: 'index' for flat list, 'tree' for folder hierarchy (default: index)" },
-              sort_by: { type: "string", enum: ["updated", "title"], description: "Sort order for 'index' view (default: updated)" },
-              limit: { type: "number", description: "Limit the number of items for 'index' view (optional)" },
-              folder_id: { type: "string", description: "For 'tree' view, return only the subtree of this folder (optional)" }
-            },
-            additionalProperties: false
-          }
+          name: sessionListToolDefinition().name,
+          description: sessionListToolDefinition().description,
+          parameters: sessionListToolDefinition().inputSchema
         }
       },
       {
         type: "function",
         function: {
-          name: "sessionGet",
-          description: "Get a session's doc and meta by id. Ensure that the provided id is an existing session id when calling this function.",
-          parameters: {
-            type: "object",
-            properties: {
-              id: { type: "string", minLength: 1, description: "Session id" },
-              include_doc: { type: "boolean", description: "Include doc content (default true)" },
-              include_meta: { type: "boolean", description: "Include meta info (default true)" }
-            },
-            required: ["id"],
-            additionalProperties: false
-          }
+          name: sessionGetToolDefinition().name,
+          description: sessionGetToolDefinition().description,
+          parameters: sessionGetToolDefinition().inputSchema
         }
       },
       {
         type: "function",
         function: {
-          name: "sessionCreate",
-          description: "Create a new session with optional title/content and parent folder.",
-          parameters: {
-            type: "object",
-            properties: {
-              title: { type: "string", description: "Session title (optional, derived from content if missing)" },
-              content: { type: "string", description: "Initial content (optional)" },
-              parent_id: { type: "string", description: "Folder id to insert into (optional, default root)" }
-            },
-            additionalProperties: false
-          }
+          name: sessionCreateToolDefinition({ includeOpen: true }).name,
+          description: sessionCreateToolDefinition({ includeOpen: true }).description,
+          parameters: sessionCreateToolDefinition({ includeOpen: true }).inputSchema
         }
       },
       {
         type: "function",
         function: {
-          name: "sessionUpdate",
-          description: "Update a session: either content (append or overwrite) or title (rename). Ensure that the provided id is an existing session id when calling this function.",
-          parameters: {
-            type: "object",
-            properties: {
-              id: { type: "string", minLength: 1, description: "Session id" },
-              update_type: { type: "string", enum: ["content", "title"], description: "What to update: 'content' or 'title'" },
-              mode: { type: "string", enum: ["append", "overwrite"], description: "For content update: 'append' or 'overwrite'" },
-              content: { type: "string", description: "For content update: text to append or full content to overwrite with" },
-              newline: { type: "boolean", description: "For content append: whether to add a newline before content (default true)" },
-              title: { type: "string", description: "For title update: new title" }
-            },
-            required: ["id", "update_type"],
-            additionalProperties: false
-          }
+          name: sessionUpdateToolDefinition().name,
+          description: sessionUpdateToolDefinition().description,
+          parameters: sessionUpdateToolDefinition().inputSchema
         }
       },
       {
         type: "function",
         function: {
-          name: "sessionDelete",
-          description: "Delete a session by id. Ensure that the provided id is an existing session id when calling this function.",
-          parameters: {
-            type: "object",
-            properties: {
-              id: { type: "string", minLength: 1, description: "Session id" }
-            },
-            required: ["id"],
-            additionalProperties: false
-          }
+          name: sessionDeleteToolDefinition().name,
+          description: sessionDeleteToolDefinition().description,
+          parameters: sessionDeleteToolDefinition().inputSchema
         }
       }
     ];
@@ -126,39 +80,12 @@ export function registerSessionTools() {
 
     handlers.sessionList = async (args) => {
       try {
-        const viewType = String(args?.view_type || "index").trim();
-        if (viewType === "tree") {
-          // Tree view (merged from sessionsTree)
-          const tree = window.zion?.state?.get("sessions.treeMem") || { id: "root", type: "folder", title: "Sessions", children: [] };
-          const fid = String(args?.folder_id || "").trim();
-          const currentId = window.zion?.state?.get("sessions.currentId") || null;
-
-          const ret = deepCloneNode(tree);
-          if (fid) {
-            // naive subtree pick
-            const stack = [ret];
-            let found = null;
-            while (stack.length) {
-              const n = stack.pop();
-              if (n.id === fid) { found = n; break; }
-              if (n.type === "folder" && Array.isArray(n.children)) stack.push(...n.children);
-            }
-            if (!found) return "Folder not found";
-            markCurrentInTree(found, currentId);
-            return JSON.stringify(found, null, 2);
-          }
-          markCurrentInTree(ret, currentId);
-          return JSON.stringify(ret, null, 2);
-        } else {
-          // Index view (merged from sessionsIndex)
-          let idx = (window.zion?.state?.get("sessions.catalog") || []).slice();
-          const sortBy = (args?.sort_by || "updated") === "title" ? "title" : "updated";
-          if (sortBy === "updated") idx.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-          else idx.sort((a, b) => (String(a.title || a.id)).localeCompare(String(b.title || b.id)));
-          const limit = typeof args?.limit === "number" && args.limit > 0 ? args.limit : null;
-          if (limit) idx = idx.slice(0, limit);
-          return JSON.stringify(idx, null, 2);
-        }
+        const result = listSessionsFromSnapshot(workbenchSessionSnapshot(), {
+          ...args,
+          current_id: window.zion?.state?.get("sessions.currentId") || ""
+        });
+        if (!result.ok) return result.error || "Session list failed";
+        return JSON.stringify(result.tree || result.sessions || [], null, 2);
       } catch (e) {
         return `sessionList error: ${e?.message || String(e)}`;
       }

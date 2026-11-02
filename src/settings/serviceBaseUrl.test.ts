@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   DEFAULT_BASE_URL,
+  DEFAULT_PLUGIN_SERVICE_BASE_URL,
   SERVICE_BASEURL_STORAGE_KEY,
   loadServiceBaseUrlConfig,
   normalizeBaseUrl,
@@ -54,7 +55,9 @@ describe("service baseUrl config", () => {
     const raw = localStorage.getItem(SERVICE_BASEURL_STORAGE_KEY);
     expect(raw).toBeTruthy();
 
-    expect(localStorage.getItem("zion.pluginServiceUrl")).toBe(DEFAULT_BASE_URL);
+    expect(localStorage.getItem("zion.pluginServiceUrl")).toBe(
+      DEFAULT_PLUGIN_SERVICE_BASE_URL
+    );
     expect(localStorage.getItem("zion.localTools.baseUrl")).toBe(DEFAULT_BASE_URL);
     expect(localStorage.getItem("zion.localSearch.baseUrl")).toBe(DEFAULT_BASE_URL);
     expect(localStorage.getItem("zion.mail.baseUrl")).toBe(DEFAULT_BASE_URL);
@@ -76,6 +79,14 @@ describe("service baseUrl config", () => {
     expect(cfg.services.localSearch.baseUrl).toBe("http://localhost:7777");
   });
 
+  it("migrates the old local-tools plugin service default", () => {
+    localStorage.setItem("zion.pluginServiceUrl", DEFAULT_BASE_URL);
+    const cfg = loadServiceBaseUrlConfig();
+    expect(cfg.services.pluginService.baseUrl).toBe(
+      DEFAULT_PLUGIN_SERVICE_BASE_URL
+    );
+  });
+
   it("init syncs config into state", () => {
     localStorage.setItem("zion.mail.baseUrl", "http://localhost:5555/");
     const cfg = initServiceBaseUrlConfig();
@@ -83,4 +94,3 @@ describe("service baseUrl config", () => {
     expect((window as any).zion.state.get("mail.baseUrl")).toBe("http://localhost:5555");
   });
 });
-

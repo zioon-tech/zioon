@@ -14,11 +14,34 @@ import type {
   PluginInstallOptions,
   PluginEvent,
   PluginEventType,
+  PluginOrigin,
+  PluginDevSessionRecord,
+  PluginEntries,
   Disposable,
   Memento,
-  PluginConfigurationManager
+  PluginConfigurationManager,
+  NormalizedPluginManifest
 } from './types';
 import { PluginLoader } from './loader';
+import { runtimePluginCommand } from '../runtime/runtime-plugin-commands';
+import { createPluginLocations } from './data-locations';
+import { EXTERNALIZED_BUILTIN_PLUGIN_IDS } from './externalized';
+import { developmentFileUrl } from '../../packages/runtime-client/src/plugin-development.mjs';
+import {
+  createPluginModuleBlobUrl,
+  normalizePluginModulePath
+} from './module-urls';
+import {
+  createPluginScriptStorageKey,
+  deletePluginScriptContents,
+  estimatePluginScriptBytes,
+  loadPluginScriptContents,
+  savePluginScriptContents
+} from './script-store';
+
+const DEV_SESSIONS_STORAGE_KEY = 'zion.plugins.devSessionsInfo';
+const DEV_SESSIONS_MIGRATION_KEY = 'zion.plugins.devSessionsMigrated.v1';
+const INSTALLED_PLUGINS_STORAGE_KEY = 'zion.installedPlugins';
 
 /**
  * 插件管理器选项
@@ -34,18 +57,23 @@ export interface PluginManagerOptions {
   autoUpdate?: boolean;
   /** 日志级别 */
   logLevel?: 'error' | 'warn' | 'info' | 'debug';
+  /** 当前 Workbench 是否允许激活这个插件 */
+  activationAllowed?: (plugin: PluginInfo) => boolean;
 }
 
 /**
  * 插件管理器
  */
 export class PluginManager extends EventEmitter {
-  private options: Required<PluginManagerOptions>;
+  private options: Required<Omit<PluginManagerOptions, 'activationAllowed'>>;
+  private activationAllowed: (plugin: PluginInfo) => boolean;
   private loader: PluginLoader;
   private plugins = new Map<string, PluginInfo>();
   private activePlugins = new Map<string, { info: PluginInfo; module: PluginModule; context: PluginContext }>();
+  private activatingPlugins = new Map<string, Promise<void>>();
   private enabledPlugins = new Set<string>();
   private disabledPlugins = new Set<string>();
+  private pluginStyleElements = new Map<string, HTMLStyleElement[]>();
 
   constructor(options: PluginManagerOptions) {
     super();
@@ -57,6 +85,14 @@ export class PluginManager extends EventEmitter {
       autoUpdate: options.autoUpdate ?? false,
       logLevel: options.logLevel ?? 'info'
     };
+    const hostActivationAllowed = options.activationAllowed ?? (() => true);
+    this.activationAllowed = (plugin) => (
+      (
+        !EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(plugin.id)
+        || this.getPluginOrigin(plugin) === 'external'
+      )
+      && hostActivationAllowed(plugin)
+    );
 
     this.loader = new PluginLoader({
       logLevel: this.options.logLevel
@@ -65,10 +101,269 @@ export class PluginManager extends EventEmitter {
     this.setupEventHandlers();
   }
 
+  getPluginOrigin(plugin: PluginInfo | null | undefined): PluginOrigin {
+    const explicit = plugin?.origin;
+    if (explicit === 'builtin' || explicit === 'dev' || explicit === 'external' || explicit === 'account') return explicit;
+    const path = String(plugin?.path || '');
+    const manifest: any = plugin?.manifest || {};
+    const main = String(
+      plugin?.contract?.entries?.workbench
+      || manifest?.zion?.entries?.workbench
+      || manifest?.zion?.entries?.ui
+      || manifest?.zion?.main
+      || manifest?.main
+      || ''
+    );
+    if (path.startsWith('/extensions/') || main.startsWith('internal:')) return 'builtin';
+    if (/\/plugins\/dev\//.test(path) || /\/plugins\/dev\//.test(main)) return 'dev';
+    return 'external';
+  }
+
+  listDevSessionRecords(): Record<string, PluginDevSessionRecord> {
+    const records: Record<string, PluginDevSessionRecord> = {};
+
+    try {
+      const raw = localStorage.getItem(DEV_SESSIONS_STORAGE_KEY);
+      const saved = raw ? JSON.parse(raw) : {};
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+        for (const [pluginId, value] of Object.entries(saved)) {
+          const info = value as Partial<PluginDevSessionRecord> | null;
+          const devId = String(info?.devId || '').trim();
+          const baseUrl = String(info?.baseUrl || '').trim();
+          const dir = String(info?.dir || '').trim();
+          if (!pluginId || !devId || !baseUrl || !dir) continue;
+          records[pluginId] = { pluginId, devId, baseUrl, dir,
+            ...(info?.nodeId ? { nodeId: String(info.nodeId) } : {}) };
+        }
+      }
+
+      if (localStorage.getItem(DEV_SESSIONS_MIGRATION_KEY) !== '1') {
+        for (const plugin of this.plugins.values()) {
+          if (records[plugin.id] || this.getPluginOrigin(plugin) !== 'dev') continue;
+          const dir = String(plugin.sourceDir || '').trim();
+          const baseUrl = String(plugin.path || '').trim();
+          const pathDevId = baseUrl.match(/\/plugins\/dev\/([^/?#]+)/)?.[1] || '';
+          const devId = String(plugin.devId || pathDevId).trim();
+          if (!dir || !baseUrl || !devId) continue;
+          records[plugin.id] = { pluginId: plugin.id, devId, baseUrl, dir };
+        }
+        localStorage.setItem(DEV_SESSIONS_STORAGE_KEY, JSON.stringify(records));
+        localStorage.setItem(DEV_SESSIONS_MIGRATION_KEY, '1');
+      }
+    } catch (error) {
+      this.log('warn', '读取开发会话记录失败', error);
+    }
+
+    return records;
+  }
+
+  saveDevSessionRecord(record: PluginDevSessionRecord): boolean {
+    const pluginId = String(record?.pluginId || '').trim();
+    const devId = String(record?.devId || '').trim();
+    const baseUrl = String(record?.baseUrl || '').trim();
+    const dir = String(record?.dir || '').trim();
+    if (!pluginId || !devId || !baseUrl || !dir) return false;
+
+    try {
+      const records = this.listDevSessionRecords();
+      records[pluginId] = { pluginId, devId, baseUrl, dir,
+        ...(record.nodeId ? { nodeId: String(record.nodeId) } : {}) };
+      localStorage.setItem(DEV_SESSIONS_STORAGE_KEY, JSON.stringify(records));
+      localStorage.setItem(DEV_SESSIONS_MIGRATION_KEY, '1');
+      return true;
+    } catch (error) {
+      this.log('warn', `保存开发会话记录失败: ${pluginId}`, error);
+      return false;
+    }
+  }
+
+  removeDevSessionRecord(filter: { pluginId?: string; devId?: string }): boolean {
+    const pluginId = String(filter?.pluginId || '').trim();
+    const devId = String(filter?.devId || '').trim();
+    if (!pluginId && !devId) return false;
+
+    try {
+      const records = this.listDevSessionRecords();
+      let removed = false;
+      for (const [savedPluginId, record] of Object.entries(records)) {
+        if ((pluginId && savedPluginId === pluginId) || (devId && record.devId === devId)) {
+          delete records[savedPluginId];
+          removed = true;
+        }
+      }
+      localStorage.setItem(DEV_SESSIONS_STORAGE_KEY, JSON.stringify(records));
+      localStorage.setItem(DEV_SESSIONS_MIGRATION_KEY, '1');
+      return removed;
+    } catch (error) {
+      this.log('warn', '删除开发会话记录失败', error);
+      return false;
+    }
+  }
+
+  private getMainEntry(plugin: PluginInfo): string {
+    try {
+      const sourceEntries = plugin.sourceEntries;
+      if (sourceEntries?.workbench || sourceEntries?.renderer) {
+        return [
+          sourceEntries.workbench,
+          sourceEntries.renderer
+        ].filter(Boolean).join('|');
+      }
+      return [
+        this.loader.getEntry(plugin, 'workbench'),
+        this.loader.getEntry(plugin, 'renderer')
+      ].filter(Boolean).join('|');
+    } catch {
+      const manifest: any = plugin.manifest as any;
+      if (manifest && manifest.zion && typeof manifest.zion.main === 'string') return manifest.zion.main;
+      if (manifest && typeof manifest.main === 'string') return manifest.main;
+      return '';
+    }
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  private isStringRecord(value: unknown): value is Record<string, string> {
+    return this.isRecord(value)
+      && Object.values(value).every((item) => typeof item === 'string');
+  }
+
+  private scriptSignature(pluginInfo: PluginInfo): string {
+    if (pluginInfo.scriptContents) return JSON.stringify(pluginInfo.scriptContents);
+    if (pluginInfo.scriptStorageKey) return `stored:${pluginInfo.scriptStorageKey}`;
+    return '';
+  }
+
+  private projectManifestEntries(
+    manifest: PluginInfo['manifest'],
+    entries: PluginEntries
+  ): PluginInfo['manifest'] {
+    if (!this.isRecord(manifest) || !this.isRecord((manifest as any).zion)) {
+      return manifest;
+    }
+
+    const zion = { ...((manifest as any).zion || {}) };
+    const zionEntries = this.isRecord(zion.entries) ? { ...zion.entries } : {};
+    if (entries.workbench) {
+      zion.main = entries.workbench;
+      if (this.isRecord(zion.entries) && zion.entries.workbench) {
+        zionEntries.workbench = entries.workbench;
+      }
+    }
+    if (entries.renderer && this.isRecord(zion.entries) && zion.entries.renderer) {
+      zionEntries.renderer = entries.renderer;
+    }
+    if (Object.keys(zionEntries).length) {
+      zion.entries = zionEntries;
+    }
+
+    return {
+      ...(manifest as any),
+      zion
+    };
+  }
+
+  private rehydrateScriptEntries(pluginInfo: PluginInfo): PluginInfo {
+    const sources = pluginInfo.scriptContents;
+    const sourceEntries = pluginInfo.sourceEntries;
+    if (!sources || !sourceEntries) return pluginInfo;
+
+    const contract = pluginInfo.contract || this.loader.normalizeManifest(pluginInfo.manifest);
+    const entries: NormalizedPluginManifest['entries'] = { ...contract.entries };
+    const cache = new Map<string, string>();
+    for (const kind of ['workbench', 'renderer'] as const) {
+      const sourceEntry = sourceEntries[kind];
+      if (!sourceEntry) continue;
+      entries[kind] = createPluginModuleBlobUrl({
+        entryPath: normalizePluginModulePath(sourceEntry),
+        sources,
+        cache
+      });
+    }
+
+    pluginInfo.contract = {
+      ...contract,
+      entries
+    };
+    pluginInfo.manifest = this.projectManifestEntries(pluginInfo.manifest, entries);
+    pluginInfo.scriptBlobUrls = Object.fromEntries(cache);
+    return pluginInfo;
+  }
+
+  private async hydrateScriptContents(pluginInfo: PluginInfo): Promise<PluginInfo> {
+    if (pluginInfo.scriptContents || !pluginInfo.scriptStorageKey) return pluginInfo;
+    try {
+      const stored = await loadPluginScriptContents(pluginInfo.scriptStorageKey);
+      if (!stored?.scriptContents) return pluginInfo;
+      pluginInfo.scriptContents = stored.scriptContents;
+      pluginInfo.sourceEntries = pluginInfo.sourceEntries || stored.sourceEntries;
+      pluginInfo.scriptContentBytes = stored.byteSize;
+    } catch (error) {
+      this.log('warn', `恢复 ZIP 插件脚本源码失败: ${pluginInfo.id}`, error);
+    }
+    return pluginInfo;
+  }
+
+  private createPersistableManifest(pluginInfo: PluginInfo): PluginInfo['manifest'] {
+    if (!pluginInfo.sourceEntries) return pluginInfo.manifest;
+    return this.projectManifestEntries(pluginInfo.manifest, pluginInfo.sourceEntries);
+  }
+
+  private createPersistableContract(pluginInfo: PluginInfo): NormalizedPluginManifest | undefined {
+    const contract = pluginInfo.contract;
+    if (!contract) return undefined;
+    if (!pluginInfo.sourceEntries) return contract;
+    return {
+      ...contract,
+      entries: {
+        ...contract.entries,
+        ...pluginInfo.sourceEntries
+      }
+    };
+  }
+
+  private revokePluginEntryUrls(pluginInfo: PluginInfo | null | undefined): void {
+    if (!pluginInfo) return;
+    const urls = new Set<string>();
+    for (const url of Object.values(pluginInfo.scriptBlobUrls || {})) {
+      if (typeof url === 'string' && url.startsWith('blob:')) urls.add(url);
+    }
+    try {
+      const contract = pluginInfo.contract || this.loader.normalizeManifest(pluginInfo.manifest);
+      for (const entry of [contract.entries.workbench, contract.entries.renderer]) {
+        if (entry?.startsWith('blob:')) urls.add(entry);
+      }
+    } catch {}
+    for (const url of urls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+    pluginInfo.scriptBlobUrls = undefined;
+  }
+
+  private shouldReplaceInstalledPlugin(existing: PluginInfo, incoming: PluginInfo): boolean {
+    if (this.getPluginOrigin(incoming) === 'builtin' && this.getPluginOrigin(existing) !== 'builtin') return false;
+    const existingScripts = this.scriptSignature(existing);
+    const incomingScripts = this.scriptSignature(incoming);
+    return (
+      existing.version !== incoming.version ||
+      existing.path !== incoming.path ||
+      this.getMainEntry(existing) !== this.getMainEntry(incoming) ||
+      this.getPluginOrigin(existing) !== this.getPluginOrigin(incoming) ||
+      existingScripts !== incomingScripts
+    );
+  }
+
   /**
    * 初始化插件管理器
    */
-  async initialize(): Promise<void> {
+  async initialize(options: {
+    beforeActivate?: () => Promise<void>;
+    deferActivation?: Set<string>;
+  } = {}): Promise<void> {
     this.log('info', '初始化插件管理器...');
     
     try {
@@ -80,15 +375,33 @@ export class PluginManager extends EventEmitter {
       
       // 扫描插件目录（向后兼容）
       await this.scanPluginDirectories();
+      await options.beforeActivate?.();
       
       // 激活启用的插件
-      await this.activateEnabledPlugins();
+      await this.activateEnabledPlugins(options.deferActivation);
+      await this.savePluginStates();
       
       this.log('info', '插件管理器初始化完成');
       
     } catch (error) {
       this.log('error', '插件管理器初始化失败', error);
       throw error;
+    }
+  }
+
+  registerBuiltinCatalog(catalog: PluginInfo[]): void {
+    for (const info of catalog) {
+      const existing = this.plugins.get(info.id);
+      if (existing && this.getPluginOrigin(existing) !== 'builtin') continue;
+      const enabled = this.getEnabledPreference(info.id) ?? info.enabled ?? true;
+      this.plugins.set(info.id, { ...info, origin: 'builtin', enabled, state: 'installed' });
+      if (enabled) {
+        this.enabledPlugins.add(info.id);
+        this.disabledPlugins.delete(info.id);
+      } else {
+        this.disabledPlugins.add(info.id);
+        this.enabledPlugins.delete(info.id);
+      }
     }
   }
 
@@ -138,7 +451,10 @@ export class PluginManager extends EventEmitter {
   private async scanExtensionsDirectory(dirPath: string): Promise<void> {
     try {
       // 扫描 manifest.json（新格式）
-      const manifestJsons = (import.meta as any).glob('/extensions/**/manifest.json', { eager: true }) as Record<string, any>;
+      const manifestJsons = (import.meta as any).glob([
+        '/extensions/**/manifest.json',
+        '!/extensions/dev.identity/manifest.json'
+      ], { eager: true }) as Record<string, any>;
 
       // 处理 manifest.json（新格式）
       for (const [manifestPath, manifestData] of Object.entries(manifestJsons)) {
@@ -147,9 +463,35 @@ export class PluginManager extends EventEmitter {
           const pluginPath = manifestPath.replace('/manifest.json', '');
           const dirName = pluginPath.split('/').pop();
           if (!dirName) continue;
+          const zionData = (manifest as any)?.zion || {};
+          const pluginId = String(zionData.id || manifest.name || `zion.${dirName.replace(/^dev\./, '')}`);
+          if (EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(pluginId)) {
+            this.log('info', `跳过已外迁内置插件: ${pluginId}`);
+            continue;
+          }
 
           const pluginInfo = await this.loader.loadPlugin(pluginPath);
-          this.plugins.set(pluginInfo.id, pluginInfo);
+          if (!this.loader.supportsHost(pluginInfo, 'workbench')) {
+            this.log('debug', `跳过无 Workbench Entry 的插件包: ${pluginInfo.id}`);
+            continue;
+          }
+          pluginInfo.origin = 'builtin';
+          const existing = this.plugins.get(pluginInfo.id);
+          if (existing && this.getPluginOrigin(existing) !== 'builtin') {
+            this.log('info', `跳过内置插件 ${pluginInfo.id}，保留已安装的${this.getPluginOrigin(existing)}版本`);
+            continue;
+          }
+          const enabledPreference = this.getEnabledPreference(pluginInfo.id);
+          this.plugins.set(pluginInfo.id, {
+            ...existing,
+            ...pluginInfo,
+            enabled: enabledPreference ?? existing?.enabled ?? false,
+            state: existing?.state ?? pluginInfo.state,
+            error: existing?.error,
+            createdAt: existing?.createdAt ?? pluginInfo.createdAt,
+            updatedAt: Date.now(),
+            origin: 'builtin'
+          });
           this.log('info', `发现插件: ${pluginInfo.id}`);
         } catch (error) {
           this.log('warn', `加载插件失败: ${manifestPath}`, error);
@@ -228,7 +570,7 @@ export class PluginManager extends EventEmitter {
       // 检查是否已安装
       const existing = this.plugins.get(pluginInfo.id);
       if (existing) {
-        if (existing.version !== pluginInfo.version) {
+        if (this.shouldReplaceInstalledPlugin(existing, pluginInfo)) {
           this.log('info', `检测到已安装插件版本变化，执行更新: ${pluginInfo.id} ${existing.version} -> ${pluginInfo.version}`);
           return await this.updateFromInfo(pluginInfo, { enabled: installOptions.enabled ?? existing.enabled });
         } else {
@@ -236,6 +578,7 @@ export class PluginManager extends EventEmitter {
           if (installOptions.enabled && !existing.enabled) {
             await this.enable(existing.id);
           }
+          this.revokePluginEntryUrls(pluginInfo);
           this.log('info', `插件已安装且为最新: ${existing.id}@${existing.version}`);
           return existing;
         }
@@ -276,8 +619,17 @@ export class PluginManager extends EventEmitter {
 
     const existing = this.plugins.get(pluginInfo.id);
     if (existing) {
+      const refreshInactivePackage = Boolean(
+        enabled
+        && !this.activePlugins.has(existing.id)
+        && pluginInfo.scriptContents
+        && pluginInfo.sourceEntries
+      );
       // 已安装：如果版本不同则更新，否则根据需要调整启用状态
-      if (existing.version !== pluginInfo.version) {
+      if (
+        this.shouldReplaceInstalledPlugin(existing, pluginInfo)
+        || refreshInactivePackage
+      ) {
         this.log('info', `检测到插件版本变化，准备更新: ${pluginInfo.id} ${existing.version} -> ${pluginInfo.version}`);
         return await this.updateFromInfo(pluginInfo, { enabled });
       } else {
@@ -287,6 +639,7 @@ export class PluginManager extends EventEmitter {
         } else if (!enabled && existing.enabled) {
           await this.disable(existing.id);
         }
+        this.revokePluginEntryUrls(pluginInfo);
         this.log('info', `插件已安装且为最新: ${existing.id}@${existing.version}`);
         return existing;
       }
@@ -330,30 +683,67 @@ export class PluginManager extends EventEmitter {
       return await this.installFromInfo(pluginInfo, { enabled: desiredEnabled });
     }
 
-    const getMainEntry = (p: PluginInfo): string => {
-      const m: any = p.manifest as any;
-      if (m && m.zion && typeof m.zion.main === 'string') return m.zion.main;
-      if (m && typeof m.main === 'string') return m.main;
-      return '';
-    };
+    if (this.getPluginOrigin(pluginInfo) === 'builtin' && this.getPluginOrigin(existing) !== 'builtin') {
+      this.log('info', `跳过内置插件更新 ${pluginInfo.id}，保留已安装的${this.getPluginOrigin(existing)}版本`);
+      return existing;
+    }
 
+    const existingScripts = this.scriptSignature(existing);
+    const incomingScripts = this.scriptSignature(pluginInfo);
+    const refreshInactivePackage = Boolean(
+      desiredEnabled
+      && !this.activePlugins.has(existing.id)
+      && pluginInfo.scriptContents
+      && pluginInfo.sourceEntries
+    );
     const isEffectivelySame =
       existing.version === pluginInfo.version &&
       existing.path === pluginInfo.path &&
-      getMainEntry(existing) === getMainEntry(pluginInfo) &&
+      this.getMainEntry(existing) === this.getMainEntry(pluginInfo) &&
+      this.getPluginOrigin(existing) === this.getPluginOrigin(pluginInfo) &&
+      existingScripts === incomingScripts &&
       !!existing.enabled === !!desiredEnabled;
 
-    if (isEffectivelySame) {
+    if (isEffectivelySame && !refreshInactivePackage) {
+      const reuseRuntimeModuleUrls = Boolean(
+        existing.scriptBlobUrls
+        && pluginInfo.scriptBlobUrls
+        && existingScripts === incomingScripts
+      );
       const merged: PluginInfo = {
         ...existing,
         ...pluginInfo,
+        ...(reuseRuntimeModuleUrls
+          ? {
+              manifest: existing.manifest,
+              contract: existing.contract,
+              scriptBlobUrls: existing.scriptBlobUrls
+            }
+          : {}),
         enabled: !!desiredEnabled,
         state: existing.state,
         error: existing.error,
         createdAt: existing.createdAt,
         updatedAt: Date.now()
       };
+      if (reuseRuntimeModuleUrls) {
+        this.revokePluginEntryUrls(pluginInfo);
+      }
       this.plugins.set(pluginInfo.id, merged);
+      if (desiredEnabled) {
+        this.enabledPlugins.add(pluginInfo.id);
+        this.disabledPlugins.delete(pluginInfo.id);
+        if (!this.activePlugins.has(pluginInfo.id)) {
+          try {
+            await this.activate(pluginInfo.id);
+          } catch (e) {
+            this.log('error', `同步后激活失败: ${pluginInfo.id}`, e);
+          }
+        }
+      } else {
+        this.disabledPlugins.add(pluginInfo.id);
+        this.enabledPlugins.delete(pluginInfo.id);
+      }
       await this.savePluginStates();
       return merged;
     }
@@ -370,6 +760,7 @@ export class PluginManager extends EventEmitter {
     }
 
     // 替换信息并应用启用状态
+    this.revokePluginEntryUrls(existing);
     this.plugins.set(pluginInfo.id, pluginInfo);
     pluginInfo.enabled = !!desiredEnabled;
 
@@ -420,6 +811,7 @@ export class PluginManager extends EventEmitter {
     }
 
     // 替换信息（保留启用状态）
+    this.revokePluginEntryUrls(existing);
     this.plugins.set(pluginInfo.id, {
       ...existing,
       ...pluginInfo,
@@ -490,6 +882,9 @@ export class PluginManager extends EventEmitter {
       this.plugins.delete(pluginId);
       this.enabledPlugins.delete(pluginId);
       this.disabledPlugins.delete(pluginId);
+      this.revokePluginEntryUrls(pluginInfo);
+      this.removePluginStyles(pluginId);
+      await deletePluginScriptContents(pluginInfo.scriptStorageKey);
 
       // 保存状态
       await this.savePluginStates();
@@ -583,9 +978,27 @@ export class PluginManager extends EventEmitter {
   /**
    * 激活插件
    */
-  async activate(pluginId: string): Promise<void> {
+  activate(pluginId: string): Promise<void> {
+    return this.activateWithDependencies(pluginId, []);
+  }
+
+  private activateWithDependencies(pluginId: string, ancestors: string[]): Promise<void> {
+    if (ancestors.includes(pluginId)) {
+      return Promise.reject(new Error(`Plugin dependency cycle: ${[...ancestors, pluginId].join(' -> ')}`));
+    }
+    const pending = this.activatingPlugins.get(pluginId);
+    if (pending) return pending;
+    const activation = this.activatePlugin(pluginId, ancestors).finally(() => {
+      this.activatingPlugins.delete(pluginId);
+    });
+    this.activatingPlugins.set(pluginId, activation);
+    return activation;
+  }
+
+  private async activatePlugin(pluginId: string, ancestors: string[]): Promise<void> {
     this.log('info', `激活插件: ${pluginId}`);
 
+    let context: PluginContext | undefined;
     try {
       const pluginInfo = this.plugins.get(pluginId);
       if (!pluginInfo) {
@@ -596,6 +1009,26 @@ export class PluginManager extends EventEmitter {
         this.log('warn', `插件已激活: ${pluginId}`);
         return;
       }
+      if (!this.activationAllowed(pluginInfo)) {
+        pluginInfo.state = 'installed';
+        this.log('info', `当前 Workbench 模式跳过插件激活: ${pluginId}`);
+        return;
+      }
+      if (!this.loader.supportsHost(pluginInfo, 'workbench')) {
+        pluginInfo.state = 'installed';
+        this.log('info', `插件包 ${pluginId} 未声明 Workbench Host，跳过客户端激活`);
+        return;
+      }
+      for (const dependency of pluginInfo.dependencies || []) {
+        const dependencyInfo = this.plugins.get(dependency);
+        if (!dependencyInfo || dependencyInfo.state === 'error' || this.getEnabledPreference(dependency) === false) {
+          throw new Error(`Plugin dependency unavailable: ${pluginId} -> ${dependency}`);
+        }
+        await this.activateWithDependencies(dependency, [...ancestors, pluginId]);
+        if (!this.activePlugins.has(dependency)) {
+          throw new Error(`Plugin dependency inactive: ${pluginId} -> ${dependency}`);
+        }
+      }
 
       // 更新状态
       pluginInfo.state = 'activating';
@@ -605,7 +1038,7 @@ export class PluginManager extends EventEmitter {
       const module = await this.loader.loadModule(pluginInfo);
       
       // 创建上下文
-      const context = this.createPluginContext(pluginInfo);
+      context = this.createPluginContext(pluginInfo);
 
       // 执行激活函数
       if (typeof module.activate === 'function') {
@@ -620,13 +1053,20 @@ export class PluginManager extends EventEmitter {
       });
 
       // 更新最终状态
+      await this.autoLoadStyles(pluginInfo);
       pluginInfo.state = 'active';
+      pluginInfo.error = undefined;
 
       // 触发事件
       this.emit('activated', pluginInfo);
       this.log('info', `插件激活成功: ${pluginId}`);
 
     } catch (error: any) {
+      for (const subscription of context?.subscriptions || []) {
+        try { subscription.dispose(); } catch {}
+      }
+      this.activePlugins.delete(pluginId);
+      this.removePluginStyles(pluginId);
       // 更新错误状态
       const pluginInfo = this.plugins.get(pluginId);
       if (pluginInfo) {
@@ -649,6 +1089,48 @@ export class PluginManager extends EventEmitter {
   /**
    * 停用插件
    */
+  private async autoLoadStyles(info: PluginInfo): Promise<void> {
+    try {
+      const m = info.manifest as any;
+      const styles = m.zion?.contributes?.styles;
+      if (!Array.isArray(styles) || styles.length === 0) return;
+      const basePath = (info.path || '').replace(/\/+$/, '');
+      const els: HTMLStyleElement[] = [];
+      for (let i = 0; i < styles.length; i++) {
+        try {
+          const rel = String(styles[i] || '').replace(/^\.\//, '');
+          if (typeof document === 'undefined') continue;
+          let css = info.styleContents?.[rel];
+          if (typeof css !== 'string') {
+            const url = basePath ? basePath + '/' + rel : rel;
+            if (!basePath) continue;
+            const resp = await fetch(url);
+            if (!resp.ok) { this.log('warn', 'Failed style ' + rel + ' for ' + info.id + ': HTTP ' + resp.status); continue; }
+            css = await resp.text();
+          }
+          const id = 'zion-style-' + info.id + '-' + i;
+          const old = document.getElementById(id);
+          if (old) old.remove();
+          const style = document.createElement('style');
+          style.id = id;
+          style.textContent = css;
+          document.head.appendChild(style);
+          els.push(style);
+        } catch (e) {
+          this.log('warn', 'Failed load style for ' + info.id);
+        }
+      }
+      if (els.length > 0) this.pluginStyleElements.set(info.id, els);
+    } catch (e) { this.log('warn', 'autoLoadStyles error for ' + info.id); }
+  }
+
+  private removePluginStyles(id: string): void {
+    const els = this.pluginStyleElements.get(id);
+    if (!els) return;
+    for (const el of els) { try { if (el.parentNode) el.parentNode.removeChild(el); } catch {} }
+    this.pluginStyleElements.delete(id);
+  }
+
   async deactivate(pluginId: string): Promise<void> {
     this.log('info', `停用插件: ${pluginId}`);
 
@@ -680,6 +1162,7 @@ export class PluginManager extends EventEmitter {
 
       // 从激活插件列表中移除
       this.activePlugins.delete(pluginId);
+      this.removePluginStyles(pluginId);
 
       // 触发事件
       this.emit('deactivated', info);
@@ -698,10 +1181,13 @@ export class PluginManager extends EventEmitter {
     return {
       subscriptions: [],
       extensionPath: pluginInfo.path,
+      locations: createPluginLocations(pluginInfo.id),
       globalState: this.createMemento(`plugin.${pluginInfo.id}.global`),
       workspaceState: this.createMemento(`plugin.${pluginInfo.id}.workspace`),
       configuration: this.createConfigurationManager(pluginInfo.id),
+      runtime: { command: (args) => runtimePluginCommand(pluginInfo.id, args, pluginInfo.accountInstallation) },
       asAbsolutePath: (relativePath: string) => {
+        if (pluginInfo.sourceNodeId) return developmentFileUrl(pluginInfo.path, relativePath);
         return `${pluginInfo.path}/${relativePath.replace(/^\.\//, '')}`;
       },
       log: (message: string, level: 'info' | 'warn' | 'error' = 'info') => {
@@ -790,26 +1276,54 @@ export class PluginManager extends EventEmitter {
   }
 
   /**
-   * 激活所有启用的插件（优化：并行启动，不等待每个插件完全初始化）
+   * 激活所有启用的插件
    */
-  private async activateEnabledPlugins(): Promise<void> {
+  private async activateEnabledPlugins(deferred = new Set<string>()): Promise<void> {
     this.log('info', '启动启用的插件...');
 
-    const enabledPlugins = Array.from(this.enabledPlugins);
-
-    // 【关键修改】并行启动插件，不等待每个插件完全激活完成
-    // 这样某个插件（如 MCP 客户端）需要时间初始化时，不会阻塞其他插件
-    const activationPromises = enabledPlugins.map(pluginId =>
-      this.activate(pluginId).catch(error => {
-        this.log('warn', `激活插件失败: ${pluginId}`, error);
-      })
+    const enabledPlugins = this.sortPluginIdsByDependencies(
+      Array.from(this.enabledPlugins).filter((id) => this.plugins.has(id) && !deferred.has(id))
     );
 
-    // 使用 Promise.allSettled 等待所有插件启动尝试完成
-    // 即使某个插件失败，也不会影响其他插件
-    await Promise.allSettled(activationPromises);
+    for (const pluginId of enabledPlugins) {
+      try {
+        await this.activate(pluginId);
+      } catch (error) {
+        this.log('warn', `激活插件失败: ${pluginId}`, error);
+      }
+    }
 
     this.log('info', `已启动 ${enabledPlugins.length} 个插件的激活流程`);
+  }
+
+  async retryFailedPlugins(): Promise<void> {
+    await this.activateEnabledPlugins();
+  }
+
+  private sortPluginIdsByDependencies(pluginIds: string[]): string[] {
+    const input = new Set(pluginIds);
+    const result: string[] = [];
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+
+    const visit = (pluginId: string) => {
+      if (visited.has(pluginId)) return;
+      if (visiting.has(pluginId)) {
+        this.log('warn', `检测到插件依赖循环: ${pluginId}`);
+        return;
+      }
+      visiting.add(pluginId);
+      const pluginInfo = this.plugins.get(pluginId);
+      for (const depId of pluginInfo?.dependencies || []) {
+        if (input.has(depId)) visit(depId);
+      }
+      visiting.delete(pluginId);
+      visited.add(pluginId);
+      result.push(pluginId);
+    };
+
+    for (const pluginId of pluginIds) visit(pluginId);
+    return result;
   }
 
   /**
@@ -842,19 +1356,29 @@ export class PluginManager extends EventEmitter {
    * 保存插件状态
    */
   private async savePluginStates(): Promise<void> {
+    const states = {
+      enabled: Array.from(this.enabledPlugins),
+      disabled: Array.from(this.disabledPlugins),
+      timestamp: Date.now()
+    };
+    const payload = JSON.stringify(states);
+    let stateWriteError: unknown = null;
     try {
-      const states = {
-        enabled: Array.from(this.enabledPlugins),
-        disabled: Array.from(this.disabledPlugins),
-        timestamp: Date.now()
-      };
-      
-      localStorage.setItem('zion.pluginStates', JSON.stringify(states));
-
-      // 同步持久化已安装插件列表
-      this.persistInstalledPlugins();
+      localStorage.setItem('zion.pluginStates', payload);
     } catch (error) {
-      this.log('error', '保存插件状态失败', error);
+      stateWriteError = error;
+    }
+
+    // Always try to rewrite the installed plugin cache. It may be the large
+    // value that is preventing even the small enabled/disabled state write.
+    await this.persistInstalledPlugins();
+
+    if (stateWriteError) {
+      try {
+        localStorage.setItem('zion.pluginStates', payload);
+      } catch (error) {
+        this.log('error', '保存插件状态失败', error);
+      }
     }
   }
 
@@ -863,7 +1387,7 @@ export class PluginManager extends EventEmitter {
    */
   private async loadPersistedPlugins(): Promise<void> {
     try {
-      const raw = localStorage.getItem('zion.installedPlugins');
+      const raw = localStorage.getItem(INSTALLED_PLUGINS_STORAGE_KEY);
       if (!raw) return;
       const arr = JSON.parse(raw);
       if (!Array.isArray(arr)) return;
@@ -886,12 +1410,30 @@ export class PluginManager extends EventEmitter {
             createdAt: rec.createdAt ?? Date.now(),
             updatedAt: Date.now(),
             isLegacy: !!rec.isLegacy,
-            enabled: rec.enabled === true
+            origin: this.getPluginOrigin(rec as PluginInfo),
+            enabled: rec.enabled === true,
+            skillContents: this.isStringRecord(rec.skillContents) ? rec.skillContents : undefined,
+            skillFiles: rec.skillFiles && typeof rec.skillFiles === 'object' ? rec.skillFiles : undefined,
+            styleContents: this.isStringRecord(rec.styleContents) ? rec.styleContents : undefined,
+            scriptContents: this.isStringRecord(rec.scriptContents) ? rec.scriptContents : undefined,
+            sourceEntries: this.isRecord(rec.sourceEntries) ? rec.sourceEntries as PluginEntries : undefined,
+            scriptStorageKey: typeof rec.scriptStorageKey === 'string' ? rec.scriptStorageKey : undefined,
+            scriptContentBytes: Number.isFinite(Number(rec.scriptContentBytes))
+              ? Number(rec.scriptContentBytes)
+              : undefined,
+            sourceDir: typeof rec.sourceDir === 'string' ? rec.sourceDir : undefined,
+            sourceNodeId: typeof rec.sourceNodeId === 'string' ? rec.sourceNodeId : undefined,
+            devId: typeof rec.devId === 'string' ? rec.devId : undefined,
+            contract: rec.contract && typeof rec.contract === 'object'
+              ? rec.contract
+              : undefined
           };
+          await this.hydrateScriptContents(info);
+          this.rehydrateScriptEntries(info);
           this.plugins.set(info.id, info);
 
-          // 合并启用状态（以已保存集合为准，若不存在则使用记录值）
-          const enabled = this.enabledPlugins.has(info.id) || info.enabled === true;
+          // 显式保存的偏好优先，避免旧安装记录把已禁用插件重新启用。
+          const enabled = this.getEnabledPreference(info.id) ?? info.enabled === true;
           info.enabled = enabled;
           if (enabled) {
             this.enabledPlugins.add(info.id);
@@ -912,25 +1454,111 @@ export class PluginManager extends EventEmitter {
   /**
    * 持久化已安装插件列表到本地存储
    */
-  private persistInstalledPlugins(): void {
+  private shouldPersistInstalledPlugin(pluginInfo: PluginInfo): boolean {
+    // Account development code is rediscovered through the authenticated
+    // registry at startup; a previous account's browser cache cannot activate it.
+    return !['builtin', 'account'].includes(this.getPluginOrigin(pluginInfo)) && !pluginInfo.sourceNodeId;
+  }
+
+  private async createPersistablePluginRecord(
+    p: PluginInfo,
+    { includeEmbeddedAssets = true }: { includeEmbeddedAssets?: boolean } = {}
+  ): Promise<Record<string, any>> {
+    let scriptStorageKey = p.scriptStorageKey;
+    let scriptContentBytes = p.scriptContentBytes;
+    if (p.scriptContents && p.sourceEntries) {
+      scriptContentBytes = estimatePluginScriptBytes(p.scriptContents);
+      try {
+        const stored = await savePluginScriptContents({
+          key: scriptStorageKey || createPluginScriptStorageKey(p),
+          pluginId: p.id,
+          version: p.version,
+          sourceEntries: p.sourceEntries,
+          scriptContents: p.scriptContents
+        });
+        if (stored) {
+          scriptStorageKey = stored.key;
+          scriptContentBytes = stored.byteSize;
+          p.scriptStorageKey = stored.key;
+          p.scriptContentBytes = stored.byteSize;
+        }
+      } catch (error) {
+        this.log('warn', `持久化 ZIP 插件脚本源码失败: ${p.id}`, error);
+      }
+    }
+
+    return {
+      id: p.id,
+      name: p.name,
+      version: p.version,
+      description: p.description,
+      author: p.author,
+      license: p.license,
+      path: p.path,
+      manifest: this.createPersistableManifest(p),
+      dependencies: p.dependencies,
+      peerDependencies: p.peerDependencies,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      isLegacy: p.isLegacy,
+      origin: this.getPluginOrigin(p),
+      enabled: !!p.enabled,
+      ...(includeEmbeddedAssets ? {
+        skillContents: p.skillContents,
+        skillFiles: p.skillFiles,
+        styleContents: p.styleContents
+      } : {}),
+      sourceEntries: p.sourceEntries,
+      scriptStorageKey,
+      scriptContentBytes,
+      sourceDir: p.sourceDir,
+      sourceNodeId: p.sourceNodeId,
+      devId: p.devId,
+      contract: this.createPersistableContract(p)
+    };
+  }
+
+  private writeInstalledPluginRecords(records: Array<Record<string, any>>): void {
+    const payload = JSON.stringify(records);
     try {
-      const arr = Array.from(this.plugins.values()).map(p => ({
-        id: p.id,
-        name: p.name,
-        version: p.version,
-        description: p.description,
-        author: p.author,
-        license: p.license,
-        path: p.path,
-        manifest: p.manifest,
-        dependencies: p.dependencies,
-        peerDependencies: p.peerDependencies,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-        isLegacy: p.isLegacy,
-        enabled: !!p.enabled
-      }));
-      localStorage.setItem('zion.installedPlugins', JSON.stringify(arr));
+      localStorage.setItem(INSTALLED_PLUGINS_STORAGE_KEY, payload);
+      return;
+    } catch (error) {
+      // Replacing an old large value can fail while the previous value still
+      // occupies quota. Remove it and retry before degrading the record.
+      localStorage.removeItem(INSTALLED_PLUGINS_STORAGE_KEY);
+      localStorage.setItem(INSTALLED_PLUGINS_STORAGE_KEY, payload);
+    }
+  }
+
+  private async persistInstalledPlugins(): Promise<void> {
+    try {
+      const plugins = Array.from(this.plugins.values())
+        .filter((plugin) => this.shouldPersistInstalledPlugin(plugin));
+      const records = [];
+      for (const plugin of plugins) {
+        records.push(await this.createPersistablePluginRecord(plugin));
+      }
+      try {
+        this.writeInstalledPluginRecords(records);
+        return;
+      } catch (error) {
+        this.log('warn', '已安装插件记录过大，改写轻量安装记录', error);
+      }
+
+      const lightweightRecords = [];
+      for (const plugin of plugins) {
+        lightweightRecords.push(await this.createPersistablePluginRecord(
+          plugin,
+          { includeEmbeddedAssets: false }
+        ));
+      }
+      try {
+        this.writeInstalledPluginRecords(lightweightRecords);
+      } catch (error) {
+        localStorage.removeItem(INSTALLED_PLUGINS_STORAGE_KEY);
+        this.log('warn', '已安装插件记录超过 localStorage 配额，已清理持久化缓存', error);
+      }
     } catch (e) {
       this.log('error', '保存已安装插件失败', e);
     }
@@ -948,6 +1576,15 @@ export class PluginManager extends EventEmitter {
    */
   get(pluginId: string): PluginInfo | null {
     return this.plugins.get(pluginId) || null;
+  }
+
+  /**
+   * 获取用户保存的启用偏好。未选择过时返回 undefined。
+   */
+  getEnabledPreference(pluginId: string): boolean | undefined {
+    if (this.disabledPlugins.has(pluginId)) return false;
+    if (this.enabledPlugins.has(pluginId)) return true;
+    return undefined;
   }
 
   /**

@@ -9,8 +9,8 @@ export const autocompleteTheme = EditorView.theme({
     "&": {
       backgroundColor: "var(--panel, var(--bg, #1e1e1e))",
       border: "1px solid var(--border, #3c3c3c)",
-      borderRadius: "10px",
-      boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      borderRadius: "var(--radius-lg, 8px)",
+      boxShadow: "var(--elevation-3, 0 8px 24px rgba(0,0,0,0.32))",
       padding: "4px",
       fontFamily: "var(--font-sans, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif)",
       fontSize: "13px",
@@ -20,6 +20,7 @@ export const autocompleteTheme = EditorView.theme({
       fontFamily: "inherit",
       gap: "2px",
       maxHeight: "300px",
+      overflowY: "auto",
       scrollbarColor: "var(--scrollbar-thumb, var(--border, #44475a)) transparent",
       scrollbarWidth: "thin"
     },
@@ -44,7 +45,7 @@ export const autocompleteTheme = EditorView.theme({
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li": {
     padding: "6px 8px",
-    borderRadius: "6px",
+    borderRadius: "var(--radius-md, 6px)",
     cursor: "pointer",
     color: "var(--fg, #cccccc)",
     transition: "background-color .1s ease",
@@ -55,10 +56,7 @@ export const autocompleteTheme = EditorView.theme({
     lineHeight: "1.4"
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li:hover": {
-    backgroundColor: "rgba(98,114,164,0.10)"
-  },
-  ":root[data-theme='light'] .cm-tooltip.cm-tooltip-autocomplete > ul > li:hover": {
-    backgroundColor: "rgba(59,130,246,0.10)"
+    backgroundColor: "var(--hover-bg, rgba(98,114,164,0.10))"
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
     backgroundColor: "var(--role-user-bg, rgba(98,114,164,0.18)) !important",
@@ -95,9 +93,9 @@ export const autocompleteTheme = EditorView.theme({
   ".cm-tooltip.cm-completionInfo": {
     backgroundColor: "var(--panel, var(--bg, #1e1e1e))",
     border: "1px solid var(--border, #3c3c3c)",
-    borderRadius: "8px",
+    borderRadius: "var(--radius-lg, 8px)",
     padding: "8px 12px",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+    boxShadow: "var(--elevation-3, 0 8px 24px rgba(0,0,0,0.32))",
     maxWidth: "300px",
     fontSize: "12px",
     lineHeight: "1.5",

@@ -1,9 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { EditorCore } from '../src/editor/EditorCore';
 import { attachEditor } from '../src/ext/registry';
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+afterEach(() => {
+  document.body.innerHTML = '';
+});
+
 describe('Registry menus submenu exclusive', () => {
-  it('shows only one submenu at a time on the same menu level', () => {
+  it('shows only one submenu at a time on the same menu level', async () => {
     const parent = document.createElement('div');
     document.body.appendChild(parent);
     const core = new EditorCore(parent, 'hello world');
@@ -47,9 +53,11 @@ describe('Registry menus submenu exclusive', () => {
     expect(subB).toBeDefined();
 
     rowA.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await wait(170);
     expect(subA.style.display).toBe('block');
 
     rowB.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await wait(170);
     expect(subA.style.display).toBe('none');
     expect(subB.style.display).toBe('block');
 
@@ -59,4 +67,3 @@ describe('Registry menus submenu exclusive', () => {
     document.body.removeChild(parent);
   });
 });
-

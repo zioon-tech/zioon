@@ -1,0 +1,112 @@
+{
+  "name": "dev.memory",
+  "version": "0.0.1",
+  "description": "Manage local Markdown memory and extensible Memory Providers.",
+  "descriptionKey": "dev.memory.description",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.memory",
+    "name": "Memory",
+    "version": "0.0.1",
+    "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "记忆",
+        "en-US": "Memory"
+      },
+      "description": {
+        "zh-CN": "管理本地 Markdown 记忆和可扩展的 Memory Provider。",
+        "en-US": "Manage local Markdown memory and extensible Memory Providers."
+      },
+      "icon": "database",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "浏览和编辑本地 Markdown 记忆",
+          "注册可扩展 Memory Provider",
+          "为模型构建可检查的记忆上下文"
+        ],
+        "en-US": [
+          "Browse and edit local Markdown memories",
+          "Register extensible Memory Providers",
+          "Build inspectable memory context for the model"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "local-files",
+          "label": {
+            "zh-CN": "本地文件",
+            "en-US": "Local files"
+          },
+          "description": {
+            "zh-CN": "读写 Zion Next 记忆目录。",
+            "en-US": "Read and write the Zion Next memory directory."
+          }
+        }
+      ],
+      "dataLocations": [
+        {
+          "label": {
+            "zh-CN": "记忆目录",
+            "en-US": "Memory directory"
+          },
+          "path": "~/.zion-next/memory"
+        }
+      ],
+      "entrypoints": [
+        {
+          "title": {
+            "zh-CN": "打开记忆面板",
+            "en-US": "Open Memory"
+          },
+          "command": "memory.openPanel",
+          "icon": "database"
+        }
+      ]
+    },
+    "nameKey": "dev.memory.title",
+    "contributes": {
+      "commands": [
+        {
+          "id": "memory.openPanel",
+          "title": "Open Memory",
+          "titleKey": "dev.memory.cmd.openPanel",
+          "category": "Memory",
+          "categoryKey": "dev.memory.title"
+        },
+        {
+          "id": "memory.create",
+          "title": "Create Memory",
+          "titleKey": "dev.memory.cmd.create",
+          "category": "Memory",
+          "categoryKey": "dev.memory.title"
+        },
+        {
+          "id": "memory.rememberSelection",
+          "title": "Remember Selection",
+          "titleKey": "dev.memory.cmd.rememberSelection",
+          "category": "Memory",
+          "categoryKey": "dev.memory.title"
+        }
+      ],
+      "styles": [
+        "./styles.css"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

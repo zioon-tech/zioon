@@ -9,9 +9,21 @@ import type {
   PluginInstallResult,
   PluginError,
   PluginInstallOptions,
-  PluginManifest
+  PluginManifest,
+  PluginEntries,
+  NormalizedPluginManifest
 } from './types';
 import { VersionUtils } from './utils';
+import {
+  normalizePluginManifest,
+  validatePluginManifest
+} from '../../packages/plugin-sdk/src/manifest.mjs';
+import {
+  createPluginModuleBlobUrl,
+  normalizePluginModulePath,
+  pluginModuleSpecifiers
+} from './module-urls';
+import { developmentFileUrl, developmentRequestSignal } from '../../packages/runtime-client/src/plugin-development.mjs';
 
 /**
  * HTTP插件安装器选项
@@ -59,6 +71,7 @@ export class HttpPluginInstaller {
       // 验证插件
       const validation = await this.validatePlugin(pluginInfo);
       if (!validation.valid) {
+        this.revokePluginEntryUrls(pluginInfo);
         return {
           success: false,
           error: {
@@ -70,10 +83,11 @@ export class HttpPluginInstaller {
         };
       }
 
-      // 检查缓存：如版本一致则复用缓存；如版本变化则更新缓存并返回新版本
+      // 检查缓存：如版本和脚本内容一致则复用缓存；否则更新缓存并返回新包内容
       if (this.options.cache && this.cache.has(pluginInfo.id)) {
         const cached = this.cache.get(pluginInfo.id)!;
-        if (cached.version === pluginInfo.version) {
+        if (this.isSameCachedPlugin(cached, pluginInfo)) {
+          this.revokePluginEntryUrls(pluginInfo);
           console.log(`[HttpPluginInstaller] 使用缓存插件: ${pluginInfo.id}@${cached.version}`);
           return {
             success: true,
@@ -81,8 +95,9 @@ export class HttpPluginInstaller {
             warnings: validation.warnings
           };
         }
-        // 版本不一致：更新缓存并返回新版本
-        console.log(`[HttpPluginInstaller] 检测到新版本，更新缓存: ${pluginInfo.id} ${cached.version} -> ${pluginInfo.version}`);
+        // 版本或包内容不一致：更新缓存并返回新版本
+        console.log(`[HttpPluginInstaller] 检测到插件包变化，更新缓存: ${pluginInfo.id} ${cached.version} -> ${pluginInfo.version}`);
+        this.revokePluginEntryUrls(cached);
         this.cache.set(pluginInfo.id, pluginInfo);
         return {
           success: true,
@@ -161,54 +176,118 @@ export class HttpPluginInstaller {
    */
   async installFromDevBase(
     baseUrl: string,
-    devId: string
+    devId: string,
+    options: { sourceDir?: string; sourceNodeId?: string; signal?: AbortSignal;
+      accountInstallation?: PluginInfo['accountInstallation'] } = {}
   ): Promise<PluginInstallResult> {
+    const moduleUrls = new Map<string, string>();
+    let completed = false;
     try {
-      const manifestUrl = `${baseUrl}/manifest.json`;
+      const token = String(Date.now());
+      const manifestUrl = developmentFileUrl(baseUrl, 'manifest.json', token);
       console.log(`[HttpPluginInstaller] 开发模式安装: ${manifestUrl}`);
 
       const res = await fetch(manifestUrl, {
         method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        redirect: 'error',
         headers: {
           'Accept': 'application/json',
           'X-Zion-Dev-Id': devId,
           'X-Zion-Dev-Mode': 'true'
         },
-        signal: AbortSignal.timeout(this.options.timeout)
+        signal: developmentRequestSignal(options.signal, this.options.timeout)
       });
       if (!res.ok) {
         throw new Error(`读取开发清单失败: ${res.status} ${res.statusText}`);
       }
       const manifest = await res.json() as PluginManifest;
-
-      // 解析主入口（绝对URL）
-      let mainPath = manifest?.zion?.main || (manifest as any)?.main || 'dist/main.js';
-      if (!/^(blob:|data:|https?:)/i.test(mainPath)) {
-        mainPath = `${baseUrl}/${String(mainPath).replace(/^\.\//, '')}`;
+      const contract = normalizePluginManifest(manifest);
+      const entries = { ...contract.entries };
+      const sources: Record<string, string> = {};
+      const sourceEntries: PluginEntries = {};
+      let sourceBytes = 0;
+      const relativeEntry = (entry: string): string => {
+        const base = new URL(baseUrl, window.location.href);
+        const url = new URL(entry, `${base.origin}${base.pathname}/`);
+        if (url.origin !== base.origin || !url.pathname.startsWith(`${base.pathname}/`)) {
+          throw new Error('开发入口必须位于来源设备的开发目录');
+        }
+        return normalizePluginModulePath(url.pathname.slice(base.pathname.length + 1));
+      };
+      const readSource = async (path: string): Promise<string> => {
+        const response = await fetch(developmentFileUrl(baseUrl, path, token), {
+          cache: 'no-store', redirect: 'error', credentials: 'include',
+          signal: developmentRequestSignal(options.signal, this.options.timeout)
+        });
+        if (!response.ok) throw new Error(`开发文件读取失败: ${path} (HTTP ${response.status})`);
+        const text = await response.text();
+        sourceBytes += text.length;
+        if (sourceBytes > 4 * 1024 * 1024) throw new Error('开发插件源码超过 4 MiB，请先构建');
+        return text;
+      };
+      const visit = async (path: string): Promise<void> => {
+        if (Object.prototype.hasOwnProperty.call(sources, path)) return;
+        if (Object.keys(sources).length >= 64) throw new Error('开发模块超过 64 个，请先构建');
+        sources[path] = await readSource(path);
+        const specifiers = new Set(pluginModuleSpecifiers(sources[path]).map((item) => item.specifier));
+        for (const specifier of specifiers) {
+          const parent = path.slice(0, path.lastIndexOf('/') + 1);
+          await visit(normalizePluginModulePath(`${parent}${specifier}`));
+        }
+      };
+      for (const kind of ['workbench', 'renderer'] as const) {
+        const entry = entries[kind];
+        if (!entry) continue;
+        const path = relativeEntry(entry);
+        sourceEntries[kind] = entry;
+        await visit(path);
+        entries[kind] = createPluginModuleBlobUrl({ entryPath: path, sources, cache: moduleUrls });
       }
+      const styleContents: Record<string, string> = {};
+      for (const style of manifest.zion?.contributes?.styles || []) {
+        styleContents[String(style).replace(/^\.\//, '')] = await readSource(relativeEntry(style));
+      }
+      const projectedContract: NormalizedPluginManifest = {
+        ...contract,
+        entries
+      };
+      const mainPath = entries.workbench;
 
       // 构建 PluginInfo
       const pluginInfo: PluginInfo = {
-        id: manifest?.zion?.id || (manifest as any)?.id || manifest?.name || 'unknown.plugin',
-        name: manifest?.zion?.name || manifest?.name || 'Unnamed Plugin',
-        version: manifest?.zion?.version || manifest?.version || '0.0.1',
+        id: contract.id,
+        name: contract.name,
+        version: contract.version,
         description: manifest?.description,
         author: manifest?.author,
         license: manifest?.license,
         path: baseUrl,
-        manifest: {
-          ...manifest,
-          zion: {
-            ...(manifest?.zion || {}),
-            main: mainPath
-          }
-        },
+        manifest: mainPath
+          ? {
+              ...manifest,
+              zion: {
+                ...(manifest?.zion || {}),
+                main: mainPath
+              }
+            }
+          : manifest,
         state: 'installed',
         dependencies: manifest?.zion?.dependencies ? Object.keys(manifest.zion.dependencies) : [],
         peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        isLegacy: !manifest?.zion
+        isLegacy: !manifest?.zion,
+        origin: options.accountInstallation ? 'account' : 'dev',
+        ...(options.accountInstallation ? { accountInstallation: options.accountInstallation } : { devId }),
+        sourceDir: options.sourceDir,
+        sourceNodeId: options.sourceNodeId,
+        sourceEntries,
+        scriptContents: sources,
+        scriptBlobUrls: Object.fromEntries(moduleUrls),
+        styleContents,
+        contract: projectedContract
       };
 
       // 验证
@@ -229,12 +308,21 @@ export class HttpPluginInstaller {
       if (this.options.cache) {
         const cached = this.cache.get(pluginInfo.id);
         if (cached && cached.version === pluginInfo.version) {
-          this.cache.set(pluginInfo.id, { ...cached, manifest: pluginInfo.manifest, updatedAt: Date.now() });
+          this.cache.set(pluginInfo.id, {
+            ...cached,
+            ...pluginInfo,
+            state: cached.state,
+            enabled: cached.enabled,
+            createdAt: cached.createdAt,
+            updatedAt: Date.now()
+          });
+          completed = true;
           return { success: true, plugin: this.cache.get(pluginInfo.id)!, warnings: validation.warnings };
         }
         this.cache.set(pluginInfo.id, pluginInfo);
       }
 
+      completed = true;
       return { success: true, plugin: pluginInfo, warnings: validation.warnings };
     } catch (error) {
       console.error(`[HttpPluginInstaller] 开发模式安装失败: ${baseUrl}`, error);
@@ -248,7 +336,23 @@ export class HttpPluginInstaller {
         },
         warnings: []
       };
+    } finally {
+      if (!completed) for (const url of moduleUrls.values()) {
+        try { URL.revokeObjectURL(url); } catch {}
+      }
     }
+  }
+
+  private pluginScriptSignature(pluginInfo: PluginInfo): string {
+    return JSON.stringify({
+      sourceEntries: pluginInfo.sourceEntries || {},
+      scriptContents: pluginInfo.scriptContents || {}
+    });
+  }
+
+  private isSameCachedPlugin(cached: PluginInfo, incoming: PluginInfo): boolean {
+    return cached.version === incoming.version
+      && this.pluginScriptSignature(cached) === this.pluginScriptSignature(incoming);
   }
 
   /**
@@ -466,6 +570,7 @@ export class HttpPluginInstaller {
 
     const response = await fetch(url, {
       method: 'GET',
+      cache: 'no-store',
       headers: {
         'Accept': 'application/octet-stream'
       },
@@ -516,51 +621,139 @@ export class HttpPluginInstaller {
     } else {
       throw new Error('插件包缺少 manifest.json 或 package.json');
     }
+    const contract = normalizePluginManifest(manifest);
 
-    // 解析主入口
-    const mainRel: string = manifest?.zion?.main || manifest?.main || 'dist/main.js';
-    const normMainRel = String(mainRel).replace(/^\.\//, '');
-
-    const mainEntry =
-      zip.file(normMainRel) ||
-      // 兼容常见目录
-      zip.file(`dist/main.js`) ||
-      zip.file(`main.js`);
-
-    if (!mainEntry) {
-      throw new Error(`未找到主入口文件: ${normMainRel}`);
+    const skillContents: Record<string, string> = {};
+    const skillFiles: Record<string, Record<string, string>> = {};
+    const styleContents: Record<string, string> = {};
+    const contributedSkills = [
+      ...(Array.isArray(manifest?.zion?.contributes?.skills)
+        ? manifest.zion.contributes.skills
+        : []),
+      ...(contract.entries.skill ? [contract.entries.skill] : [])
+    ];
+    if (contributedSkills.length) {
+      for (const declaredPath of new Set(contributedSkills)) {
+        const relativePath = String(declaredPath || '')
+          .trim()
+          .replace(/\\/g, '/')
+          .replace(/^\.\//, '')
+          .replace(/\/+$/, '');
+        const parts = relativePath.split('/').filter(Boolean);
+        if (!parts.length || parts.some((part) => part === '.' || part === '..')) continue;
+        const skillDir = parts.join('/');
+        const skillPrefix = `${skillDir}/`;
+        const files: Record<string, string> = {};
+        for (const [entryPath, entry] of Object.entries(zip.files)) {
+          if ((entry as any)?.dir) continue;
+          if (!entryPath.startsWith(skillPrefix)) continue;
+          const relativeFile = entryPath.slice(skillPrefix.length);
+          if (!relativeFile || relativeFile.includes('../') || !this.isTextSkillFile(relativeFile)) continue;
+          const content = await entry.async('string');
+          if (content.length <= 256 * 1024) files[relativeFile] = content;
+        }
+        if (typeof files['SKILL.md'] === 'string') {
+          skillContents[skillDir] = files['SKILL.md'];
+          skillFiles[skillDir] = files;
+        }
+      }
     }
 
-    // 生成 Data URL（持久化，刷新仍可用）
-    const mainCode = await mainEntry.async('string');
-    const base64 = btoa(unescape(encodeURIComponent(mainCode)));
-    const mainUrl = `data:text/javascript;base64,${base64}`;
+    const contributedStyles = manifest?.zion?.contributes?.styles;
+    if (Array.isArray(contributedStyles)) {
+      for (const declaredPath of contributedStyles) {
+        const relativePath = String(declaredPath || '')
+          .trim()
+          .replace(/\\/g, '/')
+          .replace(/^\.\//, '')
+          .replace(/^\/+/, '');
+        const parts = relativePath.split('/').filter(Boolean);
+        if (!parts.length || parts.some((part) => part === '.' || part === '..')) continue;
+        const stylePath = parts.join('/');
+        if (!/\.css$/i.test(stylePath)) continue;
+        const entry = zip.file(stylePath);
+        if (!entry) continue;
+        const content = await entry.async('string');
+        if (content.length <= 256 * 1024) styleContents[stylePath] = content;
+      }
+    }
+
+    const scriptContents: Record<string, string> = {};
+    for (const [entryPath, entry] of Object.entries(zip.files)) {
+      if ((entry as any)?.dir) continue;
+      let modulePath = '';
+      try {
+        modulePath = normalizePluginModulePath(entryPath);
+      } catch {
+        continue;
+      }
+      if (!/\.(?:mjs|js)$/i.test(modulePath)) continue;
+      const content = await entry.async('string');
+      if (content.length <= 2 * 1024 * 1024) {
+        scriptContents[modulePath] = content;
+      }
+    }
+
+    const projectedEntries = { ...contract.entries };
+    const sourceEntries: PluginEntries = {};
+    const moduleUrlCache = new Map<string, string>();
+    for (const kind of ['workbench', 'renderer'] as const) {
+      const declaredEntry = contract.entries[kind];
+      if (!declaredEntry) continue;
+      const relativeEntry = normalizePluginModulePath(declaredEntry);
+      sourceEntries[kind] = declaredEntry;
+      projectedEntries[kind] = createPluginModuleBlobUrl({
+        entryPath: relativeEntry,
+        sources: scriptContents,
+        cache: moduleUrlCache
+      });
+    }
+    const projectedContract: NormalizedPluginManifest = {
+      ...contract,
+      entries: projectedEntries
+    };
+    const mainUrl = projectedEntries.workbench;
 
     // 组装 PluginInfo（使用绝对 mainUrl，loader 将直接动态导入）
     const pluginInfo: PluginInfo = {
-      id: manifest?.zion?.id || manifest?.name || 'unknown.plugin',
-      name: manifest?.zion?.name || manifest?.name || 'Unnamed Plugin',
-      version: manifest?.zion?.version || manifest?.version || '1.0.0',
+      id: contract.id,
+      name: contract.name,
+      version: contract.version,
       description: manifest?.description,
       author: manifest?.author,
       license: manifest?.license,
       path: sourceUrl, // 保留源，可用于追踪
-      manifest: {
-        ...manifest,
-        zion: {
-          ...manifest.zion,
-          main: mainUrl
-        }
-      },
+      manifest: mainUrl
+        ? {
+            ...manifest,
+            zion: {
+              ...manifest.zion,
+              main: mainUrl
+            }
+          }
+        : manifest,
       state: 'installed',
       dependencies: manifest?.zion?.dependencies ? Object.keys(manifest.zion.dependencies) : [],
       peerDependencies: manifest?.zion?.peerDependencies ? Object.keys(manifest.zion.peerDependencies) : [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      isLegacy: !manifest?.zion
+      isLegacy: !manifest?.zion,
+      origin: 'external',
+      skillContents: Object.keys(skillContents).length ? skillContents : undefined,
+      skillFiles: Object.keys(skillFiles).length ? skillFiles : undefined,
+      styleContents: Object.keys(styleContents).length ? styleContents : undefined,
+      scriptContents: Object.keys(scriptContents).length ? scriptContents : undefined,
+      sourceEntries: Object.keys(sourceEntries).length ? sourceEntries : undefined,
+      scriptBlobUrls: Object.fromEntries(moduleUrlCache),
+      contract: projectedContract
     };
 
     return pluginInfo;
+  }
+
+  private isTextSkillFile(relativePath: string): boolean {
+    if (!relativePath || relativePath.split('/').some((part) => part === '.' || part === '..')) return false;
+    return /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|xml|html|css|csv)$/i.test(relativePath);
   }
 
   /**
@@ -573,6 +766,13 @@ export class HttpPluginInstaller {
   }> {
     const errors: string[] = [];
     const warnings: string[] = [];
+    const shared = pluginInfo.contract
+      ? null
+      : validatePluginManifest(pluginInfo.manifest);
+    if (shared) {
+      errors.push(...shared.errors);
+      warnings.push(...shared.warnings);
+    }
 
     // 基本验证
     if (!pluginInfo.id) {
@@ -592,17 +792,15 @@ export class HttpPluginInstaller {
       errors.push('插件清单不能为空');
     }
 
-    // 主入口（Blob URL）验证
-    try {
-      const main =
-        (pluginInfo.manifest as any)?.zion?.main ||
-        (pluginInfo.manifest as any)?.main;
-      if (typeof main !== 'string') {
-        errors.push('主入口无效');
-      } else if (!/^(blob:|data:|https?:)/i.test(main)) {
-        warnings.push('主入口不是绝对URL，可能无法在浏览器环境加载');
+    const contract = pluginInfo.contract || shared?.normalized;
+    if (contract?.hosts.workbench) {
+      for (const kind of ['workbench', 'renderer'] as const) {
+        const entry = contract.entries[kind];
+        if (entry && !/^(blob:|data:|https?:|internal:)/i.test(entry)) {
+          warnings.push(`${kind} 入口不是绝对URL，可能无法在浏览器环境加载`);
+        }
       }
-    } catch {}
+    }
 
     return {
       valid: errors.length === 0,
@@ -615,6 +813,9 @@ export class HttpPluginInstaller {
    * 清除缓存
    */
   clearCache(): void {
+    for (const pluginInfo of this.cache.values()) {
+      this.revokePluginEntryUrls(pluginInfo);
+    }
     this.cache.clear();
     console.log(`[HttpPluginInstaller] 缓存已清除`);
   }
@@ -623,8 +824,36 @@ export class HttpPluginInstaller {
    * 从缓存中移除插件
    */
   removeFromCache(pluginId: string): void {
+    const cached = this.cache.get(pluginId);
+    if (cached) this.revokePluginEntryUrls(cached);
     this.cache.delete(pluginId);
     console.log(`[HttpPluginInstaller] 插件已从缓存移除: ${pluginId}`);
+  }
+
+  /** Release a fetched package that was superseded before manager adoption. */
+  releasePlugin(pluginInfo: PluginInfo): void {
+    if (this.cache.get(pluginInfo.id) === pluginInfo) this.cache.delete(pluginInfo.id);
+    this.revokePluginEntryUrls(pluginInfo);
+  }
+
+  private revokePluginEntryUrls(pluginInfo: PluginInfo): void {
+    const urls = new Set<string>();
+    for (const url of Object.values(pluginInfo.scriptBlobUrls || {})) {
+      if (typeof url === 'string' && url.startsWith('blob:')) urls.add(url);
+    }
+    const contract = pluginInfo.contract || normalizePluginManifest(pluginInfo.manifest);
+    for (const entry of new Set([
+      contract.entries.workbench,
+      contract.entries.renderer
+    ])) {
+      if (entry?.startsWith('blob:')) urls.add(entry);
+    }
+    for (const url of urls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+    pluginInfo.scriptBlobUrls = undefined;
   }
 
 
@@ -652,6 +881,7 @@ export class HttpPluginInstaller {
       const pluginInfo = await this.processPluginData(buf, sourceUrl);
       const validation = await this.validatePlugin(pluginInfo);
       if (!validation.valid) {
+        this.revokePluginEntryUrls(pluginInfo);
         return {
           success: false,
           error: {

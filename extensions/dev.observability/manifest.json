@@ -1,0 +1,92 @@
+{
+  "name": "dev.observability",
+  "version": "0.1.0",
+  "description": "Discover and inspect sanitized Runtime diagnostics for Zion Runs.",
+  "author": "Zion Developer",
+  "license": "MIT",
+  "zion": {
+    "id": "dev.observability",
+    "name": "Observability",
+    "version": "0.1.0",
+    "manifestVersion": 2,
+    "entries": {
+      "runtime": "./runtime.js"
+    },
+    "hosts": {
+      "runtime": true
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "capabilities": [
+      {
+        "id": "run-diagnostics",
+        "kind": "skill",
+        "host": "runtime",
+        "risk": "read-only",
+        "requiredScopes": []
+      }
+    ],
+    "presentation": {
+      "displayName": {
+        "zh-CN": "运行诊断",
+        "en-US": "Run Diagnostics"
+      },
+      "description": {
+        "zh-CN": "为模型提供可查询的脱敏 Runtime 运行事实和受控原始证据。",
+        "en-US": "Expose queryable sanitized Runtime facts and controlled raw evidence to models."
+      },
+      "icon": "pulse",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "查询脱敏 Runtime 运行事实",
+          "按 Run 和事件关联历史记录",
+          "读取受控的原始工具证据",
+          "保留查询范围与证据来源"
+        ],
+        "en-US": [
+          "Query sanitized Runtime facts",
+          "Correlate historical records by Run and event",
+          "Read controlled raw tool evidence",
+          "Preserve query scope and evidence provenance"
+        ]
+      },
+      "permissions": [
+        {
+          "id": "runtime-runs",
+          "label": {
+            "zh-CN": "运行记录",
+            "en-US": "Run Records"
+          },
+          "description": {
+            "zh-CN": "读取当前会话或项目中可见 Run 的脱敏诊断信息。",
+            "en-US": "Read sanitized diagnostics for Runs visible to the current session or project."
+          }
+        },
+        {
+          "id": "observability-backend",
+          "label": {
+            "zh-CN": "观测后端",
+            "en-US": "Observability Backend"
+          },
+          "description": {
+            "zh-CN": "通过 Runtime 管理的查询服务读取脱敏 Trace。",
+            "en-US": "Read sanitized traces through the Runtime-managed query service."
+          }
+        }
+      ]
+    },
+    "contributes": {
+      "skills": [
+        "./skills/run-diagnostics"
+      ]
+    },
+    "activationEvents": [
+      "onStartupFinished"
+    ],
+    "engines": {
+      "zion": ">=1.0.0"
+    }
+  }
+}

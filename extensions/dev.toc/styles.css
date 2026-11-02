@@ -1,0 +1,480 @@
+/* ===== TOC Panel (dev.toc) ===== */
+.zion-toc-sidepanel {
+  background: var(--ext-toc-bg, var(--bg));
+  color: var(--ext-toc-fg, var(--fg));
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.zion-toc-sidepanel .zion-toc-list {
+  background: transparent;
+  color: inherit;
+}
+.zion-toc-sidepanel .toc-label {
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+.zion-toc-sidepanel .toc-row {
+  border-radius: 7px;
+  color: var(--ext-toc-fg, var(--fg));
+  transition: color 120ms ease;
+}
+.zion-toc-sidepanel .toc-row:hover {
+  background: transparent;
+  color: var(--ext-toc-active-fg, var(--accent));
+}
+.zion-toc-sidepanel button:hover {
+  background: var(--ext-toc-hover, color-mix(in srgb, var(--fg) 7%, transparent)) !important;
+}
+
+#zion-toc-panel {
+  background: var(--ext-toc-bg, var(--panel));
+  color: var(--ext-toc-fg, var(--fg));
+  border: 1px solid var(--ext-toc-border, var(--border));
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-3);
+  font-family: var(--font-sans);
+}
+#zion-toc-panel button {
+  background: var(--ext-toc-btn-bg, var(--panel));
+  color: var(--ext-toc-fg, var(--fg));
+  border: 1px solid var(--ext-toc-accent, var(--accent));
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-left: 4px;
+}
+#zion-toc-panel button:hover {
+  background: var(--ext-toc-hover, var(--border));
+}
+#zion-toc-panel .toc-row {
+  display: flex;
+  align-items: center;
+  padding: 5px 4px;
+  cursor: pointer;
+  font-size: 13px;
+  background: transparent;
+  transition: color 120ms ease;
+}
+#zion-toc-panel .toc-row:hover {
+  background: transparent;
+  color: var(--ext-toc-active-fg, var(--accent));
+}
+#zion-toc-panel .toc-bullet {
+  opacity: 0.9;
+  margin-right: 6px;
+}
+
+/* Horizontal Rule: draw using pseudo element to avoid adding extra DOM nodes (prevents gutter/line height drift) */
+.cm-line.cm-md-hr-line {
+  position: relative;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.cm-line.cm-md-hr-line::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: 1px solid var(--border);
+  pointer-events: none;
+}
+
+/* 搜索替换面板样式 */
+.search-replace-panel {
+  --input-bg: var(--panel);
+}
+
+/* 搜索高亮样式 */
+.cm-editor .cm-searchMatch {
+  background-color: var(--search-match-bg) !important;
+  box-shadow: inset 0 0 0 1px var(--search-match-border);
+  border-radius: 3px;
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.cm-editor .cm-searchMatch-selected {
+  background-color: var(--search-current-bg) !important;
+  box-shadow: none;
+  border-radius: 0;
+  color: inherit;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.cm-editor .cm-panels.cm-panels-bottom {
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: var(--editor-bg);
+  color: var(--fg);
+  box-shadow: none;
+}
+
+.cm-editor .cm-vim-panel {
+  min-height: 24px !important;
+  box-sizing: border-box;
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px !important;
+  background: var(--editor-bg);
+  color: color-mix(in srgb, var(--fg) 88%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 24px;
+  letter-spacing: 0;
+}
+
+.cm-editor .cm-vim-panel > div {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0;
+  height: 100%;
+}
+
+.cm-editor .cm-vim-panel > div > span {
+  display: inline-flex !important;
+  align-items: center;
+  flex: 0 0 auto !important;
+  min-width: 0;
+  height: 100%;
+  color: var(--accent);
+  font-family: var(--font-mono) !important;
+  white-space: pre !important;
+  opacity: 0.95;
+}
+
+.cm-editor .cm-vim-panel input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 100%;
+  box-sizing: border-box;
+  border: 0 !important;
+  border-radius: 0;
+  outline: none !important;
+  padding: 0 2px;
+  background: transparent !important;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 24px;
+  caret-color: var(--accent);
+}
+
+.cm-editor .cm-vim-panel input:focus {
+  box-shadow: none;
+}
+
+.cm-editor .cm-vim-panel .cm-vim-message {
+  color: var(--files-muted-fg, var(--dim));
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.cm-editor .cm-vim-panel > span:first-child {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: color-mix(in srgb, var(--accent) 86%, var(--fg));
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  letter-spacing: 0;
+}
+
+.cm-editor .cm-vim-panel > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--files-muted-fg, var(--dim));
+}
+
+.cm-editor .cm-selectionLayer {
+  z-index: 12 !important;
+  pointer-events: none;
+}
+
+.cm-editor .cm-selectionBackground {
+  background: var(--selection-bg) !important;
+  box-shadow: none;
+}
+
+.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: var(--selection-bg) !important;
+  box-shadow: none;
+}
+
+.cm-editor .cm-vimMode .cm-selectionBackground {
+  background: var(--selection-bg) !important;
+  box-shadow: none;
+}
+
+.cm-editor.cm-focused .cm-vimMode .cm-selectionBackground {
+  background: var(--selection-bg) !important;
+  box-shadow: none;
+}
+
+.cm-selectionMatch {
+  background: var(--selection-match-bg);
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* 状态栏窄屏自适应：收紧间距与字号，减少视觉拥挤 */
+@media (max-width: 900px) {
+  #statusbar { gap: 6px; }
+  .status-item {
+    padding: 2px 5px;
+    font-size: 11px;
+  }
+}
+@media (max-width: 680px) {
+  #statusbar { gap: 4px; }
+  .status-item {
+    padding: 2px 4px;
+    font-size: 11px;
+    border-color: transparent; /* 极窄时弱化边框，降低噪声 */
+  }
+}
+
+/* Editor scrollbar theming (WebKit + Firefox) */
+.zion-workbench * {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+.zion-workbench *.zion-scroll-active {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.zion-workbench *::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+.zion-workbench *.zion-scroll-active::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+.zion-workbench *:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
+.cm-scroller {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin; /* Firefox */
+  padding: 8px 0;
+  overflow-x: hidden !important;
+}
+.cm-scroller:hover,
+.cm-scroller.zion-scroll-active {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.cm-scroller::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.cm-scroller.zion-scroll-active::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+.cm-scroller:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
+.zion-panel .cm-scroller:hover {
+  scrollbar-color: transparent transparent;
+}
+.zion-panel .cm-scroller:hover::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+.zion-panel .cm-scroller.zion-scroll-active {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.zion-panel .cm-scroller.zion-scroll-active::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+.cm-scroller::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Horizontal table scroller theming */
+.cm-md-table-scroll {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+.cm-md-table-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+.cm-md-table-scroll::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.cm-md-table-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+}
+.cm-md-table-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+/* Popup/menu scrollbar theming */
+.zion-popup-scrollbar,
+.zion-context-menu,
+.zion-context-submenu,
+.zion-editor-header-menu,
+.zion-editor-tabs-menu,
+#zion-model-switcher-root > div,
+#zion-tools-switcher-root > div,
+#zion-task-panel,
+#zion-skills-panel > div,
+#zion-compression-stats-overlay > div,
+.zion-compression-settings-panel,
+.zion-terminal-bottombar-menu,
+.zte-tabs-dropdown {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+.zion-popup-scrollbar::-webkit-scrollbar,
+.zion-context-menu::-webkit-scrollbar,
+.zion-context-submenu::-webkit-scrollbar,
+.zion-editor-header-menu::-webkit-scrollbar,
+.zion-editor-tabs-menu::-webkit-scrollbar,
+#zion-model-switcher-root > div::-webkit-scrollbar,
+#zion-tools-switcher-root > div::-webkit-scrollbar,
+#zion-task-panel::-webkit-scrollbar,
+#zion-skills-panel > div::-webkit-scrollbar,
+#zion-compression-stats-overlay > div::-webkit-scrollbar,
+.zion-compression-settings-panel::-webkit-scrollbar,
+.zion-terminal-bottombar-menu::-webkit-scrollbar,
+.zte-tabs-dropdown::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.zion-popup-scrollbar::-webkit-scrollbar-track,
+.zion-context-menu::-webkit-scrollbar-track,
+.zion-context-submenu::-webkit-scrollbar-track,
+.zion-editor-header-menu::-webkit-scrollbar-track,
+.zion-editor-tabs-menu::-webkit-scrollbar-track,
+#zion-model-switcher-root > div::-webkit-scrollbar-track,
+#zion-tools-switcher-root > div::-webkit-scrollbar-track,
+#zion-task-panel::-webkit-scrollbar-track,
+#zion-skills-panel > div::-webkit-scrollbar-track,
+#zion-compression-stats-overlay > div::-webkit-scrollbar-track,
+.zion-compression-settings-panel::-webkit-scrollbar-track,
+.zion-terminal-bottombar-menu::-webkit-scrollbar-track,
+.zte-tabs-dropdown::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+.zion-popup-scrollbar::-webkit-scrollbar-thumb,
+.zion-context-menu::-webkit-scrollbar-thumb,
+.zion-context-submenu::-webkit-scrollbar-thumb,
+.zion-editor-header-menu::-webkit-scrollbar-thumb,
+.zion-editor-tabs-menu::-webkit-scrollbar-thumb,
+#zion-model-switcher-root > div::-webkit-scrollbar-thumb,
+#zion-tools-switcher-root > div::-webkit-scrollbar-thumb,
+#zion-task-panel::-webkit-scrollbar-thumb,
+#zion-skills-panel > div::-webkit-scrollbar-thumb,
+#zion-compression-stats-overlay > div::-webkit-scrollbar-thumb,
+.zion-compression-settings-panel::-webkit-scrollbar-thumb,
+.zion-terminal-bottombar-menu::-webkit-scrollbar-thumb,
+.zte-tabs-dropdown::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--scrollbar-track);
+  background-clip: content-box;
+}
+.zion-popup-scrollbar:hover::-webkit-scrollbar-thumb,
+.zion-context-menu:hover::-webkit-scrollbar-thumb,
+.zion-context-submenu:hover::-webkit-scrollbar-thumb,
+.zion-editor-header-menu:hover::-webkit-scrollbar-thumb,
+.zion-editor-tabs-menu:hover::-webkit-scrollbar-thumb,
+#zion-model-switcher-root > div:hover::-webkit-scrollbar-thumb,
+#zion-tools-switcher-root > div:hover::-webkit-scrollbar-thumb,
+#zion-task-panel:hover::-webkit-scrollbar-thumb,
+#zion-skills-panel > div:hover::-webkit-scrollbar-thumb,
+#zion-compression-stats-overlay > div:hover::-webkit-scrollbar-thumb,
+.zion-compression-settings-panel:hover::-webkit-scrollbar-thumb,
+.zion-terminal-bottombar-menu:hover::-webkit-scrollbar-thumb,
+.zte-tabs-dropdown:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+
+/* JS-injected: scrollbar hiding + toc-pulse */
+.zion-toc-sidepanel, .zion-toc-list, #zion-toc-panel { -ms-overflow-style: none; scrollbar-width: none; }
+.zion-toc-sidepanel::-webkit-scrollbar, .zion-toc-list::-webkit-scrollbar, #zion-toc-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
+@keyframes toc-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 36%, transparent); }
+  50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ext-toc-role-assistant, var(--accent)) 0%, transparent); }
+}
+
+/* ========================================
+   Visual System V2 Sample - TOC
+   Soft rows and quiet toolbar buttons, no left item indicator.
+   ======================================== */
+
+.zion-toc-sidepanel {
+  background: var(--surface-panel, var(--ext-toc-bg, var(--bg)));
+}
+
+.zion-toc-sidepanel .zion-toc-list,
+#zion-toc-panel .zion-toc-list {
+  padding: 6px;
+}
+
+.zion-toc-sidepanel .toc-row,
+#zion-toc-panel .toc-row {
+  min-height: 28px;
+  padding: 3px 7px;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.zion-toc-sidepanel .toc-row:hover,
+#zion-toc-panel .toc-row:hover {
+  background: var(--hover-bg);
+  color: var(--fg);
+}
+
+.zion-toc-sidepanel .toc-row.is-active,
+#zion-toc-panel .toc-row.is-active {
+  background: var(--active-bg);
+  color: var(--accent);
+}
+
+.zion-toc-sidepanel button,
+#zion-toc-panel button {
+  min-width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg) 62%, transparent);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.zion-toc-sidepanel button:hover,
+#zion-toc-panel button:hover {
+  background: var(--hover-bg) !important;
+  color: var(--fg);
+  border-color: transparent;
+}

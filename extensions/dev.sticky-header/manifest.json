@@ -1,10 +1,31 @@
 {
   "id": "dev.sticky-header",
   "name": "Sticky Header (Compatibility)",
-  "description": "兼容旧的 dev.sticky-header 插件 id，内部复用 dev.sticky-user-header",
+  "description": "Preserve the legacy sticky-header plugin ID while reusing the current implementation.",
   "version": "1.0.0",
   "author": "Zion Team",
   "main": "main.js",
-  "enabled": true
+  "enabled": true,
+  "nameKey": "dev.plugins.pluginName.dev.sticky-header",
+  "descriptionKey": "dev.plugins.pluginDescription.dev.sticky-header",
+  "presentation": {
+    "displayName": {
+      "zh-CN": "固定头部兼容层",
+      "en-US": "Sticky Header Compatibility"
+    },
+    "description": {
+      "zh-CN": "兼容旧固定头部插件 ID，并复用固定用户头部能力。",
+      "en-US": "Preserve the legacy sticky-header plugin ID while reusing the current implementation."
+    },
+    "icon": "pin",
+    "category": "system",
+    "features": {
+      "zh-CN": [
+        "兼容旧固定头部插件 ID，并复用固定用户头部能力。"
+      ],
+      "en-US": [
+        "Preserve the legacy sticky-header plugin ID while reusing the current implementation."
+      ]
+    }
+  }
 }
-

@@ -1,29 +1,65 @@
 {
   "name": "dev.terminal-manager",
-  "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.terminal-manager",
+  "version": "0.1.4",
+  "description": "Manage local and SSH terminal sessions, reconnection, and working directories.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.terminal-manager",
-    "name": "dev.terminal-manager",
-    "version": "0.0.1",
+    "name": "Terminal Manager",
+    "version": "0.1.4",
     "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "终端管理器",
+        "en-US": "Terminal Manager"
+      },
+      "description": {
+        "zh-CN": "管理本地和 SSH 终端会话、重连与工作目录。",
+        "en-US": "Manage local and SSH terminal sessions, reconnection, and working directories."
+      },
+      "icon": "terminal-view-icon",
+      "category": "integration",
+      "features": {
+        "zh-CN": [
+          "管理本地和 SSH 终端会话、重连与工作目录。"
+        ],
+        "en-US": [
+          "Manage local and SSH terminal sessions, reconnection, and working directories."
+        ]
+      }
+    },
     "contributes": {
       "commands": [
         {
           "id": "terminal.openManager",
-          "title": "Open Terminal Manager"
+          "title": "Open Terminal Manager",
+          "titleKey": "dev.terminal-manager.cmd.openManager",
+          "categoryKey": "dev.terminal-manager.category.terminal"
         },
         {
           "id": "terminal.closeManager",
-          "title": "Close Terminal Manager"
+          "title": "Close Terminal Manager",
+          "titleKey": "dev.terminal-manager.cmd.closeManager",
+          "categoryKey": "dev.terminal-manager.category.terminal"
         },
         {
           "id": "terminal.newSessionAtSameLevel",
           "title": "New Session at Same Level",
+          "titleKey": "dev.terminal-manager.cmd.newSameLevel",
+          "categoryKey": "dev.terminal-manager.category.terminal",
           "keybinding": "Alt+N"
         }
+      ],
+      "styles": [
+        "./styles.css"
       ]
     },
     "activationEvents": [
@@ -31,6 +67,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.terminal-manager",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.terminal-manager"
   }
 }

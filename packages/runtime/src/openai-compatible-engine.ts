@@ -1,0 +1,632 @@
+import { context, SpanKind, trace, type Span } from "@opentelemetry/api";
+import {
+  cancellationType,
+  failSpan,
+  MODEL_CONSUMER_WAIT_ATTRIBUTE,
+  recordModelResponse,
+  recordModelUsage,
+  runtimeTracer,
+  telemetryIdentifier
+} from "./telemetry.js";
+import type {
+  AgentEngine,
+  CancellationSignal,
+  CredentialProvider,
+  EngineOutputEvent,
+  EngineTurnRequest,
+  ToolCall,
+  ToolDefinition,
+  TranscriptMessage,
+  Usage
+} from "./protocol.js";
+
+export type ModelTransportRequest = {
+  url: string;
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+};
+
+export type ModelTransportResponse = {
+  ok: boolean;
+  status: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+  body?: AsyncIterable<string> | null;
+  json(): Promise<unknown>;
+  text(): Promise<string>;
+};
+
+export type ModelTransport = (
+  request: ModelTransportRequest,
+  signal: CancellationSignal
+) => Promise<ModelTransportResponse>;
+
+export type OpenAICompatibleEngineOptions = {
+  id?: string;
+  endpoint: string;
+  apiKey?: string;
+  credentialProvider?: CredentialProvider;
+  credentialRef?: string;
+  credentialRequired?: boolean;
+  model: string;
+  transport: ModelTransport;
+  headers?: Record<string, string>;
+  temperature?: number;
+  maxOutputTokens?: number;
+  requestBody?: Readonly<Record<string, unknown>>;
+  supportsStreaming?: boolean;
+  observeTimings?: boolean;
+};
+
+type ToolCallBuffer = {
+  id: string;
+  name: string;
+  argumentsText: string;
+  providerMetadata?: Record<string, unknown>;
+};
+
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, any>
+    : {};
+}
+
+// Provider extensions travel only within a message/tool call. They must never
+// override the Runtime's canonical role, function or dispatch fields.
+export function normalizeModelProviderMetadata(value: unknown): Record<string, unknown> | undefined {
+  const reserved = new Set([
+    "role", "content", "reasoning_content", "reasoning", "tool_calls", "tool_call_id",
+    "id", "index", "type", "function", "name", "arguments",
+    "providerMetadata", "reasoningContent", "toolCalls", "toolCallId",
+    "contextProviderId", "toolResultStatus", "__proto__", "constructor", "prototype"
+  ]);
+  const entries = Object.entries(asRecord(value)).filter(([key, item]) =>
+    !reserved.has(key) && item !== undefined);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function mapMessage(message: TranscriptMessage): Record<string, unknown> {
+  if (message.role === "tool") {
+    return {
+      role: "tool",
+      tool_call_id: message.toolCallId,
+      content: message.content
+    };
+  }
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    return {
+      ...normalizeModelProviderMetadata(message.providerMetadata),
+      role: "assistant",
+      content: message.content || null,
+      ...(message.reasoningContent
+        ? { reasoning_content: message.reasoningContent }
+        : {}),
+      tool_calls: message.toolCalls.map((call) => ({
+        ...normalizeModelProviderMetadata(call.providerMetadata),
+        id: call.id,
+        type: call.type,
+        function: call.function
+      }))
+    };
+  }
+  return {
+    ...(message.role === "assistant"
+      ? normalizeModelProviderMetadata(message.providerMetadata) : {}),
+    role: message.role,
+    content: message.content,
+    ...(message.role === "assistant" && message.reasoningContent
+      ? { reasoning_content: message.reasoningContent }
+      : {})
+  };
+}
+
+function mapTool(tool: ToolDefinition): Record<string, unknown> {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description || "",
+      parameters: tool.inputSchema || {
+        type: "object",
+        properties: {},
+        additionalProperties: false
+      }
+    }
+  };
+}
+
+function observableEndpoint(value: string): string {
+  const match = String(value || "").match(
+    /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)([^?#]*)/i
+  );
+  if (!match) return "";
+  const authority = match[2].replace(/^.*@/, "");
+  return `${match[1]}${authority}${match[3]}`;
+}
+
+function mapUsage(value: unknown): Partial<Usage> {
+  const usage = asRecord(value);
+  const promptDetails = asRecord(usage.prompt_tokens_details);
+  const completionDetails = asRecord(usage.completion_tokens_details);
+  return {
+    inputTokens: Number(usage.prompt_tokens || usage.input_tokens || 0),
+    outputTokens: Number(usage.completion_tokens || usage.output_tokens || 0),
+    reasoningTokens: Number(completionDetails.reasoning_tokens || usage.reasoning_tokens || 0),
+    cacheReadTokens: Number(promptDetails.cached_tokens || usage.cache_read_input_tokens || 0),
+    cacheWriteTokens: Number(usage.cache_creation_input_tokens || 0)
+  };
+}
+
+function propertyMatchesType(value: unknown, type: unknown): boolean {
+  if (Array.isArray(type)) return type.some((item) => propertyMatchesType(value, item));
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return !!value && typeof value === "object" && !Array.isArray(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "boolean") return typeof value === "boolean";
+  return true;
+}
+
+function validateArguments(
+  value: Record<string, unknown>,
+  definition: ToolDefinition | undefined
+): string {
+  const schema = asRecord(definition?.inputSchema);
+  if (schema.type && schema.type !== "object") {
+    return "tool input schema must describe an object";
+  }
+  for (const key of Array.isArray(schema.required) ? schema.required : []) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      return `${String(key)} is required`;
+    }
+  }
+  const properties = asRecord(schema.properties);
+  for (const [key, propertyValue] of Object.entries(value)) {
+    const propertySchema = asRecord(properties[key]);
+    if (propertySchema.type && !propertyMatchesType(propertyValue, propertySchema.type)) {
+      return `${key} must be ${String(propertySchema.type)}`;
+    }
+  }
+  return "";
+}
+
+function completeToolCall(
+  buffer: ToolCallBuffer,
+  definition: ToolDefinition | undefined,
+  fallbackId: string
+): ToolCall {
+  let args: Record<string, unknown> = {};
+  let validationError = "";
+  try {
+    const parsed = buffer.argumentsText.trim()
+      ? JSON.parse(buffer.argumentsText)
+      : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      validationError = "tool arguments must be a JSON object";
+    } else {
+      args = parsed;
+    }
+  } catch (error) {
+    validationError = `invalid JSON: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (!validationError) validationError = validateArguments(args, definition);
+  return {
+    id: buffer.id || fallbackId,
+    name: buffer.name,
+    arguments: args,
+    ...(buffer.argumentsText !== JSON.stringify(args)
+      ? { argumentsText: buffer.argumentsText } : {}),
+    ...(buffer.providerMetadata ? { providerMetadata: buffer.providerMetadata } : {}),
+    ...(validationError ? { validationError } : {})
+  };
+}
+
+async function* parseSse(body: AsyncIterable<string>): AsyncIterable<Record<string, any>> {
+  let pending = "";
+  const consume = function* (complete: boolean) {
+    pending = pending.replaceAll("\r\n", "\n");
+    while (true) {
+      const boundary = pending.indexOf("\n\n");
+      if (boundary < 0) break;
+      const frame = pending.slice(0, boundary);
+      pending = pending.slice(boundary + 2);
+      const data = frame
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (data) yield data;
+    }
+    if (complete) {
+      const data = pending
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      pending = "";
+      if (data) yield data;
+    }
+  };
+
+  for await (const chunk of body) {
+    pending += chunk;
+    for (const data of consume(false)) {
+      if (data === "[DONE]") {
+        yield { __zionSseDone: true };
+        continue;
+      }
+      yield asRecord(JSON.parse(data));
+    }
+  }
+  for (const data of consume(true)) {
+    if (data === "[DONE]") {
+      yield { __zionSseDone: true };
+      continue;
+    }
+    yield asRecord(JSON.parse(data));
+  }
+}
+
+function incompleteStreamError(message: string): Error & {
+  code: string;
+  retryable: boolean;
+} {
+  const error = new Error(message) as Error & {
+    code: string;
+    retryable: boolean;
+  };
+  error.code = "incomplete_stream";
+  error.retryable = false;
+  return error;
+}
+
+function assertCompleteFinishReason(finishReason: string): void {
+  if (["length", "max_tokens"].includes(finishReason.toLowerCase())) {
+    throw incompleteStreamError(
+      `Model output was truncated (${finishReason})`
+    );
+  }
+}
+
+function ingestToolCallDeltas(
+  buffers: Map<number, ToolCallBuffer>,
+  deltas: unknown
+): void {
+  for (const item of Array.isArray(deltas) ? deltas : []) {
+    const delta = asRecord(item);
+    const index = Number.isInteger(delta.index) ? Number(delta.index) : 0;
+    const current = buffers.get(index) || { id: "", name: "", argumentsText: "" };
+    const fn = asRecord(delta.function);
+    if (delta.id) current.id = String(delta.id);
+    if (fn.name) current.name = String(fn.name);
+    if (typeof fn.arguments === "string") current.argumentsText += fn.arguments;
+    const metadata = normalizeModelProviderMetadata(delta);
+    if (metadata) current.providerMetadata = { ...current.providerMetadata, ...metadata };
+    buffers.set(index, current);
+  }
+}
+
+function contentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.map((part) => {
+    const item = asRecord(part);
+    return item.type === "text" ? String(item.text || "") : "";
+  }).join("");
+}
+
+function applyModelRequestOptions(
+  payload: Record<string, unknown>,
+  request: EngineTurnRequest,
+  endpoint: string
+): void {
+  const options = request.modelOptions;
+  if (!options) return;
+  const thinkingMode = options.thinkingMode;
+  const thinkingEffort = options.thinkingEffort;
+  const providerId = String(request.model?.providerId || "").toLowerCase();
+  const modelId = String(request.model?.modelId || "").toLowerCase();
+  const isDeepSeek = providerId.includes("deepseek")
+    || modelId.includes("deepseek")
+    || endpoint.toLowerCase().includes("api.deepseek.com");
+
+  if (thinkingMode === "off") {
+    delete payload.reasoning_effort;
+    if (isDeepSeek) payload.thinking = { type: "disabled" };
+    return;
+  }
+
+  if (isDeepSeek && (thinkingMode === "on" || thinkingEffort !== "auto")) {
+    payload.thinking = { type: "enabled" };
+    delete payload.temperature;
+  }
+  if (thinkingEffort && thinkingEffort !== "auto") {
+    payload.reasoning_effort = isDeepSeek
+      ? (thinkingEffort === "max" || thinkingEffort === "xhigh" ? "max" : "high")
+      : thinkingEffort;
+  }
+}
+
+export class OpenAICompatibleEngine implements AgentEngine {
+  readonly id: string;
+
+  constructor(private readonly options: OpenAICompatibleEngineOptions) {
+    if (!options.endpoint.trim()) throw new Error("OpenAI-compatible endpoint is required");
+    if (!options.model.trim()) throw new Error("OpenAI-compatible model is required");
+    this.id = options.id || "openai-compatible";
+  }
+
+  async *streamTurn(request: EngineTurnRequest): AsyncIterable<EngineOutputEvent> {
+    const span = runtimeTracer.startSpan("chat", {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": telemetryIdentifier(request.model?.providerId || "openai"),
+        "gen_ai.request.model": telemetryIdentifier(request.model?.modelId || this.options.model),
+        "gen_ai.request.stream": this.options.supportsStreaming !== false,
+        "zion.turn.number": request.turn
+      }
+    });
+    const active = trace.setSpan(context.active(), span);
+    const iterator = this.streamTurnInternal(request, span)[Symbol.asyncIterator]();
+    let completed = false;
+    let failed = false;
+    let consumerWaitMs = 0;
+    try {
+      while (true) {
+        // Async generators resume in the caller's context. Bind every pull and
+        // close; never make the model span active in the consuming executor.
+        const item = await context.with(active, () => iterator.next());
+        if (item.done) {
+          completed = true;
+          break;
+        }
+        if (item.value.type === "model.usage") recordModelUsage(span, item.value.usage);
+        const yieldedAt = performance.now();
+        try {
+          yield item.value;
+        } finally {
+          consumerWaitMs += Math.max(0, performance.now() - yieldedAt);
+        }
+      }
+    } catch (error) {
+      failed = true;
+      if (request.signal.cancelled) {
+        span.setAttribute("zion.cancellation.reason", cancellationType(request.signal.reason));
+        if (request.signal.reason === "timeout") failSpan(span, "timeout");
+      } else {
+        const type = (error as { code?: string })?.code === "incomplete_stream"
+          ? "incomplete_stream" : "model_error";
+        failSpan(span, type);
+      }
+      throw error;
+    } finally {
+      try {
+        if (!completed) await context.with(active, () => iterator.return?.());
+      } catch {
+        failSpan(span, "model_cleanup_error");
+      } finally {
+        if (!completed && !failed) {
+          const reason = cancellationType(request.signal.reason);
+          span.setAttribute("zion.cancellation.reason", request.signal.cancelled ? reason : "consumer_closed");
+          if (reason === "timeout") failSpan(span, "timeout");
+        }
+        span.setAttribute(MODEL_CONSUMER_WAIT_ATTRIBUTE, consumerWaitMs / 1000);
+        span.end();
+      }
+    }
+  }
+
+  private async *streamTurnInternal(
+    request: EngineTurnRequest,
+    span: Span
+  ): AsyncIterable<EngineOutputEvent> {
+    request.signal.throwIfCancelled();
+    const model = request.model?.modelId || this.options.model;
+    const payload: Record<string, unknown> = {
+      ...(this.options.requestBody || {}),
+      model,
+      messages: request.messages.map(mapMessage),
+      stream: this.options.supportsStreaming !== false
+    };
+    if (this.options.supportsStreaming !== false) payload.stream_options = { include_usage: true };
+    else delete payload.stream_options;
+    if (request.tools.length) payload.tools = request.tools.map(mapTool);
+    else delete payload.tools;
+    if (Number.isFinite(this.options.temperature)) {
+      payload.temperature = this.options.temperature;
+    }
+    if (Number.isFinite(this.options.maxOutputTokens)) {
+      payload.max_tokens = this.options.maxOutputTokens;
+    }
+    if (Number.isFinite(request.maxOutputTokens)) {
+      payload.max_tokens = Math.max(1, Math.floor(request.maxOutputTokens!));
+      delete payload.max_completion_tokens;
+    }
+    applyModelRequestOptions(payload, request, this.options.endpoint);
+
+    const preparationStartedAt = Date.now();
+    yield {
+      type: "model.request",
+      request: {
+        url: observableEndpoint(this.options.endpoint),
+        providerId: request.model?.providerId,
+        providerType: "openai",
+        modelId: model,
+        modelLabel: request.model?.label,
+        stream: this.options.supportsStreaming !== false,
+        payload
+      }
+    };
+
+    const credentialStartedAt = Date.now();
+    const credential = this.options.credentialProvider && this.options.credentialRef
+      ? await this.options.credentialProvider.acquire({
+          ref: this.options.credentialRef,
+          providerId: request.model?.providerId,
+          modelId: model
+        })
+      : null;
+    span.setAttribute("zion.model.credential.duration", (Date.now() - credentialStartedAt) / 1000);
+    if (this.options.credentialRequired && !credential && !this.options.apiKey) {
+      throw new Error(`Credential is required: ${this.options.credentialRef || "model"}`);
+    }
+
+    try {
+      const transportStartedAt = Date.now();
+      const credentialMs = transportStartedAt - credentialStartedAt;
+      const response = await this.options.transport({
+        url: this.options.endpoint,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "accept": "text/event-stream, application/json",
+          ...(this.options.headers || {}),
+          ...(this.options.apiKey
+            ? { authorization: `Bearer ${this.options.apiKey}` }
+            : {}),
+          ...(credential?.headers || {})
+        },
+        body: JSON.stringify(payload)
+      }, request.signal);
+      span.setAttribute("http.response.status_code", response.status);
+      const responseHeadersMs = Date.now() - transportStartedAt;
+      const timing = (phase: "first-chunk" | "first-reasoning" | "first-answer"): EngineOutputEvent => ({
+        type: "model.timing",
+        timing: { phase, requestStartedAt: transportStartedAt,
+          elapsedMs: Date.now() - transportStartedAt, credentialMs,
+          responseHeadersMs, preparationMs: transportStartedAt - preparationStartedAt }
+      });
+      request.signal.throwIfCancelled();
+
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 2000);
+        throw new Error(
+          `Model HTTP ${response.status}${detail ? `: ${detail}` : response.statusText ? `: ${response.statusText}` : ""}`
+        );
+      }
+
+      const contentType = Object.entries(response.headers || {})
+        .find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
+      if (!response.body || !contentType.toLowerCase().includes("text/event-stream")) {
+        const body = asRecord(await response.json());
+        const choice = asRecord(Array.isArray(body.choices) ? body.choices[0] : null);
+        recordModelResponse(span, body.model, choice.finish_reason ?? choice.finishReason);
+        yield* this.consumeResponse(body, request);
+        return;
+      }
+
+      const toolBuffers = new Map<number, ToolCallBuffer>();
+      let sawCompletionSignal = false;
+      let finishReason = "";
+      let firstChunk = true;
+      let firstReasoning = true;
+      let firstAnswer = true;
+      for await (const chunk of parseSse(response.body)) {
+        request.signal.throwIfCancelled();
+        if (chunk.__zionSseDone === true) {
+          sawCompletionSignal = true;
+          continue;
+        }
+        if (firstChunk) {
+          firstChunk = false;
+          span.setAttribute("gen_ai.response.time_to_first_chunk", (Date.now() - transportStartedAt) / 1000);
+          if (this.options.observeTimings) yield timing("first-chunk");
+        }
+        if (chunk.usage) {
+          yield { type: "model.usage", usage: mapUsage(chunk.usage) };
+        }
+        const choice = asRecord(Array.isArray(chunk.choices) ? chunk.choices[0] : null);
+        const nextFinishReason = String(
+          choice.finish_reason ?? choice.finishReason ?? ""
+        ).trim();
+        if (nextFinishReason) {
+          sawCompletionSignal = true;
+          finishReason = nextFinishReason;
+        }
+        recordModelResponse(span, chunk.model, nextFinishReason);
+        const delta = asRecord(choice.delta);
+        const metadata = normalizeModelProviderMetadata(delta);
+        if (metadata) yield { type: "message.metadata", metadata };
+        const reasoning = contentText(delta.reasoning_content ?? delta.reasoning);
+        const content = contentText(delta.content);
+        if (reasoning && firstReasoning) {
+          firstReasoning = false;
+          if (this.options.observeTimings) yield timing("first-reasoning");
+        }
+        if (content && firstAnswer) {
+          firstAnswer = false;
+          if (this.options.observeTimings) yield timing("first-answer");
+        }
+        if (reasoning) yield { type: "reasoning.delta", delta: reasoning };
+        if (content) yield { type: "message.delta", delta: content };
+        ingestToolCallDeltas(toolBuffers, delta.tool_calls);
+      }
+
+      if (!sawCompletionSignal) {
+        throw incompleteStreamError(
+          "Model response stream ended before a completion signal"
+        );
+      }
+      assertCompleteFinishReason(finishReason);
+      for (const [index, buffer] of Array.from(toolBuffers.entries()).sort(([a], [b]) => a - b)) {
+        const definition = request.tools.find((tool) => tool.name === buffer.name);
+        yield {
+          type: "tool.call",
+          call: completeToolCall(
+            buffer,
+            definition,
+            `${request.attemptId}:turn:${request.turn}:tool:${index}`
+          )
+        };
+      }
+    } finally {
+      await credential?.release?.();
+    }
+  }
+
+  private async *consumeResponse(
+    payload: Record<string, any>,
+    request: EngineTurnRequest
+  ): AsyncIterable<EngineOutputEvent> {
+    if (!Array.isArray(payload.choices) || !payload.choices.length || !payload.choices[0]?.message) {
+      throw new Error("Model response contains no completion choice");
+    }
+    const choice = asRecord(Array.isArray(payload.choices) ? payload.choices[0] : null);
+    assertCompleteFinishReason(String(
+      choice.finish_reason ?? choice.finishReason ?? ""
+    ).trim());
+    const message = asRecord(choice.message);
+    const metadata = normalizeModelProviderMetadata(message);
+    if (metadata) yield { type: "message.metadata", metadata };
+    const reasoning = contentText(message.reasoning_content ?? message.reasoning);
+    const content = contentText(message.content);
+    if (reasoning) yield { type: "reasoning.delta", delta: reasoning };
+    if (content) yield { type: "message.delta", delta: content };
+    const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    for (let index = 0; index < calls.length; index += 1) {
+      const item = asRecord(calls[index]);
+      const fn = asRecord(item.function);
+      const buffer = {
+        id: String(item.id || ""),
+        name: String(fn.name || ""),
+        argumentsText: String(fn.arguments || ""),
+        providerMetadata: normalizeModelProviderMetadata(item)
+      };
+      yield {
+        type: "tool.call",
+        call: completeToolCall(
+          buffer,
+          request.tools.find((tool) => tool.name === buffer.name),
+          `${request.attemptId}:turn:${request.turn}:tool:${index}`
+        )
+      };
+    }
+    if (payload.usage) {
+      yield { type: "model.usage", usage: mapUsage(payload.usage) };
+    }
+  }
+}

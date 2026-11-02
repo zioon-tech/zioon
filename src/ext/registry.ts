@@ -1,6 +1,14 @@
+import { settingsRegistry } from "../settings/registry";
+import { open as openSettingsPanel, close as closeSettingsPanel } from "../settings/SettingsPanel";
 import { EventBus } from "../core/event-bus";
 import { StateBus } from "../core/state-bus";
 import type { Disposable, Keybinding, CommandHandler, PasteHandler, MenuItem, MessageContributor, Decorator } from "../types/zion";
+import { createRunLedger } from "../core/run-ledger";
+import {
+  authorizeToolCall,
+  filterToolsForPolicy,
+  normalizeCapabilityPolicy
+} from "../core/run-policy";
 import type { EditorCore } from "../editor/EditorCore";
 import { EditorProxy } from "../editor/EditorProxy";
 import type { EditorProxy as IEditorProxy } from "../types/zion";
@@ -14,9 +22,31 @@ import {
   auxiliaryBarRuntime,
   bindWorkbenchCore,
   bottomPanelRuntime,
+  inspectorRuntime,
   responsiveRuntime,
   sideBarRuntime
 } from "../ui/workbench/runtime";
+import { createChatUsageStore } from "../chat/usage";
+import {
+  assistantBlockHeaderText,
+  stripAssistantBlockIdComment
+} from "../chat/restore";
+import { createZionIcon, hasZionIcon, zionIconName } from "../ui/icons";
+import {
+  beginImageInsertion,
+  cancelImageInsertion,
+  completeImageInsertion,
+  failImageInsertion,
+  hideImageDropIndicator,
+  showImageDropIndicator
+} from "../editor/image-transactions";
+import {
+  getImageAssetMetadata,
+  isImageAssetUri,
+  putImageAsset,
+  readImageAssetDataUrl,
+  resolveImageAsset
+} from "../media/image-assets";
 
 type CommandMap = Map<string, CommandHandler>;
 
@@ -34,16 +64,18 @@ class Registry {
   private readonly STATUS_PINNED_KEY = 'zion.statusBar.pinned';
   private bottomStatusItems = new Map<
     string,
-    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number; pinned: boolean }
+    { id: string; el: HTMLButtonElement; onClick?: () => void; priority: number }
   >();
-  private bottomStatusItemMinWidth = new Map<string, number>();
-  private bottomStatusPinned: Set<string> = new Set();
-  private readonly BOTTOM_STATUS_PINNED_KEY = 'zion.bottomStatusBar.pinned';
   private editorCore: EditorCore | null = null;
+  private editorCores = new Map<string, EditorCore>();
+  private editorProxies = new Map<string, EditorProxy>();
+  private editorProxiesByEditorId = new Map<string, EditorProxy>();
+  private activePanelId: string | null = null;
+  private updateListenerAttached = new Set<string>();
 
   // paste handlers
   private pasteHandlers: PasteHandler[] = [];
-  private pasteAttached = false;
+  private pasteAttached = new Set<string>();
 
   // menus
   private menus: Record<string, MenuItem[]> = Object.create(null);
@@ -72,46 +104,63 @@ class Registry {
   // decorators
   private decorators: Decorator[] = [];
   private decoratorDisposables = new Map<string, Disposable>();
+  private contextMenuAttached = new Set<string>();
 
   // model providers (placeholder registry for future models integration)
   private modelProviders: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }[] = [];
 
   // Chat Runner (MVP) state
   private activeModel: { providerId: string; modelId: string } | null = null;
-  private currentRun: { id: string; timer: number; endPos: number } | null = null;
+  private currentRuns: Map<string, { id: string; timer: number; endPos: number }> = new Map();
   private lastPrompt: string | null = null;
 
-  attachEditor(core: EditorCore) {
-    this.editorCore = core;
-    (window.zion as any).window.activeEditor = new EditorProxy(core);
+  attachEditor(core: EditorCore, panelId = "panel-0") {
+    const editorKey = core.getEditorId?.() || panelId;
+    this.editorCores.set(panelId, core);
+    let proxy = this.editorProxiesByEditorId.get(editorKey);
+    if (!proxy) {
+      proxy = new EditorProxy(core, panelId);
+      this.editorProxiesByEditorId.set(editorKey, proxy);
+    } else {
+      proxy.setCore(core);
+      proxy.setPanelId(panelId);
+    }
+    this.editorProxies.set(panelId, proxy);
+
+    if (!this.activePanelId) {
+      this.activePanelId = panelId;
+    }
+    this.syncActiveEditor();
     this.applyKeymap();
-    this.attachPasteListener();
-    this.attachContextMenu();
-    this.applyDecorators();
+    this.attachPasteListener(panelId);
+    this.attachContextMenu(panelId);
+    this.applyDecorators(panelId);
+    try { this.events.emit("editor/attached", { panelId, editorId: editorKey, editor: proxy, core }); } catch {}
 
     // 加载菜单使用统计
     (this as any).loadMenuUsageStats();
 
     // Wire CM6 update events to Zion EventBus so plugins can react to input/cursor changes.
-    try {
+    if (!this.updateListenerAttached.has(editorKey)) try {
       const ext = EditorView.updateListener.of((update) => {
         try {
-          if (!this.editorCore) return;
+          const active = this.getActiveEditorCore();
           if (update.docChanged) {
-            this.events.emit("editor.change", { update, view: this.editorCore.view });
+            this.events.emit("editor.change", { update, view: core.view, panelId });
           }
+          if (!active || active !== core) return;
           if (update.selectionSet) {
-            this.events.emit("editor.cursorActivity", { selection: this.editorCore.view.state.selection, view: this.editorCore.view });
+            this.events.emit("editor.cursorActivity", { selection: active.view.state.selection, view: active.view });
           }
         } catch (e) {
           console.error("[zion] editor update listener error", e);
         }
       });
-      this.editorCore.addExternalExtension(ext as any);
+      core.addExternalExtension(ext as any);
+      this.updateListenerAttached.add(editorKey);
     } catch (e) {
       console.error("[zion] failed to attach editor update listener", e);
     }
-
     // Bridge CM6 search/replace commands into the zion command namespace.
     // This allows extensions to call window.zion.commands.executeCommand('findNext') etc.
     try {
@@ -191,22 +240,30 @@ class Registry {
 
     // Register chat commands (MVP runner)
     try {
-      this.registerCommand("chat.run", () => {
-        return (this as any).__chatRun({});
-      });
-      this.registerCommand("chat.stop", () => {
-        (this as any).__chatStop();
-        return true;
-      });
-      this.registerCommand("chat.retry", () => {
-        (this as any).__chatRetry();
-        return true;
-      });
+      if (!this.commands.has("chat.run")) {
+        this.registerCommand("chat.run", () => {
+          return (this as any).__chatRun({});
+        });
+      }
+      if (!this.commands.has("chat.stop")) {
+        this.registerCommand("chat.stop", () => {
+          (this as any).__chatStop();
+          return true;
+        });
+      }
+      if (!this.commands.has("chat.retry")) {
+        this.registerCommand("chat.retry", () => {
+          (this as any).__chatRetry();
+          return true;
+        });
+      }
       // Select active model for later integration (LangChain-ready)
-      this.registerCommand("models.selectActive", (m: { providerId: string; modelId: string } | null) => {
-        (this as any).__chatSetActiveModel(m);
-        return true;
-      });
+      if (!this.commands.has("models.selectActive")) {
+        this.registerCommand("models.selectActive", (m: { providerId: string; modelId: string } | null) => {
+          (this as any).__chatSetActiveModel(m);
+          return true;
+        });
+      }
     } catch (e) {
       console.error("[zion] failed to register chat commands", e);
     }
@@ -214,9 +271,10 @@ class Registry {
     // Expose minimap control commands bridging to EditorCore
     try {
       this.registerCommand("zion.setMinimap", (enabled: boolean) => {
-        if (!this.editorCore) return false;
+        const hasAny = !!this.editorCore || this.editorCores.size > 0;
+        if (!hasAny) return false;
         try {
-          this.editorCore.setMinimapEnabled(!!enabled);
+          this.forEachEditorCore((core) => core.setMinimapEnabled(!!enabled));
           this.state.set("ui.minimapEnabled", !!enabled);
           return true;
         } catch (e) {
@@ -227,12 +285,13 @@ class Registry {
       this.registerCommand("zion.toggleMinimap", () => {
         const cur = !!this.state.get("ui.minimapEnabled");
         const next = !cur;
-        if (!this.editorCore) {
+        const hasAny = !!this.editorCore || this.editorCores.size > 0;
+        if (!hasAny) {
           this.state.set("ui.minimapEnabled", next);
           return next;
         }
         try {
-          this.editorCore.setMinimapEnabled(next);
+          this.forEachEditorCore((core) => core.setMinimapEnabled(next));
         } catch (e) {
           console.error("[zion] toggleMinimap error", e);
         }
@@ -246,9 +305,10 @@ class Registry {
     // Selection highlight bridge
     try {
       this.registerCommand("zion.setSelectionHighlight", (enabled: boolean) => {
-        if (!this.editorCore) return false;
+        const hasAny = !!this.editorCore || this.editorCores.size > 0;
+        if (!hasAny) return false;
         try {
-          this.editorCore.setSelectionHighlightEnabled(!!enabled);
+          this.forEachEditorCore((core) => core.setSelectionHighlightEnabled(!!enabled));
           this.state.set("ui.selectionHighlight", !!enabled);
           return true;
         } catch (e) {
@@ -259,12 +319,13 @@ class Registry {
       this.registerCommand("zion.toggleSelectionHighlight", () => {
         const cur = !!this.state.get("ui.selectionHighlight");
         const next = !cur;
-        if (!this.editorCore) {
+        const hasAny = !!this.editorCore || this.editorCores.size > 0;
+        if (!hasAny) {
           this.state.set("ui.selectionHighlight", next);
           return next;
         }
         try {
-          this.editorCore.setSelectionHighlightEnabled(next);
+          this.forEachEditorCore((core) => core.setSelectionHighlightEnabled(next));
         } catch (e) {
           console.error("[zion] toggleSelectionHighlight error", e);
         }
@@ -274,15 +335,99 @@ class Registry {
     } catch (e) {
       console.error("[zion] failed to register selection highlight bridge commands", e);
     }
+    return proxy;
   }
 
-  private attachPasteListener() {
-    if (!this.editorCore || this.pasteAttached) return;
-    const dom = this.editorCore.view.dom;
+  setActivePanel(panelId: string | null) {
+    this.activePanelId = panelId;
+    this.syncActiveEditor();
+  }
+
+  private getActiveEditorCore(): EditorCore | null {
+    if (this.activePanelId && this.editorCores.has(this.activePanelId)) {
+      return this.editorCores.get(this.activePanelId) || null;
+    }
+    return this.editorCore;
+  }
+
+  private forEachEditorCore(fn: (core: EditorCore) => void) {
+    const seen = new Set<EditorCore>();
+    try {
+      for (const core of this.editorCores.values()) {
+        if (!core || seen.has(core)) continue;
+        seen.add(core);
+        try { fn(core); } catch {}
+      }
+    } catch {}
+    if (this.editorCore && !seen.has(this.editorCore)) {
+      try { fn(this.editorCore); } catch {}
+    }
+  }
+
+  listAttachedEditorCores(): EditorCore[] {
+    const out: EditorCore[] = [];
+    this.forEachEditorCore((core) => out.push(core));
+    return out;
+  }
+
+  private getActiveEditorProxy(): EditorProxy | null {
+    if (this.activePanelId && this.editorProxies.has(this.activePanelId)) {
+      return this.editorProxies.get(this.activePanelId) || null;
+    }
+    return null;
+  }
+
+  private getEditorProxyForView(view: EditorView | null | undefined): EditorProxy | null {
+    if (!view) return null;
+    for (const proxy of this.editorProxies.values()) {
+      try {
+        if (proxy.getView?.() === view) return proxy;
+      } catch {}
+    }
+    return null;
+  }
+
+  detachEditor(panelId: string) {
+    const proxy = this.editorProxies.get(panelId) || null;
+    const editorKeys = new Set<string>([panelId]);
+    for (const [editorKey, attachedProxy] of Array.from(this.editorProxiesByEditorId.entries())) {
+      if (attachedProxy?.panelId !== panelId) continue;
+      editorKeys.add(editorKey);
+      this.editorProxiesByEditorId.delete(editorKey);
+    }
+    this.editorCores.delete(panelId);
+    this.editorProxies.delete(panelId);
+    for (const editorKey of editorKeys) {
+      this.updateListenerAttached.delete(editorKey);
+      this.pasteAttached.delete(editorKey);
+      this.contextMenuAttached.delete(editorKey);
+    }
+    for (const [key, disp] of Array.from(this.decoratorDisposables.entries())) {
+      if (!Array.from(editorKeys).some((editorKey) => key.endsWith(`:${editorKey}`))) continue;
+      try { disp?.dispose?.(); } catch {}
+      this.decoratorDisposables.delete(key);
+    }
+    if (this.activePanelId === panelId) {
+      this.activePanelId = this.editorCores.keys().next().value || null;
+    }
+    this.syncActiveEditor();
+    this.applyKeymap();
+    return proxy;
+  }
+
+  private syncActiveEditor() {
+    this.editorCore = this.getActiveEditorCore();
+  }
+
+  private attachPasteListener(panelId: string) {
+    const core = this.editorCores.get(panelId);
+    const editorKey = core?.getEditorId?.() || panelId;
+    if (!core || this.pasteAttached.has(editorKey)) return;
+    const dom = core.view.dom;
     dom.addEventListener("paste", async (e: ClipboardEvent) => {
       try {
         const cd = e.clipboardData;
-        const editor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
+        const editor: IEditorProxy | null = this.editorProxies.get(panelId) || null;
         if (!cd || !editor) return;
 
         // run handlers by priority (desc)
@@ -290,33 +435,50 @@ class Registry {
           (a, b) => (b.priority ?? 50) - (a.priority ?? 50)
         );
         for (const h of handlers) {
+          const context = { clipboardData: cd, editor };
+          let claim: unknown = undefined;
+          if (typeof h.claim === "function") {
+            try {
+              claim = h.claim(context);
+            } catch (err) {
+              console.error("[zion] paste handler claim error:", h.id, err);
+              continue;
+            }
+            if (claim === false || claim == null) continue;
+            e.preventDefault();
+          }
           try {
-            const handled = await h.handle({ clipboardData: cd, editor });
+            const handled = await h.handle({ ...context, claim });
             if (handled) {
               e.preventDefault();
               return;
             }
+            if (claim !== undefined) return;
           } catch (err) {
             console.error("[zion] paste handler error:", h.id, err);
+            if (claim !== undefined) return;
           }
         }
       } catch (err) {
         console.error("[zion] paste pipeline error:", err);
       }
     });
-    this.pasteAttached = true;
+    this.pasteAttached.add(editorKey);
   }
 
-  private attachContextMenu() {
-    if (!this.editorCore) return;
-    const dom = this.editorCore.view.dom;
+  private attachContextMenu(panelId: string) {
+    const core = this.editorCores.get(panelId);
+    const editorKey = core?.getEditorId?.() || panelId;
+    if (!core || this.contextMenuAttached.has(editorKey)) return;
+    const dom = core.view.dom;
 
     dom.addEventListener("contextmenu", (e: MouseEvent) => {
       const items = this.menus["editor/context"] || [];
       if (items.length === 0) return;
       e.preventDefault();
-      this.showEditorContextMenuAt(e.clientX, e.clientY);
+      this.showEditorContextMenuAt(e.clientX, e.clientY, panelId);
     });
+    this.contextMenuAttached.add(editorKey);
   }
 
   private shouldShowMenuItem(it: MenuItem, ctx: { hasSelection: boolean; editorFocus: boolean }): boolean {
@@ -338,11 +500,13 @@ class Registry {
       out.push({
         command: it.command,
         title: it.title,
+          subtitle: it.subtitle,
         when: it.when,
         submenu: hasKids ? kids : undefined,
         order: it.order,
         pinned: it.pinned,
-        group: it.group
+        group: it.group,
+        dynamicTitle: it.dynamicTitle
       });
     }
     return out;
@@ -360,13 +524,14 @@ class Registry {
     el.style.top = `${ny}px`;
   }
 
-  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void, menuId: string = "editor/context"): HTMLDivElement {
+  private buildContextMenuPanel(items: MenuItem[], closeMenu: () => void, menuId: string = "editor/context", ctx?: { panelId?: string | null; editor?: IEditorProxy | null; sessionId?: string | null }): HTMLDivElement {
     const menu = document.createElement("div");
-    menu.className = "zion-context-menu";
+      menu.className = "zion-context-menu zion-editor-context-menu";
     menu.setAttribute("role", "menu");
     menu.tabIndex = -1;
 
     let activeCloser: (() => void) | null = null;
+    let activeDropTarget: HTMLElement | null = null;
 
     items = this.sortMenuItems(items, menuId);
 
@@ -406,31 +571,56 @@ class Registry {
       btn.type = "button";
       btn.className = "zion-context-menu-item";
       const span = document.createElement("span");
-      span.textContent = it.title || it.command || "";
+        let title = it.title || it.command || "";
+      // 支持动态标题
+      if (typeof it.dynamicTitle === "function") {
+        try {
+          const dt = it.dynamicTitle();
+            if (dt !== null) title = dt;
+        } catch {}
+      }
+        span.className = "zion-context-menu-label";
+        const primary = document.createElement("span");
+        primary.className = "zion-context-menu-label-primary";
+        primary.textContent = title;
+        span.appendChild(primary);
+        if (it.subtitle) {
+          const secondary = document.createElement("span");
+          secondary.className = "zion-context-menu-label-secondary";
+          secondary.textContent = it.subtitle;
+          span.appendChild(secondary);
+        }
+        span.title = [title, it.subtitle].filter(Boolean).join(" · ");
       btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
       if (hasKids) {
         btn.setAttribute("aria-haspopup", "menu");
         btn.setAttribute("aria-expanded", "false");
-        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, menuId);
+        const submenuId = `${menuId}:${it.command || 'submenu'}`;
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, submenuId, ctx);
         submenu.classList.add("zion-context-submenu");
         submenu.style.position = "fixed";
         submenu.style.display = "none";
+        (submenu as any).dataset.menuId = submenuId;
 
         let closeTimer: number | null = null;
+        let openTimer: number | null = null;
+
         const cancelClose = () => {
           if (closeTimer !== null) {
             clearTimeout(closeTimer);
             closeTimer = null;
           }
         };
+
         const doClose = () => {
           cancelClose();
           btn.setAttribute("aria-expanded", "false");
           submenu.style.display = "none";
           if (activeCloser === doClose) activeCloser = null;
         };
+
         const scheduleClose = () => {
           cancelClose();
           closeTimer = window.setTimeout(() => {
@@ -476,14 +666,24 @@ class Registry {
           const cmd = it.command;
           if (!cmd) return;
           try {
-            this.executeCommand(cmd);
+            if (ctx?.panelId || ctx?.editor || ctx?.sessionId) this.executeCommand(cmd, { panelId: ctx?.panelId || null, editor: ctx?.editor || null, sessionId: ctx?.sessionId || null });
+            else this.executeCommand(cmd);
           } finally {
             closeMenu();
           }
         };
 
-        row.addEventListener("mouseenter", open);
-        row.addEventListener("mouseleave", scheduleClose);
+        row.addEventListener("mouseenter", () => {
+          if (openTimer !== null) clearTimeout(openTimer);
+          openTimer = window.setTimeout(open, 150);
+        });
+        row.addEventListener("mouseleave", () => {
+          if (openTimer !== null) {
+            clearTimeout(openTimer);
+            openTimer = null;
+          }
+          scheduleClose();
+        });
         submenu.addEventListener("mouseenter", cancelClose);
         submenu.addEventListener("mouseleave", scheduleClose);
 
@@ -494,9 +694,10 @@ class Registry {
           const cmd = it.command;
           if (!cmd) return;
           try {
-            this.executeCommand(cmd);
+            if (ctx?.panelId || ctx?.editor || ctx?.sessionId) this.executeCommand(cmd, { panelId: ctx?.panelId || null, editor: ctx?.editor || null, sessionId: ctx?.sessionId || null });
+            else this.executeCommand(cmd);
             // 记录点击统计
-            const menuKey = `editor/context:${cmd}`;
+            const menuKey = `${menuId}:${cmd}`;
             if (this.menuUsageStats[menuKey]) {
               this.menuUsageStats[menuKey].clickCount++;
               this.menuUsageStats[menuKey].lastClickTime = Date.now();
@@ -547,21 +748,49 @@ class Registry {
         });
 
         row.addEventListener("dragstart", (e: DragEvent) => {
-          row.style.opacity = "0.5";
+          e.stopPropagation();
+          row.classList.add("is-dragging");
           dragZone.style.cursor = "grabbing";
           if (e.dataTransfer) {
             e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", i.toString());
+            const dragToken = it.command ? `cmd:${it.command}` : `idx:${i}`;
+            e.dataTransfer.setData("text/plain", dragToken);
+            // 创建自定义拖拽图像，避免浏览器默认的半透明效果
+            const dragImage = row.cloneNode(true) as HTMLElement;
+            dragImage.style.position = "absolute";
+            dragImage.style.top = "-1000px";
+            dragImage.style.left = "-1000px";
+            dragImage.style.opacity = "1";
+            dragImage.style.pointerEvents = "none";
+            dragImage.classList.remove("is-dragging");
+            document.body.appendChild(dragImage);
+            e.dataTransfer.setDragImage(dragImage, 0, 0);
+            // 延迟移除，确保拖拽图像已被使用
+            setTimeout(() => dragImage.remove(), 0);
           }
         });
 
         row.addEventListener("dragend", () => {
-          row.style.opacity = "1";
+          row.classList.remove("is-dragging");
           dragZone.style.cursor = "grab";
+          if (activeDropTarget) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+            activeDropTarget = null;
+          }
         });
 
         row.addEventListener("dragover", (e: DragEvent) => {
           e.preventDefault();
+          const targetRow = e.currentTarget as HTMLElement;
+          const rect = targetRow.getBoundingClientRect();
+          const before = e.clientY < rect.top + rect.height / 2;
+          targetRow.classList.add("is-drop-target");
+          targetRow.classList.toggle("drop-before", before);
+          targetRow.classList.toggle("drop-after", !before);
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           if (e.dataTransfer) {
             e.dataTransfer.dropEffect = "move";
           }
@@ -570,33 +799,60 @@ class Registry {
         row.addEventListener("dragenter", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
           if (!targetRow.querySelector(".zion-drag-zone")) return;
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           targetRow.classList.add("is-drop-target");
         });
 
         row.addEventListener("dragleave", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const rt = (e as any).relatedTarget as Node | null;
+          if (rt && targetRow.contains(rt)) return;
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
         });
 
         row.addEventListener("drop", (e: DragEvent) => {
+          e.stopPropagation();
           e.preventDefault();
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const dropAfter = targetRow.classList.contains("drop-after");
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
 
-          const fromIndex = parseInt(e.dataTransfer?.getData("text/plain") || "-1");
+          const dragToken = e.dataTransfer?.getData("text/plain") || "";
+          let fromIndex = -1;
+          if (dragToken.startsWith("cmd:")) {
+            const fromCommand = dragToken.slice(4);
+            fromIndex = items.findIndex(item => item.command === fromCommand);
+          } else if (dragToken.startsWith("idx:")) {
+            fromIndex = parseInt(dragToken.slice(4));
+          } else {
+            fromIndex = items.findIndex(item => item.command === dragToken);
+          }
           const toIndex = i;
+          let insertIndex = toIndex + (dropAfter ? 1 : 0);
+          if (insertIndex > pinnedCount) insertIndex = pinnedCount;
 
-          if (fromIndex >= 0 && fromIndex !== toIndex && toIndex < pinnedCount) {
-            // 交换位置
-            const temp = items[fromIndex];
+          if (
+            fromIndex >= 0 &&
+            fromIndex < pinnedCount &&
+            fromIndex !== toIndex &&
+            toIndex < pinnedCount &&
+            isPinnedItem(items[fromIndex])
+          ) {
+            const moved = items[fromIndex];
             items.splice(fromIndex, 1);
-            items.splice(toIndex, 0, temp);
+            if (fromIndex < insertIndex) insertIndex--;
+            items.splice(insertIndex, 0, moved);
 
             // 更新 customOrder
             for (let j = 0; j < pinnedCount; j++) {
               const item = items[j];
               if (item.command) {
-                const menuKey = `editor/context:${item.command}`;
+                const menuKey = `${menuId}:${item.command}`;
                 if (this.menuUsageStats[menuKey]) {
                   this.menuUsageStats[menuKey].customOrder = j * 10;
                   this.menuUsageStats[menuKey].pinned = true;
@@ -609,7 +865,7 @@ class Registry {
 
             // 重新渲染菜单
             menu.innerHTML = "";
-            this.rebuildMenuItems(menu, items, closeMenu, items);
+            this.rebuildMenuItems(menu, items, closeMenu, items, menuId);
           }
         });
 
@@ -628,7 +884,7 @@ class Registry {
       // 更新置顶按钮状态
       const updatePinButtonState = () => {
         if (!canTogglePin) return;
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
         const stats = this.menuUsageStats[menuKey];
         const currentPinned = typeof stats?.pinned === "boolean" ? stats.pinned : !!it.pinned || isDefaultPinned;
 
@@ -668,7 +924,7 @@ class Registry {
           return;
         }
 
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
 
         if (!this.menuUsageStats[menuKey]) {
           this.menuUsageStats[menuKey] = {
@@ -681,18 +937,27 @@ class Registry {
         // 切换置顶状态
         this.menuUsageStats[menuKey].pinned = !this.menuUsageStats[menuKey].pinned;
 
-        // 如果置顶，设置一个合理的order
+        // 如果置顶，计算一个合适的 order（放在现有置顶项的最后）
         if (this.menuUsageStats[menuKey].pinned) {
-          this.menuUsageStats[menuKey].customOrder = this.menuUsageStats[menuKey].customOrder ?? 50;
+          // 找出当前所有置顶项的最大 customOrder
+          let maxOrder = -1;
+          for (const key in this.menuUsageStats) {
+            const stats = this.menuUsageStats[key];
+            if (stats.pinned && typeof stats.customOrder === 'number') {
+              maxOrder = Math.max(maxOrder, stats.customOrder);
+            }
+          }
+          // 新置顶项放在最后
+          this.menuUsageStats[menuKey].customOrder = maxOrder + 10;
         }
 
         // 保存到 localStorage
         (this as any).saveMenuUsageStats();
 
         // 重新渲染菜单
-        const sorted = this.sortMenuItems(items, "editor/context");
+        const sorted = this.sortMenuItems(items, menuId);
         menu.innerHTML = "";
-        this.rebuildMenuItems(menu, sorted, closeMenu, sorted);
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted, menuId, ctx);
       });
 
       // 防止置顶按钮触发菜单点击
@@ -709,11 +974,11 @@ class Registry {
   }
 
   // 重新构建菜单项（用于拖拽后刷新）
-  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[]): void {
+  private rebuildMenuItems(menu: HTMLDivElement, items: MenuItem[], closeMenu: () => void, filtered: MenuItem[], menuId: string = "editor/context", ctx?: { panelId?: string | null; editor?: IEditorProxy | null; sessionId?: string | null }): void {
     const isPinnedItem = (item: MenuItem) => {
       const cmd = item.command || "";
       if (!cmd) return false;
-      const menuKey = `editor/context:${cmd}`;
+      const menuKey = `${menuId}:${cmd}`;
       const stats = this.menuUsageStats[menuKey];
       if (typeof stats?.pinned === "boolean") return stats.pinned;
       return !!item.pinned || this.DEFAULT_PINNED_COMMANDS.includes(cmd);
@@ -730,6 +995,7 @@ class Registry {
     if (dragAreaSeparator) {
       dragAreaSeparator.className = "zion-drag-area-separator";
     }
+    let activeDropTarget: HTMLElement | null = null;
 
     for (let i = 0; i < filtered.length; i++) {
       const it = filtered[i];
@@ -746,27 +1012,47 @@ class Registry {
       btn.type = "button";
       btn.className = "zion-context-menu-item";
       const span = document.createElement("span");
-      span.textContent = it.title || it.command || "";
+        let title = it.title || it.command || "";
+      // 支持动态标题
+      if (typeof it.dynamicTitle === "function") {
+        try {
+          const dt = it.dynamicTitle();
+            if (dt !== null) title = dt;
+        } catch {}
+      }
+        span.className = "zion-context-menu-label";
+        const primary = document.createElement("span");
+        primary.className = "zion-context-menu-label-primary";
+        primary.textContent = title;
+        span.appendChild(primary);
+        if (it.subtitle) {
+          const secondary = document.createElement("span");
+          secondary.className = "zion-context-menu-label-secondary";
+          secondary.textContent = it.subtitle;
+          span.appendChild(secondary);
+        }
+        span.title = [title, it.subtitle].filter(Boolean).join(" · ");
       btn.appendChild(span);
       btn.setAttribute("role", "menuitem");
 
       if (hasKids) {
-        // ... 子菜单处理逻辑（与之前相同）
-        btn.setAttribute("aria-haspopup", "menu");
-        btn.setAttribute("aria-expanded", "false");
-        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu);
+        // 为二级菜单生成唯一的 menuId，避免与一级菜单的 menuKey 冲突
+        const subMenuId = `${menuId}:${it.command || 'submenu'}`;
+        const submenu = this.buildContextMenuPanel(it.submenu || [], closeMenu, subMenuId, ctx);
         submenu.classList.add("zion-context-submenu");
         submenu.style.position = "fixed";
         submenu.style.display = "none";
+        (submenu as any).dataset.menuId = subMenuId;
         row.appendChild(submenu);
       } else {
         btn.onclick = () => {
           const cmd = it.command;
           if (!cmd) return;
           try {
-            this.executeCommand(cmd);
+            if (ctx?.panelId || ctx?.editor || ctx?.sessionId) this.executeCommand(cmd, { panelId: ctx?.panelId || null, editor: ctx?.editor || null, sessionId: ctx?.sessionId || null });
+            else this.executeCommand(cmd);
             // 记录点击统计
-            const menuKey = `editor/context:${cmd}`;
+            const menuKey = `${menuId}:${cmd}`;
             if (this.menuUsageStats[menuKey]) {
               this.menuUsageStats[menuKey].clickCount++;
               this.menuUsageStats[menuKey].lastClickTime = Date.now();
@@ -818,21 +1104,49 @@ class Registry {
         });
 
         row.addEventListener("dragstart", (e: DragEvent) => {
-          row.style.opacity = "0.5";
+          e.stopPropagation();
+          row.classList.add("is-dragging");
           dragZone.style.cursor = "grabbing";
           if (e.dataTransfer) {
             e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData("text/plain", i.toString());
+            const dragToken = it.command ? `cmd:${it.command}` : `idx:${i}`;
+            e.dataTransfer.setData("text/plain", dragToken);
+            // 创建自定义拖拽图像，避免浏览器默认的半透明效果
+            const dragImage = row.cloneNode(true) as HTMLElement;
+            dragImage.style.position = "absolute";
+            dragImage.style.top = "-1000px";
+            dragImage.style.left = "-1000px";
+            dragImage.style.opacity = "1";
+            dragImage.style.pointerEvents = "none";
+            dragImage.classList.remove("is-dragging");
+            document.body.appendChild(dragImage);
+            e.dataTransfer.setDragImage(dragImage, 0, 0);
+            // 延迟移除，确保拖拽图像已被使用
+            setTimeout(() => dragImage.remove(), 0);
           }
         });
 
         row.addEventListener("dragend", () => {
-          row.style.opacity = "1";
+          row.classList.remove("is-dragging");
           dragZone.style.cursor = "grab";
+          if (activeDropTarget) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+            activeDropTarget = null;
+          }
         });
 
         row.addEventListener("dragover", (e: DragEvent) => {
           e.preventDefault();
+          const targetRow = e.currentTarget as HTMLElement;
+          const rect = targetRow.getBoundingClientRect();
+          const before = e.clientY < rect.top + rect.height / 2;
+          targetRow.classList.add("is-drop-target");
+          targetRow.classList.toggle("drop-before", before);
+          targetRow.classList.toggle("drop-after", !before);
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           if (e.dataTransfer) {
             e.dataTransfer.dropEffect = "move";
           }
@@ -841,33 +1155,60 @@ class Registry {
         row.addEventListener("dragenter", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
           if (!targetRow.querySelector(".zion-drag-zone")) return;
+          if (activeDropTarget && activeDropTarget !== targetRow) {
+            activeDropTarget.classList.remove("is-drop-target", "drop-before", "drop-after");
+          }
+          activeDropTarget = targetRow;
           targetRow.classList.add("is-drop-target");
         });
 
         row.addEventListener("dragleave", (e: DragEvent) => {
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const rt = (e as any).relatedTarget as Node | null;
+          if (rt && targetRow.contains(rt)) return;
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
         });
 
         row.addEventListener("drop", (e: DragEvent) => {
+          e.stopPropagation();
           e.preventDefault();
           const targetRow = (e.currentTarget as HTMLElement);
-          targetRow.classList.remove("is-drop-target");
+          const dropAfter = targetRow.classList.contains("drop-after");
+          targetRow.classList.remove("is-drop-target", "drop-before", "drop-after");
+          if (activeDropTarget === targetRow) activeDropTarget = null;
 
-          const fromIndex = parseInt(e.dataTransfer?.getData("text/plain") || "-1");
+          const dragToken = e.dataTransfer?.getData("text/plain") || "";
+          let fromIndex = -1;
+          if (dragToken.startsWith("cmd:")) {
+            const fromCommand = dragToken.slice(4);
+            fromIndex = filtered.findIndex(item => item.command === fromCommand);
+          } else if (dragToken.startsWith("idx:")) {
+            fromIndex = parseInt(dragToken.slice(4));
+          } else {
+            fromIndex = filtered.findIndex(item => item.command === dragToken);
+          }
           const toIndex = i;
+          let insertIndex = toIndex + (dropAfter ? 1 : 0);
+          if (insertIndex > pinnedCount) insertIndex = pinnedCount;
 
-          if (fromIndex >= 0 && fromIndex !== toIndex && toIndex < pinnedCount) {
-            // 交换位置
-            const temp = filtered[fromIndex];
+          if (
+            fromIndex >= 0 &&
+            fromIndex < pinnedCount &&
+            fromIndex !== toIndex &&
+            toIndex < pinnedCount &&
+            isPinnedItem(filtered[fromIndex])
+          ) {
+            const moved = filtered[fromIndex];
             filtered.splice(fromIndex, 1);
-            filtered.splice(toIndex, 0, temp);
+            if (fromIndex < insertIndex) insertIndex--;
+            filtered.splice(insertIndex, 0, moved);
 
             // 更新 customOrder
             for (let j = 0; j < pinnedCount; j++) {
               const item = filtered[j];
               if (item.command) {
-                const menuKey = `editor/context:${item.command}`;
+                const menuKey = `${menuId}:${item.command}`;
                 if (this.menuUsageStats[menuKey]) {
                   this.menuUsageStats[menuKey].customOrder = j * 10;
                   this.menuUsageStats[menuKey].pinned = true;
@@ -880,7 +1221,7 @@ class Registry {
 
             // 重新渲染菜单
             menu.innerHTML = "";
-            this.rebuildMenuItems(menu, items, closeMenu, filtered);
+            this.rebuildMenuItems(menu, items, closeMenu, filtered, menuId);
           }
         });
 
@@ -899,7 +1240,7 @@ class Registry {
       // 更新置顶按钮状态
       const updatePinButtonState = () => {
         if (!canTogglePin) return;
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
         const stats = this.menuUsageStats[menuKey];
         const currentPinned = typeof stats?.pinned === "boolean" ? stats.pinned : !!it.pinned || isDefaultPinned;
 
@@ -939,7 +1280,7 @@ class Registry {
           return;
         }
 
-        const menuKey = `editor/context:${cmd}`;
+        const menuKey = `${menuId}:${cmd}`;
 
         if (!this.menuUsageStats[menuKey]) {
           this.menuUsageStats[menuKey] = {
@@ -952,18 +1293,27 @@ class Registry {
         // 切换置顶状态
         this.menuUsageStats[menuKey].pinned = !this.menuUsageStats[menuKey].pinned;
 
-        // 如果置顶，设置一个合理的order
+        // 如果置顶，计算一个合适的 order（放在现有置顶项的最后）
         if (this.menuUsageStats[menuKey].pinned) {
-          this.menuUsageStats[menuKey].customOrder = this.menuUsageStats[menuKey].customOrder ?? 50;
+          // 找出当前所有置顶项的最大 customOrder
+          let maxOrder = -1;
+          for (const key in this.menuUsageStats) {
+            const stats = this.menuUsageStats[key];
+            if (stats.pinned && typeof stats.customOrder === 'number') {
+              maxOrder = Math.max(maxOrder, stats.customOrder);
+            }
+          }
+          // 新置顶项放在最后
+          this.menuUsageStats[menuKey].customOrder = maxOrder + 10;
         }
 
         // 保存到 localStorage
         (this as any).saveMenuUsageStats();
 
         // 重新渲染菜单
-        const sorted = this.sortMenuItems(filtered, "editor/context");
+        const sorted = this.sortMenuItems(filtered, menuId);
         menu.innerHTML = "";
-        this.rebuildMenuItems(menu, sorted, closeMenu, sorted);
+        this.rebuildMenuItems(menu, sorted, closeMenu, sorted, menuId);
       });
 
       // 防止置顶按钮触发菜单点击
@@ -977,18 +1327,22 @@ class Registry {
     }
   }
 
-  private showEditorContextMenuAt(x: number, y: number) {
-    if (!this.editorCore) return;
-    const dom = this.editorCore.view.dom;
+  private showEditorContextMenuAt(x: number, y: number, panelId?: string) {
+    const targetPanelId = panelId && this.editorCores.has(panelId) ? panelId : this.activePanelId;
+    const active = targetPanelId ? (this.editorCores.get(targetPanelId) || null) : this.getActiveEditorCore();
+    if (!active) return;
+    const dom = active.view.dom;
     const items = this.menus["editor/context"] || [];
     if (items.length === 0) return;
 
     const hasSelection =
-      this.editorCore.view.state.selection.main.from !== this.editorCore.view.state.selection.main.to;
+      active.view.state.selection.main.from !== active.view.state.selection.main.to;
     const editorFocus = document.activeElement ? dom.contains(document.activeElement) : false;
 
     const filtered = this.filterMenuTree(items, { hasSelection, editorFocus });
     if (filtered.length === 0) return;
+    const targetEditor = targetPanelId ? (this.editorProxies.get(targetPanelId) || null) : this.getActiveEditorProxy();
+    const targetSessionId = targetEditor?.sessionId || active.getSessionId?.() || null;
 
     // 应用排序
     const sorted = this.sortMenuItems(filtered, "editor/context");
@@ -1013,7 +1367,11 @@ class Registry {
       document.removeEventListener("keydown", escHandler);
     };
 
-    const menu = this.buildContextMenuPanel(sorted, closeMenu);
+    const menu = this.buildContextMenuPanel(sorted, closeMenu, "editor/context", {
+      panelId: targetPanelId || null,
+      editor: targetEditor as unknown as IEditorProxy | null,
+      sessionId: targetSessionId
+    });
     menu.style.position = "fixed";
     menu.style.zIndex = "99999";
 
@@ -1037,17 +1395,21 @@ class Registry {
     this.showEditorContextMenuAt(x, y);
   }
 
-  private applyDecorators() {
-    if (!this.editorCore) return;
-    const editor: IEditorProxy | null = (window as any).zion?.window?.activeEditor ?? null;
-    if (!editor) return;
-    for (const dec of this.decorators) {
-      if (this.decoratorDisposables.has(dec.id)) continue;
-      try {
-        const disp = dec.apply(editor);
-        this.decoratorDisposables.set(dec.id, disp);
-      } catch (e) {
-        console.error("[zion] decorator apply error:", dec.id, e);
+  private applyDecorators(panelId?: string) {
+    const targetPanelIds = panelId ? [panelId] : [...this.editorProxies.keys()];
+    for (const pid of targetPanelIds) {
+      const editor = this.editorProxies.get(pid) || null;
+      if (!editor) continue;
+      const editorKey = editor.editorId || pid;
+      for (const dec of this.decorators) {
+        const key = `${dec.id}:${editorKey}`;
+        if (this.decoratorDisposables.has(key)) continue;
+        try {
+          const disp = dec.apply(editor as unknown as IEditorProxy);
+          this.decoratorDisposables.set(key, disp);
+        } catch (e) {
+          console.error("[zion] decorator apply error:", dec.id, e);
+        }
       }
     }
   }
@@ -1083,14 +1445,24 @@ class Registry {
 
     // 生成菜单项的唯一键（基于 menuId 和 command）
     const menuKey = `${menuId}:${item.command || ''}`;
+    const cmd = item.command || '';
+    const isDefaultPinned = this.DEFAULT_PINNED_COMMANDS.includes(cmd);
 
     // 初始化使用统计
     if (!this.menuUsageStats[menuKey]) {
+      // 计算初始 customOrder
+      let initialOrder = item.order;
+      if (initialOrder === undefined && isDefaultPinned) {
+        // 默认置顶的命令按照 DEFAULT_PINNED_COMMANDS 中的顺序设置 order
+        const defaultIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(cmd);
+        initialOrder = defaultIndex * 10;
+      }
+
       this.menuUsageStats[menuKey] = {
         clickCount: 0,
         lastClickTime: 0,
-        pinned: item.pinned || false,
-        customOrder: item.order,
+        pinned: item.pinned || isDefaultPinned,
+        customOrder: initialOrder,
         groupId: item.group
       };
     } else {
@@ -1121,21 +1493,16 @@ class Registry {
   registerDecorator(dec: Decorator): Disposable {
     this.decorators.push(dec);
     // if editor already attached, apply immediately
-    if (this.editorCore && (window as any).zion?.window?.activeEditor) {
-      try {
-        const disp = dec.apply(((window as any).zion.window.activeEditor as IEditorProxy));
-        this.decoratorDisposables.set(dec.id, disp);
-      } catch (e) {
-        console.error("[zion] decorator apply error:", dec.id, e);
-      }
-    }
+    this.applyDecorators();
     return {
       dispose: () => {
         const idx = this.decorators.indexOf(dec);
         if (idx >= 0) this.decorators.splice(idx, 1);
-        const d = this.decoratorDisposables.get(dec.id);
-        try { d?.dispose?.(); } catch {}
-        this.decoratorDisposables.delete(dec.id);
+        for (const [key, disp] of Array.from(this.decoratorDisposables.entries())) {
+          if (!key.startsWith(`${dec.id}:`)) continue;
+          try { disp?.dispose?.(); } catch {}
+          this.decoratorDisposables.delete(key);
+        }
       }
     };
   }
@@ -1179,23 +1546,11 @@ class Registry {
 
     // 排序函数
     const compare = (a: any, b: any) => {
-      const aDefaultPinnedActive = a.isDefaultPinned && a.pinned;
-      const bDefaultPinnedActive = b.isDefaultPinned && b.pinned;
-
-      if (aDefaultPinnedActive && bDefaultPinnedActive) {
-        const aIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(a.command);
-        const bIndex = this.DEFAULT_PINNED_COMMANDS.indexOf(b.command);
-        return aIndex - bIndex;
-      }
-
-      if (aDefaultPinnedActive) return -1;
-      if (bDefaultPinnedActive) return 1;
-
-      // 用户置顶的命令在前面
+      // 置顶的命令在前面
       if (a.pinned && !b.pinned) return -1;
       if (!a.pinned && b.pinned) return 1;
 
-      // 都是置顶的，按照自定义order排序
+      // 都是置顶的，统一按照 customOrder 排序
       if (a.pinned && b.pinned) {
         const aOrder = a.customOrder ?? 50;
         const bOrder = b.customOrder ?? 50;
@@ -1215,7 +1570,12 @@ class Registry {
   }
 
   // models: provider registry (placeholder)
-  registerModelProvider(provider: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }): Disposable {
+  registerModelProvider(provider: {
+    id: string;
+    list: () => any | Promise<any>;
+    resolve: (id: string) => any | Promise<any>;
+    checkAvailability?: (options?: { modelIds?: string[]; force?: boolean }) => any | Promise<any>;
+  }): Disposable {
     this.modelProviders.push(provider);
     return {
       dispose: () => {
@@ -1231,13 +1591,23 @@ class Registry {
     return this.modelProviders.find(p => p.id === id) || null;
   }
 
-  async runMessageContributors(messages: any[], stage: "pre" | "post" = "pre"): Promise<any[]> {
+  async runMessageContributors(messages: any[], stage: "pre" | "post" = "pre", runCtx: any = {}): Promise<any[]> {
+    const excludedContributorIds = new Set(
+      Array.isArray(runCtx?.excludedContributorIds)
+        ? runCtx.excludedContributorIds.map(String)
+        : []
+    );
     const contribs = [...this.messageContribs]
       .filter(c => (c.stage ?? "pre") === stage)
+      .filter(c => !excludedContributorIds.has(String(c.id || "")))
       .sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
 
     const ctx = {
-      editor: ((window as any).zion?.window?.activeEditor ?? null) as IEditorProxy | null,
+      editor: (runCtx?.editor ?? (window as any).zion?.window?.activeEditor ?? null) as IEditorProxy | null,
+      sessionId: runCtx?.sessionId ?? null,
+      panelId: runCtx?.panelId ?? null,
+      requestSource: runCtx?.requestSource ?? null,
+      runId: runCtx?.runId ?? null,
       state: {
         get: <T,>(key: string) => this.state.get<T>(key),
         set: <T,>(key: string, v: T) => this.state.set<T>(key, v)
@@ -1288,7 +1658,15 @@ class Registry {
 
   registerKeybinding(binding: Keybinding): Disposable {
     this.keybindings.push(binding);
-    this.applyKeymap();
+    try {
+      this.applyKeymap();
+    } catch (error) {
+      const idx = this.keybindings.indexOf(binding);
+      if (idx >= 0) this.keybindings.splice(idx, 1);
+      try { this.applyKeymap(); } catch {}
+      console.error("[registry] register keybinding failed:", binding, error);
+      throw error;
+    }
     return {
       dispose: () => {
         const idx = this.keybindings.indexOf(binding);
@@ -1305,14 +1683,15 @@ class Registry {
   }
 
   private applyKeymap() {
-    if (!this.editorCore) return;
     const bindings = this.keybindings.map(kb => ({
       key: kb.key,
       run: () => {
         // evaluate simple 'when' conditions
-        const dom = this.editorCore!.view.dom;
+        const active = this.getActiveEditorCore();
+        if (!active) return false;
+        const dom = active.view.dom;
         const hasSelection =
-          this.editorCore!.view.state.selection.main.from !== this.editorCore!.view.state.selection.main.to;
+          active.view.state.selection.main.from !== active.view.state.selection.main.to;
         const editorFocus = dom.contains(document.activeElement);
 
         // Determine if the custom search panel is visible and focused.
@@ -1325,11 +1704,25 @@ class Registry {
         // Only trigger searchReplaceVisible bindings when the search panel currently has focus.
         if (kb.when === "searchReplaceVisible" && !searchPanelFocused) return false;
 
-        this.executeCommand(kb.command);
+        const result = this.executeCommand(kb.command);
+        try {
+          if (localStorage.getItem("zion.debug.keybindings") === "1") {
+            console.debug("[zion:keybinding]", {
+              key: kb.key,
+              command: kb.command,
+              when: kb.when || "",
+              editorFocus,
+              hasSelection,
+              result
+            });
+          }
+        } catch {}
         return true;
       }
     }));
-    this.editorCore.updateKeymap(bindings);
+    for (const core of this.editorCores.values()) {
+      core.updateKeymap(bindings);
+    }
   }
 
   // events
@@ -1338,6 +1731,10 @@ class Registry {
   }
   emit(topic: string, payload?: any): void {
     this.events.emit(topic, payload);
+  }
+
+  emitAsync(topic: string, payload?: any): Promise<void> {
+    return this.events.emitAsync(topic, payload);
   }
 
   // state
@@ -1359,7 +1756,6 @@ class Registry {
 
   constructor() {
     this.loadStatusPinned();
-    this.loadBottomStatusPinned();
   }
 
   private loadStatusPinned() {
@@ -1384,29 +1780,39 @@ class Registry {
     }
   }
 
-  private loadBottomStatusPinned() {
-    try {
-      const raw = localStorage.getItem(this.BOTTOM_STATUS_PINNED_KEY);
-      if (raw) {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr)) {
-          this.bottomStatusPinned = new Set(arr);
-        }
-      }
-    } catch (e) {
-      console.error('[registry] load bottom status pinned error:', e);
-    }
-  }
-
-  private saveBottomStatusPinned() {
-    try {
-      localStorage.setItem(this.BOTTOM_STATUS_PINNED_KEY, JSON.stringify(Array.from(this.bottomStatusPinned)));
-    } catch (e) {
-      console.error('[registry] save bottom status pinned error:', e);
-    }
-  }
-
   // statusbar
+  private renderStatusText(target: HTMLElement, text: string) {
+    target.textContent = "";
+    target.className = "";
+
+    const value = String(text ?? "");
+    const iconOnly = value.match(/^\$\(([^)]+)\)$/);
+    if (iconOnly) {
+      target.appendChild(createZionIcon(zionIconName(iconOnly[1])));
+      return;
+    }
+
+    const inlineIcon = value.match(/^\$\(([^)]+)\)\s*(.*)$/);
+    if (inlineIcon) {
+      target.appendChild(createZionIcon(zionIconName(inlineIcon[1])));
+      const label = String(inlineIcon[2] || "").trim();
+      if (label) {
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "status-item-label";
+        labelSpan.textContent = label;
+        target.appendChild(labelSpan);
+      }
+      return;
+    }
+
+    if (hasZionIcon(value)) {
+      target.appendChild(createZionIcon(zionIconName(value)));
+      return;
+    }
+
+    target.textContent = value;
+  }
+
   registerStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable {
     const bar = document.getElementById("statusbar");
     if (!bar) return { dispose: () => {} };
@@ -1420,25 +1826,14 @@ class Registry {
 
     const existing = this.statusItems.get(opts.id);
     if (existing) {
+      existing.el.setAttribute("data-zion-status-id", opts.id);
       // Update in place without clearing innerHTML to preserve hover state and reduce flicker
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
-        const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
-        if (codiconMatch) {
-          textSpan.className = `codicon codicon-${codiconMatch[1]}`;
-          textSpan.textContent = "";
-        } else {
-          textSpan.className = "";
-          textSpan.textContent = opts.text;
-        }
+        this.renderStatusText(textSpan as HTMLElement, opts.text);
       } else {
         const span = document.createElement("span");
-        const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
-        if (codiconMatch) {
-          span.className = `codicon codicon-${codiconMatch[1]}`;
-        } else {
-          span.textContent = opts.text;
-        }
+        this.renderStatusText(span, opts.text);
         if (existing.el.firstChild) {
           existing.el.insertBefore(span, existing.el.firstChild);
         } else {
@@ -1495,17 +1890,13 @@ class Registry {
 
     const el = document.createElement("button");
     el.className = "status-item";
+    el.setAttribute("data-zion-status-id", opts.id);
     if (pinned) {
       el.classList.add('pinned');
     }
     
     const span = document.createElement("span");
-    const codiconMatch = opts.text.match(/^\$\(([^)]+)\)$/);
-    if (codiconMatch) {
-      span.className = `codicon codicon-${codiconMatch[1]}`;
-    } else {
-      span.textContent = opts.text;
-    }
+    this.renderStatusText(span, opts.text);
     el.appendChild(span);
 
     // No dedicated pin button - use Context Menu
@@ -1542,18 +1933,20 @@ class Registry {
   registerBottomStatusItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number }): Disposable {
     const bar = document.getElementById("bottombar");
     if (!bar) return { dispose: () => {} };
+    const target = this.getBottomStatusContainer(bar);
 
     const priority = opts.priority ?? 0;
-    const pinned = this.bottomStatusPinned.has(opts.id);
-
     const existing = this.bottomStatusItems.get(opts.id);
     if (existing) {
+      existing.el.classList.add("bottombar-status-item");
+      existing.el.classList.remove("pinned");
+      existing.el.setAttribute("data-zion-status-id", opts.id);
       const textSpan = existing.el.querySelector("span:not(.status-pin-btn)");
       if (textSpan) {
-        textSpan.textContent = opts.text;
+        this.renderStatusText(textSpan as HTMLElement, opts.text);
       } else {
         const span = document.createElement("span");
-        span.textContent = opts.text;
+        this.renderStatusText(span, opts.text);
         if (existing.el.firstChild) {
           existing.el.insertBefore(span, existing.el.firstChild as any);
         } else {
@@ -1561,30 +1954,26 @@ class Registry {
         }
       }
 
-      const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
-      const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
-      existing.el.title = tooltip;
+      existing.el.title = typeof opts.tooltip === "string" ? opts.tooltip : "";
+      existing.el.style.minWidth = "";
 
       existing.el.onclick = (e) => { if (opts.onClick) opts.onClick(); };
       existing.el.oncontextmenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.toggleBottomStatusPin(opts.id, bar);
       };
 
       existing.onClick = opts.onClick;
-      existing.pinned = pinned;
 
       const pinBtn = existing.el.querySelector(".status-pin-btn");
       if (pinBtn) (pinBtn as any).remove();
 
       if (existing.priority !== priority) {
         existing.priority = priority;
-        this.sortBottomStatusItems(bar);
+        this.sortBottomStatusItems(target);
       } else {
-        this.sortBottomStatusItems(bar);
+        this.sortBottomStatusItems(target);
       }
-      this.stabilizeItemWidth(this.bottomStatusItemMinWidth, opts.id, existing.el);
 
       return {
         dispose: () => {
@@ -1597,28 +1986,24 @@ class Registry {
     }
 
     const el = document.createElement("button");
-    el.className = "status-item";
-    if (pinned) el.classList.add("pinned");
+    el.className = "status-item bottombar-status-item";
+    el.setAttribute("data-zion-status-id", opts.id);
 
     const span = document.createElement("span");
-    span.textContent = opts.text;
+    this.renderStatusText(span, opts.text);
     el.appendChild(span);
 
-    const tooltipBase = typeof opts.tooltip === "string" ? opts.tooltip : "";
-    const tooltip = (tooltipBase ? tooltipBase + "\n" : "") + "Right-click to " + (pinned ? "Unpin" : "Pin");
-    el.title = tooltip;
+    el.title = typeof opts.tooltip === "string" ? opts.tooltip : "";
 
     el.onclick = (e) => { if (opts.onClick) opts.onClick(); };
     el.oncontextmenu = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.toggleBottomStatusPin(opts.id, bar);
     };
 
-    bar.appendChild(el);
-    this.bottomStatusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority, pinned });
-    this.sortBottomStatusItems(bar);
-    this.stabilizeItemWidth(this.bottomStatusItemMinWidth, opts.id, el);
+    target.appendChild(el);
+    this.bottomStatusItems.set(opts.id, { id: opts.id, el, onClick: opts.onClick, priority });
+    this.sortBottomStatusItems(target);
 
     return {
       dispose: () => {
@@ -1630,49 +2015,42 @@ class Registry {
     };
   }
 
-  private toggleBottomStatusPin(id: string, bar: HTMLElement) {
-    const item = this.bottomStatusItems.get(id);
-    if (!item) return;
-
-    if (this.bottomStatusPinned.has(id)) {
-      this.bottomStatusPinned.delete(id);
-      item.pinned = false;
-      item.el.classList.remove('pinned');
-    } else {
-      this.bottomStatusPinned.add(id);
-      item.pinned = true;
-      item.el.classList.add('pinned');
+  private getBottomStatusContainer(bar: HTMLElement): HTMLElement {
+    let right = document.getElementById("bottombar-right");
+    if (!right) {
+      right = document.createElement("div");
+      right.id = "bottombar-right";
+      bar.appendChild(right);
     }
-
-    const currentTitle = item.el.title || "";
-    const suffixPin = "\nRight-click to Pin";
-    const suffixUnpin = "\nRight-click to Unpin";
-    if (item.pinned) {
-      if (currentTitle.endsWith(suffixPin)) {
-        item.el.title = currentTitle.slice(0, -suffixPin.length) + suffixUnpin;
-      } else if (!currentTitle.endsWith(suffixUnpin)) {
-        item.el.title = currentTitle + suffixUnpin;
-      }
+    let status = document.getElementById("bottombar-status") || document.getElementById("bottombar-left");
+    if (!status) {
+      status = document.createElement("div");
+      status.id = "bottombar-status";
     } else {
-      if (currentTitle.endsWith(suffixUnpin)) {
-        item.el.title = currentTitle.slice(0, -suffixUnpin.length) + suffixPin;
-      } else if (!currentTitle.endsWith(suffixPin)) {
-        item.el.title = currentTitle + suffixPin;
-      }
+      status.id = "bottombar-status";
     }
-
-    this.saveBottomStatusPinned();
-    this.sortBottomStatusItems(bar);
+    const terminal = right.querySelector("[data-zion-bottombar-terminal]");
+    const metrics = document.getElementById("bottombar-metrics");
+    const expectedPrev =
+      terminal && terminal.parentElement === right
+        ? terminal
+        : metrics && metrics.parentElement === right
+          ? metrics
+          : null;
+    const anchor = expectedPrev ? expectedPrev.nextSibling : right.firstChild;
+    if (status.parentElement !== right || status.previousElementSibling !== expectedPrev) {
+      right.insertBefore(status, anchor);
+    }
+    return status;
   }
 
-  private sortBottomStatusItems(bar: HTMLElement) {
+  private sortBottomStatusItems(container: HTMLElement) {
     const items = Array.from(this.bottomStatusItems.values());
     items.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       if (b.priority !== a.priority) return b.priority - a.priority;
       return a.id.localeCompare(b.id);
     });
-    items.forEach(item => bar.appendChild(item.el));
+    items.forEach(item => container.appendChild(item.el));
   }
 
   private getStatusBarContainer(align: "left" | "right"): HTMLElement | null {
@@ -1790,7 +2168,8 @@ class Registry {
         const role = (match as any) as "user" | "assistant" | "system";
         curRole = role;
         // skip the "role " marker on the head line; content starts after it
-        const head = ln.slice(match.length + 1);
+        const rawHead = ln.slice(match.length + 1);
+        const head = role === "assistant" ? stripAssistantBlockIdComment(rawHead) : rawHead;
         buf.push(head);
       } else {
         buf.push(ln);
@@ -1808,23 +2187,28 @@ class Registry {
   private __chatGetActiveModel(): { providerId: string; modelId: string } | null {
     return this.activeModel;
   }
+  private __syncGlobalStreaming(): void {
+    let any = false;
+    for (const [, run] of this.currentRuns) {
+      if (run.timer) { any = true; break; }
+    }
+    this.state.set("chat.streaming", any);
+  }
 
   // Start a chat run: parse messages, pick latest user (or selection), stream an echo response
   private __chatRun(opts?: { useSelection?: boolean; prompt?: string }): boolean {
     try {
       if (!this.editorCore) return false;
-      // Prevent concurrent runs
-      if (this.currentRun?.timer) {
-        console.warn("[zion] chat already running");
+      const sessionId: string = this.state.get("sessions.currentId") || "__default__";
+      if (this.currentRuns.has(sessionId)) {
+        console.warn("[zion] chat already running for session", sessionId);
         return false;
       }
       const view = this.editorCore.view;
       const docText = view.state.doc.toString();
 
-      // 1) 优先使用传入的 prompt
       let prompt = (opts?.prompt ?? "").trim();
 
-      // 2) 其次使用选区
       if (!prompt) {
         const sel = view.state.selection.main;
         if (opts?.useSelection && !sel.empty) {
@@ -1832,7 +2216,6 @@ class Registry {
         }
       }
 
-      // 3) 最后回退到文档中最新的 user 区块
       if (!prompt) {
         const msgs = this.__parseRoleMessages(docText);
         for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1849,25 +2232,25 @@ class Registry {
       }
       this.lastPrompt = prompt;
 
-      // Compose a fake response (MVP); future: stream from selected provider via LangChain
       const response = "Echo: " + prompt;
 
-      // Insert "assistant " block at document end and stream into it
+      const runId = "run_" + Math.random().toString(36).slice(2);
       const state = view.state;
       const docLen = state.doc.length;
       const endsWithNL = docLen === 0 ? true : state.sliceDoc(docLen - 1, docLen) === "\n";
-      const head = (endsWithNL ? "" : "\n") + "assistant \n";
+      const head = (endsWithNL ? "" : "\n") + `${assistantBlockHeaderText(runId)}\n`;
       this.editorCore.view.dispatch({ changes: { from: docLen, to: docLen, insert: head } });
       let endPos = docLen + head.length;
 
-      // Mark run state
-      const runId = "run_" + Math.random().toString(36).slice(2);
       this.state.set("chat.runId", runId);
-      this.state.set("chat.streaming", true);
       this.state.set("chat.error", null);
-      this.events.emit("chat/runStarted", { runId, model: this.activeModel });
+      this.events.emit("chat/runStarted", {
+        runId,
+        assistantBlockId: runId,
+        model: this.activeModel,
+        sessionId
+      });
 
-      // Tokenize response into small chunks and stream
       const chunks: string[] = [];
       const chunkSize = 40;
       for (let i = 0; i < response.length; i += chunkSize) {
@@ -1877,47 +2260,61 @@ class Registry {
       let idx = 0;
       const timer = window.setInterval(() => {
         try {
+          const run = this.currentRuns.get(sessionId);
+          if (!run || run.id !== runId) {
+            window.clearInterval(timer);
+            return;
+          }
           if (idx < chunks.length) {
             const piece = chunks[idx++];
             this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: piece } });
             endPos += piece.length;
+            run.endPos = endPos;
             this.events.emit("chat/token", { runId, token: piece });
           } else {
-            // finalize with newline
             this.editorCore!.view.dispatch({ changes: { from: endPos, to: endPos, insert: "\n" } });
-            window.clearInterval(this.currentRun!.timer);
-            const finishedRunId = this.currentRun!.id;
-            this.currentRun = null;
-            this.state.set("chat.streaming", false);
-            this.events.emit("chat/runFinished", { runId: finishedRunId });
+            window.clearInterval(run.timer);
+            const finishedRunId = run.id;
+            if (this.currentRuns.get(sessionId)?.id === runId) {
+              this.currentRuns.delete(sessionId);
+            }
+            this.__syncGlobalStreaming();
+            this.events.emit("chat/runFinished", { runId: finishedRunId, sessionId });
           }
         } catch (e) {
-          try { window.clearInterval(this.currentRun!.timer); } catch {}
-          this.currentRun = null;
-          this.state.set("chat.streaming", false);
+          const run = this.currentRuns.get(sessionId);
+          if (run?.id === runId) {
+            try { window.clearInterval(run.timer); } catch {}
+            this.currentRuns.delete(sessionId);
+          }
+          this.__syncGlobalStreaming();
+          if (run?.id !== runId) return;
           this.state.set("chat.error", (e as any)?.message || String(e));
-          this.events.emit("chat/runError", { runId, error: e });
+          this.events.emit("chat/runError", { runId, error: e, sessionId });
         }
       }, 40);
 
-      this.currentRun = { id: runId, timer, endPos };
+      this.currentRuns.set(sessionId, { id: runId, timer, endPos });
+      this.__syncGlobalStreaming();
       return true;
     } catch (e) {
       console.error("[zion] chat.run error", e);
       this.state.set("chat.error", (e as any)?.message || String(e));
-      this.state.set("chat.streaming", false);
+      this.__syncGlobalStreaming();
       return false;
     }
   }
 
   private __chatStop(): void {
     try {
-      if (!this.currentRun) return;
-      const runId = this.currentRun.id;
-      try { window.clearInterval(this.currentRun.timer); } catch {}
-      this.currentRun = null;
-      this.state.set("chat.streaming", false);
-      this.events.emit("chat/aborted", { runId });
+      const sessionId: string = this.state.get("sessions.currentId") || "__default__";
+      const run = this.currentRuns.get(sessionId);
+      if (!run) return;
+      const runId = run.id;
+      try { window.clearInterval(run.timer); } catch {}
+      this.currentRuns.delete(sessionId);
+      this.__syncGlobalStreaming();
+      this.events.emit("chat/aborted", { runId, sessionId });
     } catch (e) {
       console.error("[zion] chat.stop error", e);
     }
@@ -1925,7 +2322,7 @@ class Registry {
 
   private __chatRetry(): void {
     try {
-      if (this.currentRun) {
+      if (this.currentRuns.size > 0) {
         console.warn("[zion] chat is running; stop first");
         return;
       }
@@ -1939,6 +2336,11 @@ class Registry {
 }
 
 const registry = new Registry();
+const chatUsageStore = createChatUsageStore();
+const runLedger = createRunLedger({
+  emit: (topic, payload) => registry.emit(topic, payload)
+});
+try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
 
 // Expose window.zion API
 (function expose() {
@@ -1963,6 +2365,7 @@ const registry = new Registry();
     },
     events: {
       emit: (topic: string, payload?: any) => registry.emit(topic, payload),
+      emitAsync: (topic: string, payload?: any) => registry.emitAsync(topic, payload),
       on: (topic: string, handler: (payload: any) => void) => registry.on(topic, handler)
     },
     state: {
@@ -1982,10 +2385,58 @@ const registry = new Registry();
     },
     editor: {
       registerPasteHandler: (handler: PasteHandler) => registry.registerPasteHandler(handler),
-      registerDecorator: (dec: Decorator) => (registry as any).registerDecorator(dec)
+      registerDecorator: (dec: Decorator) => (registry as any).registerDecorator(dec),
+      attachEditor: (core: EditorCore, panelId?: string) => (registry as any).attachEditor(core, panelId),
+      detachEditor: (panelId: string) => (registry as any).detachEditor(panelId),
+      listAttachedEditorCores: () => (registry as any).listAttachedEditorCores(),
+      getEditorForView: (view: EditorView) =>
+        (registry as any).getEditorProxyForView(view) || inspectorRuntime.getTextEditorForView(view),
+      images: {
+        begin: (editor: IEditorProxy, options: any) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          if (!view) throw new Error("Editor view is unavailable");
+          return beginImageInsertion(view, options);
+        },
+        complete: (editor: IEditorProxy, operationId: string, images: any[]) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? completeImageInsertion(view, operationId, images) : false;
+        },
+        fail: (editor: IEditorProxy, operationId: string, message?: string) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? failImageInsertion(view, operationId, message) : false;
+        },
+        cancel: (editor: IEditorProxy, operationId: string) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? cancelImageInsertion(view, operationId) : false;
+        },
+        showDropTarget: (
+          editor: IEditorProxy,
+          point: { x: number; y: number },
+          options?: { count?: number; moving?: boolean }
+        ) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          return view ? showImageDropIndicator(view, point, options) : null;
+        },
+        hideDropTarget: (editor: IEditorProxy) => {
+          const view = editor?.getView?.() as EditorView | undefined;
+          if (view) hideImageDropIndicator(view);
+        }
+      }
+    },
+    media: {
+      isImageAssetUri,
+      putImage: putImageAsset,
+      resolveImage: resolveImageAsset,
+      readImageDataUrl: readImageAssetDataUrl,
+      getImageMetadata: getImageAssetMetadata
     },
     models: {
-      registerProvider: (p: { id: string; list: () => any | Promise<any>; resolve: (id: string) => any | Promise<any> }) =>
+      registerProvider: (p: {
+        id: string;
+        list: () => any | Promise<any>;
+        resolve: (id: string) => any | Promise<any>;
+        checkAvailability?: (options?: { modelIds?: string[]; force?: boolean }) => any | Promise<any>;
+      }) =>
         (registry as any).registerModelProvider(p),
       listProviders: () => (registry as any).listModelProviders(),
       getProvider: (id: string) => (registry as any).getModelProvider(id)
@@ -1997,6 +2448,31 @@ const registry = new Registry();
       setActiveModel: (m: { providerId: string; modelId: string } | null) => (registry as any).__chatSetActiveModel(m),
       getActiveModel: () => (registry as any).__chatGetActiveModel()
     },
+
+    styles: {
+      register: (id: string, css: string): Disposable => {
+        const existing = document.getElementById('zion-style-' + id);
+        if (existing) existing.remove();
+        const style = document.createElement('style');
+        style.id = 'zion-style-' + id;
+        style.textContent = css;
+        document.head.appendChild(style);
+        return {
+          dispose: () => { const el = document.getElementById('zion-style-' + id); if (el) el.remove(); }
+        };
+      },
+      get: (id: string) => {
+        try { const el = document.getElementById('zion-style-' + id); return el?.textContent || undefined; } catch { return undefined; }
+      },
+      list: () => Array.from(document.querySelectorAll('style[id^="zion-style-"]')).map(function(el) { return el.id.replace('zion-style-', ''); })
+    },
+    runs: runLedger,
+    policies: {
+      normalizeCapabilityPolicy,
+      authorizeToolCall,
+      filterToolsForPolicy
+    },
+    usage: chatUsageStore,
     notification: {
       show: (message: string, options?: {
         type?: 'info' | 'success' | 'warning' | 'error';
@@ -2030,13 +2506,35 @@ const registry = new Registry();
       show: () => auxiliaryBarRuntime.show(),
       hide: () => auxiliaryBarRuntime.hide(),
       toggle: () => auxiliaryBarRuntime.toggle(),
-      setWidth: (w: number) => auxiliaryBarRuntime.setWidth(w)
+      setWidth: (w: number) => auxiliaryBarRuntime.setWidth(w),
+      requestTemporaryWidth: (ownerId: string, w: number) => auxiliaryBarRuntime.requestTemporaryWidth(ownerId, w),
+      releaseTemporaryWidth: (ownerId: string) => auxiliaryBarRuntime.releaseTemporaryWidth(ownerId)
+    },
+    inspector: {
+      registerRenderer: (renderer: any) => inspectorRuntime.registerRenderer(renderer),
+      registerTextEditorDecorator: (decorator: any) => inspectorRuntime.registerTextEditorDecorator(decorator),
+      open: (item: any) => inspectorRuntime.open(item),
+      update: (id: string, patch: any) => inspectorRuntime.update(id, patch),
+      close: (id: string) => inspectorRuntime.close(id),
+      clearOwner: (ownerId: string) => inspectorRuntime.clearOwner(ownerId),
+      activate: (id: string) => inspectorRuntime.activate(id),
+      show: () => inspectorRuntime.show(),
+      hide: () => inspectorRuntime.hide(),
+      isVisible: () => inspectorRuntime.isVisible(),
+      getItems: () => inspectorRuntime.getItems(),
+      getActiveItemId: () => inspectorRuntime.getActiveItemId(),
+      getTextEditor: (itemIdOrSessionId?: string) => inspectorRuntime.getTextEditor(itemIdOrSessionId),
+      getTextSource: (itemIdOrSessionId?: string) => inspectorRuntime.getTextSource(itemIdOrSessionId),
+      revealText: (itemId: string, options?: any) => inspectorRuntime.revealText(itemId, options),
+      setWidth: (width: number) => inspectorRuntime.setWidth(width)
     },
     bottomPanel: {
       registerView: (opts: any) => bottomPanelRuntime.registerView(opts),
       activateView: (id: string) => bottomPanelRuntime.activateView(id),
       closeView: (id: string) => bottomPanelRuntime.closeView(id),
       getViews: () => bottomPanelRuntime.getViews(),
+      getActiveViewId: () => bottomPanelRuntime.getActiveViewId(),
+      getLastOpenedViewId: () => bottomPanelRuntime.getLastOpenedViewId(),
       show: () => bottomPanelRuntime.show(),
       hide: () => bottomPanelRuntime.hide(),
       toggle: () => bottomPanelRuntime.toggle(),
@@ -2056,14 +2554,29 @@ const registry = new Registry();
       onDidChangeMode: (fn: any) => responsiveRuntime.onDidChangeMode(fn),
       setMode: (mode: any) => responsiveRuntime.setMode(mode)
     },
+    settings: {
+      registerPage: (page: any) => settingsRegistry.registerPage(page),
+      registerItem: (item: any) => settingsRegistry.registerItem(item),
+      open: () => openSettingsPanel(),
+      close: () => closeSettingsPanel()
+    },
     window: {
       activeEditor: null as any
     },
     __applyKeymap: () => (registry as any).applyKeymap(),
-    __runMessageContributors: (messages: any[], stage: "pre" | "post" = "pre") =>
-      (registry as any).runMessageContributors(messages, stage)
+    __runMessageContributors: (messages: any[], stage: "pre" | "post" = "pre", ctx?: any) =>
+      (registry as any).runMessageContributors(messages, stage, ctx)
   };
   (window as any).zion = api;
+  try {
+    Object.defineProperty((window as any).zion.window, "activeEditor", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return (registry as any).getActiveEditorProxy();
+      }
+    });
+  } catch {}
   try {
     bindWorkbenchCore({ state: api.state as any, events: api.events as any });
   } catch {}
@@ -2095,6 +2608,18 @@ const registry = new Registry();
 // 加载统计
 (registry as any).loadMenuUsageStats();
 
-export function attachEditor(core: EditorCore) {
-  (registry as any).attachEditor(core);
+export function attachEditor(core: EditorCore, panelId?: string) {
+  return (registry as any).attachEditor(core, panelId);
+}
+
+export function setActiveEditorPanel(panelId: string | null) {
+  (registry as any).setActivePanel(panelId);
+}
+
+export function detachEditor(panelId: string) {
+  return (registry as any).detachEditor(panelId);
+}
+
+export function listAttachedEditorCores() {
+  return (registry as any).listAttachedEditorCores();
 }

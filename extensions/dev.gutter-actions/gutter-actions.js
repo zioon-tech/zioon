@@ -1,6 +1,15 @@
 import { gutter, GutterMarker, ViewPlugin, EditorView } from "@codemirror/view";
 import { foldService, foldable } from "@codemirror/language";
 
+function t(key, fallback, values) {
+  const fullKey = `dev.gutter-actions.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
 /**
  * Copy helpers with fallback
  */
@@ -26,6 +35,37 @@ async function copyText(text) {
 }
 
 let menuGuard = null;
+
+function getRolesIndexForView(view) {
+  try {
+    const fromApi = window?.zion?.roles?.getIndex?.(view);
+    if (fromApi && Array.isArray(fromApi.blocks)) return fromApi;
+    const state = window?.zion?.state;
+    if (!state?.get) return null;
+    const dom = view?.dom || null;
+    const editorId = dom?.getAttribute?.("data-editor-id") || "";
+    const panelId = dom?.getAttribute?.("data-panel-id") || dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || "";
+    const sessionId = dom?.getAttribute?.("data-session-id") || dom?.closest?.("[data-session-id]")?.getAttribute?.("data-session-id") || "";
+    const keys = [
+      editorId ? `roles.index.editor.${editorId}` : "",
+      panelId && sessionId ? `roles.index.panelSession.${panelId}.${sessionId}` : "",
+      panelId ? `roles.index.panel.${panelId}` : "",
+      "roles.index"
+    ].filter(Boolean);
+    for (const key of keys) {
+      const idx = state.get(key);
+      if (!idx || !Array.isArray(idx.blocks)) continue;
+      const scope = idx.scope || {};
+      if (key === "roles.index") {
+        if (editorId && scope.editorId && scope.editorId !== editorId) continue;
+        if (panelId && scope.panelId && scope.panelId !== panelId) continue;
+        if (sessionId && scope.sessionId && scope.sessionId !== sessionId) continue;
+      }
+      return idx;
+    }
+  } catch {}
+  return null;
+}
 
 function ensureUserPromptBelow(view, line) {
   try {
@@ -111,6 +151,62 @@ function onDocMouseMove(ev) {
   }
 }
 
+/**
+ * Compute batch info (accept/revert counts) for a given user message line.
+ * Returns null if no pending tool actions are found.
+ */
+function computeBatchInfoForLine(view, doc, userStartLine, isUserLikeLine) {
+  if (!isUserLikeLine) return null;
+  const sid = window.zion?.state?.get?.("sessions.currentId");
+  const ann = sid ? (window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", sid) || {}) : {};
+  const list = Array.isArray(ann.tools) ? ann.tools : [];
+  const toolActions = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
+
+  let range = null;
+  try {
+    const idx = getRolesIndexForView(view);
+    const blocks = Array.isArray(idx?.blocks) ? idx.blocks : [];
+    const userIndex = blocks.findIndex(b => b && b.role === "user" && b.startLine === userStartLine);
+    if (userIndex >= 0) {
+      let assistantIndex = -1;
+      for (let i = userIndex + 1; i < blocks.length; i++) {
+        if (blocks[i]?.role === "assistant") { assistantIndex = i; break; }
+        if (blocks[i]?.role === "user") break;
+      }
+      if (assistantIndex >= 0) range = { from: blocks[assistantIndex].from, to: blocks[assistantIndex].to };
+    }
+  } catch {}
+
+  const filesSet = new Set();
+  let total = 0;
+  let acceptCount = 0;
+  let revertCount = 0;
+
+  const matchesUser = (it) => it && it.userStartLine === userStartLine;
+  const matchesRange = (it) => range && typeof it.from === "number" && it.from >= range.from && it.to <= range.to;
+  const isTargetName = (name) => name === "edit" || name === "write" || name === "fsedit" || name === "fswrite";
+
+  const pickAction = (id, fallback) => {
+    const v = id != null ? toolActions[String(id)] : null;
+    const a = v?.action || fallback;
+    return a === "accept" || a === "revert" ? a : null;
+  };
+
+  const matchedByUser = list.filter(it => matchesUser(it) && isTargetName(String(it?.name || "")));
+  const candidates = matchedByUser.length ? matchedByUser : list.filter(it => matchesRange(it) && isTargetName(String(it?.name || "")));
+  for (const it of candidates) {
+    total += 1;
+    const path = it.args?.path;
+    if (typeof path === "string" && path.trim()) filesSet.add(path);
+    const action = pickAction(it.id, it.action);
+    if (action === "accept") acceptCount += 1;
+    if (action === "revert") revertCount += 1;
+  }
+  if (!total) return null;
+  const state = acceptCount === total ? "accepted" : (revertCount === total ? "reverted" : "mixed");
+  return { total, acceptCount, revertCount, files: filesSet.size, userStartLine, range, state };
+}
+
 function openMenu(view, clientX, clientY, line) {
   closeExistingMenu();
   const doc = view.state.doc;
@@ -140,65 +236,21 @@ function openMenu(view, clientX, clientY, line) {
   const implicitMarkerLine = findImplicitUserMarkerLine();
   const isImplicitUserLine = !isUserRoleLine && implicitMarkerLine != null && line.number === implicitMarkerLine && !isRoleHeader(line.text);
   const isUserLikeLine = isUserRoleLine || isImplicitUserLine;
-
-  const computeBatchInfo = () => {
-    if (!isUserLikeLine) return null;
-    const sid = window.zion?.state?.get?.("sessions.currentId");
-    const ann = sid ? (window.zion?.state?.get?.(`sessions.annotations.${sid}`) || {}) : {};
-    const list = Array.isArray(ann.tools) ? ann.tools : [];
-    const toolActions = ann && typeof ann.toolActions === "object" ? ann.toolActions : {};
-
-    const userStartLine = isImplicitUserLine ? 0 : (line.number - 1);
-    let range = null;
-    try {
-      const idx = window.zion?.state?.get?.("roles.index");
-      const blocks = Array.isArray(idx?.blocks) ? idx.blocks : [];
-      const userIndex = blocks.findIndex(b => b && b.role === "user" && b.startLine === userStartLine);
-      if (userIndex >= 0) {
-        let assistantIndex = -1;
-        for (let i = userIndex + 1; i < blocks.length; i++) {
-          if (blocks[i]?.role === "assistant") { assistantIndex = i; break; }
-          if (blocks[i]?.role === "user") break;
-        }
-        if (assistantIndex >= 0) range = { from: blocks[assistantIndex].from, to: blocks[assistantIndex].to };
-      }
-    } catch {}
-
-    const filesSet = new Set();
-    let total = 0;
-    let acceptCount = 0;
-    let revertCount = 0;
-
-    const matchesUser = (it) => it && it.userStartLine === userStartLine;
-    const matchesRange = (it) => range && typeof it.from === "number" && it.from >= range.from && it.from <= range.to;
-    const isTargetName = (name) => name === "edit" || name === "write" || name === "fsedit" || name === "fswrite";
-
-    const pickAction = (id, fallback) => {
-      const v = id != null ? toolActions[String(id)] : null;
-      const a = v?.action || fallback;
-      return a === "accept" || a === "revert" ? a : null;
-    };
-
-    const matchedByUser = list.filter(it => matchesUser(it) && isTargetName(String(it?.name || "")));
-    const candidates = matchedByUser.length ? matchedByUser : list.filter(it => matchesRange(it) && isTargetName(String(it?.name || "")));
-    for (const it of candidates) {
-      total += 1;
-      const path = it.args?.path;
-      if (typeof path === "string" && path.trim()) filesSet.add(path);
-      const action = pickAction(it.id, it.action);
-      if (action === "accept") acceptCount += 1;
-      if (action === "revert") revertCount += 1;
-    }
-    if (!total) return null;
-    const state = acceptCount === total ? "accepted" : (revertCount === total ? "reverted" : "mixed");
-    return { total, acceptCount, revertCount, files: filesSet.size, userStartLine, range, state };
-  };
+  const userStartLine = isImplicitUserLine ? 0 : (line.number - 1);
+  try {
+    window.zion?.state?.set?.("dev.gutterActions.lastContext", {
+      lineNumber: line.number,
+      userStartLine,
+      at: Date.now()
+    });
+  } catch {}
+  const batch = computeBatchInfoForLine(view, doc, userStartLine, isUserLikeLine);
 
   // Determine foldable range at this line
   const foldRange = (() => {
     // 0) 角色块优先：如果是角色行，使用 roles.index 的整块范围（包含角色行）
     try {
-      const idx = (window?.zion?.state?.get && window.zion.state.get('roles.index')) || null;
+      const idx = getRolesIndexForView(view);
       if (idx && Array.isArray(idx.blocks)) {
         const ln0 = line.number - 1; // roles.index 使用 0-based 行号
         const blk = idx.blocks.find(b => b.startLine === ln0);
@@ -336,7 +388,7 @@ function openMenu(view, clientX, clientY, line) {
     return btn;
   };
 
-  menu.appendChild(mkItem("下一行插入 user", () => {
+  menu.appendChild(mkItem(t("menu.insertUserBelow", "下一行插入 user"), () => {
     ensureUserPromptBelow(view, line);
     return Promise.resolve(true);
   }, false));
@@ -346,7 +398,7 @@ function openMenu(view, clientX, clientY, line) {
     const text = doc.sliceString(line.from, line.to);
     return copyText(text);
   };
-  menu.appendChild(mkItem("复制当前行", copyLine, false));
+  menu.appendChild(mkItem(t("menu.copyLine", "复制当前行"), copyLine, false));
 
   // 复制折叠块范围（如果有），范围需包含当前行
   const copyFoldBlock = () => {
@@ -356,24 +408,35 @@ function openMenu(view, clientX, clientY, line) {
     const text = doc.sliceString(start, end);
     return copyText(text);
   };
-  menu.appendChild(mkItem("复制折叠块范围", copyFoldBlock, !foldRange));
+  menu.appendChild(mkItem(t("menu.copyFoldBlock", "复制折叠块范围"), copyFoldBlock, !foldRange));
 
-  const batch = computeBatchInfo();
   if (batch) {
-    const info = `涉及 ${batch.total} 处变更，${batch.files} 个文件`;
-    const acceptLabel = `批量 Accept (${batch.acceptCount}/${batch.total})`;
-    const revertLabel = `批量 Revert (${batch.revertCount}/${batch.total})`;
+    const info = t("menu.batchInfo", "涉及 {total} 处变更，{files} 个文件", { total: batch.total, files: batch.files });
+    const acceptLabel = t("menu.batchAccept", "批量接受 ({accepted}/{total})", { accepted: batch.acceptCount, total: batch.total });
+    const revertLabel = t("menu.batchRevert", "批量回退 ({reverted}/{total})", { reverted: batch.revertCount, total: batch.total });
     const acceptDisabled = batch.state === "accepted";
     const revertDisabled = batch.state === "reverted";
     menu.appendChild(mkItem(acceptLabel, () => {
       try {
-        window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to });
+        const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+        const sessionId = panelId
+          ? (window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+            || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+            || null)
+          : (window.zion?.state?.get?.("sessions.currentId") || null);
+        window.zion?.events?.emit("toolcards/batchAccept", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);
     }, acceptDisabled));
     menu.appendChild(mkItem(revertLabel, () => {
       try {
-        window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to });
+        const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
+        const sessionId = panelId
+          ? (window.zion?.panelManager?.getPanel?.(panelId)?.activeTabId
+            || window.zion?.panels?.list?.().find((panel) => panel.id === panelId)?.activeTabId
+            || null)
+          : (window.zion?.state?.get?.("sessions.currentId") || null);
+        window.zion?.events?.emit("toolcards/batchRevert", { userStartLine: batch.userStartLine, from: batch.range?.from, to: batch.range?.to, panelId, sessionId });
       } catch {}
       return Promise.resolve(true);
     }, revertDisabled));
@@ -451,7 +514,7 @@ class DotMarker extends GutterMarker {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "zion-gutter-dot";
-    btn.title = "行操作（Shift-点击：下一行插入 user）";
+    btn.title = t("ui.lineActions", "行操作（Shift-点击：下一行插入 user）");
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -477,7 +540,7 @@ class UserDotMarker extends DotMarker {
   toDOM(view) {
     const btn = super.toDOM(view);
     btn.classList.add("zion-gutter-dot-persistent");
-    btn.title = "User message";
+    btn.title = t("ui.userMessage", "User message");
     return btn;
   }
 }
@@ -549,12 +612,15 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
     // Append to editor dom so it sits on top of scroller or inside the wrapper
     view.dom.appendChild(this.container);
     this.rafId = 0;
+    this.updateTimer = 0;
     this.tooltip = null;
     this.updateMarkers();
   }
 
   update(update) {
-    if (update.docChanged || update.geometryChanged || update.viewportChanged) {
+    if (update.docChanged) {
+      this.scheduleUpdateMarkers();
+    } else if ((update.geometryChanged || update.viewportChanged) && !this.updateTimer) {
       this.updateMarkers();
     }
   }
@@ -563,6 +629,7 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
     this.container.remove();
     this.hideTooltip();
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
+    if (this.updateTimer) window.clearTimeout(this.updateTimer);
   }
 
   hideTooltip() {
@@ -607,7 +674,19 @@ const scrollbarMarkersPlugin = ViewPlugin.fromClass(class {
     setTimeout(() => document.addEventListener("click", onClick), 0);
   }
 
+  scheduleUpdateMarkers() {
+    if (this.updateTimer) window.clearTimeout(this.updateTimer);
+    this.updateTimer = window.setTimeout(() => {
+      this.updateTimer = 0;
+      this.updateMarkers();
+    }, 120);
+  }
+
   updateMarkers() {
+    if (this.updateTimer) {
+      window.clearTimeout(this.updateTimer);
+      this.updateTimer = 0;
+    }
     if (this.rafId) window.cancelAnimationFrame(this.rafId);
     this.rafId = window.requestAnimationFrame(() => {
       if (!this.view.dom.contains(this.container)) {

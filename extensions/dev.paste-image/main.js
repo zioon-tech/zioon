@@ -1,208 +1,205 @@
-/**
- * Paste Image Extension (Option C)
- *
- * Behavior:
- * - For local File/Blob images or data: URLs found in clipboard/html, read as DataURL,
- *   persist into IndexedDB and insert a short internal link: ![](app://img/<id>)
- * - For remote image URLs (http/https) or remote <img src="...">, insert the original src.
- *
- * Storage:
- * - IndexedDB DB: "dev.paste-image-db", store: "images", records: { id, dataUrl, createdAt }
- *
- * Notes:
- * - This is a local in-browser cache. The short link scheme "app://img/<id>" is an
- *   application-local identifier — you will need a runtime loader to resolve and render
- *   these links when displaying content. This keeps pasted documents lightweight.
- */
+const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg|avif)(?:\?.*)?$/i;
 
-function readAsDataURL(file) {
+function readAsDataUrl(file) {
   return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result);
-    fr.onerror = (e) => reject(e);
-    fr.readAsDataURL(file);
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read image"));
+    reader.readAsDataURL(file);
   });
 }
 
-function openDB() {
-  return new Promise((resolve, reject) => {
+function probeClipboard(clipboardData) {
+  const files = [...(clipboardData?.files || [])]
+    .filter(file => file?.type?.startsWith("image/"));
+  if (files.length) return files;
+
+  const itemFiles = [...(clipboardData?.items || [])]
+    .filter(item => item?.kind === "file" && item?.type?.startsWith("image/"))
+    .map(item => item.getAsFile?.())
+    .filter(Boolean);
+  if (itemFiles.length) return itemFiles;
+
+  const html = clipboardData?.getData?.("text/html") || "";
+  if (html) {
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const sources = [...parsed.querySelectorAll("img[src]")]
+      .map(image => image.getAttribute("src"))
+      .filter(Boolean);
+    if (sources.length) return sources;
+  }
+
+  const text = String(clipboardData?.getData?.("text/plain") || "").trim();
+  if (/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(text) || IMAGE_URL_RE.test(text)) {
+    return [text];
+  }
+  return [];
+}
+
+function imageAlt(source) {
+  if (!(typeof globalThis.File === "function" && source instanceof globalThis.File)) return "";
+  return source.name.replace(/\.[^.]+$/, "");
+}
+
+async function storeSource(source) {
+  if (typeof source === "string" && /^https?:/i.test(source)) {
+    return source;
+  }
+  const media = window.zion?.media;
+  if (media?.putImage) {
+    return await media.putImage(source, typeof globalThis.File === "function" && source instanceof globalThis.File
+      ? { name: source.name, mimeType: source.type }
+      : {});
+  }
+  return typeof source === "string" ? source : await readAsDataUrl(source);
+}
+
+async function insertSources(editor, sources, options = {}) {
+  const imageApi = window.zion?.editor?.images;
+  if (!editor || !sources.length) return false;
+
+  if (!imageApi?.begin || !imageApi?.complete) {
+    const stored = await Promise.all(sources.map(storeSource));
+    const markdown = stored.map((src, index) => `![${imageAlt(sources[index])}](${src})`).join("\n");
+    editor.replaceSelection(sources.length > 1 ? `\n${markdown}\n` : markdown);
+    return true;
+  }
+
+  let operationId = "";
+  const run = async () => {
     try {
-      const req = indexedDB.open('dev.paste-image-db', 1);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains('images')) {
-          db.createObjectStore('images', { keyPath: 'id' });
-        }
-      };
-      req.onsuccess = (e) => {
-        resolve(e.target.result);
-      };
-      req.onerror = (e) => {
-        reject(e.target.error);
-      };
-    } catch (err) {
-      reject(err);
-    }
-  });
-}
-
-function genId() {
-  try {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-      return crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-    }
-  } catch (_) {}
-  return (
-    Date.now().toString(36) +
-    Math.random().toString(36).slice(2, 8)
-  );
-}
-
-async function saveDataUrlToDB(dataUrl) {
-  const db = await openDB();
-  const id = genId();
-  return new Promise((resolve, reject) => {
-    try {
-      const tx = db.transaction('images', 'readwrite');
-      const store = tx.objectStore('images');
-      store.put({ id, dataUrl, createdAt: Date.now() });
-      tx.oncomplete = () => {
-        try { db.close(); } catch (_) {}
-        resolve(id);
-      };
-      tx.onerror = (e) => {
-        try { db.close(); } catch (_) {}
-        reject(e.target && e.target.error ? e.target.error : new Error('TX error'));
-      };
-    } catch (err) {
-      try { db.close(); } catch (_) {}
-      reject(err);
-    }
-  });
-}
-
-function makeAppLink(id) {
-  return `app://img/${id}`;
-}
-
-export async function activate(ctx) {
-  // ensure subscriptions array exists
-  ctx.subscriptions = ctx.subscriptions || [];
-
-  const handler = {
-    id: 'dev.paste-image.handler',
-    priority: 100,
-    async handle({ clipboardData, editor }) {
-      if (!clipboardData || !editor) return false;
-
-      // Helper: insertDataUrlWithCache -> saves to IDB and inserts short link.
-      const insertCached = async (dataUrl) => {
-        try {
-          const id = await saveDataUrlToDB(dataUrl);
-          editor.replaceSelection(`![](${makeAppLink(id)})`);
-          return true;
-        } catch (e) {
-          console.error('[dev.paste-image] save to IDB failed, falling back to inline data URL', e);
-          // fallback: insert raw data URL (may be large)
-          try {
-            editor.replaceSelection(`![](${dataUrl})`);
-            return true;
-          } catch (e2) {
-            console.error('[dev.paste-image] fallback insert failed', e2);
-            return false;
-          }
-        }
-      };
-
-      // 1) Check clipboardData.files (standard)
-      const files = clipboardData.files;
-      if (files && files.length) {
-        for (let i = 0; i < files.length; i++) {
-          const f = files[i];
-          if (f && f.type && f.type.startsWith('image/')) {
-            try {
-              const dataUrl = await readAsDataURL(f);
-              // save to IDB and insert short link
-              return await insertCached(dataUrl);
-            } catch (e) {
-              console.error('[dev.paste-image] read file failed', e);
-            }
-          }
-        }
-      }
-
-      // 2) Check clipboardData.items (some browsers expose items with kind=file)
-      const items = clipboardData.items || [];
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        try {
-          if (it && it.kind === 'file' && it.type && it.type.startsWith('image/')) {
-            const file = it.getAsFile && it.getAsFile();
-            if (file) {
-              const dataUrl = await readAsDataURL(file);
-              return await insertCached(dataUrl);
-            }
-          }
-        } catch (e) {
-          // continue
-        }
-      }
-
-      // 3) Check HTML payload for <img src="...">
-      try {
-        const html = clipboardData.getData && clipboardData.getData('text/html');
-        if (html) {
-          const m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
-          if (m && m[1]) {
-            const src = m[1];
-            // If src is data:, cache it, else insert original src
-            if (src.startsWith('data:')) {
-              return await insertCached(src);
-            } else {
-              editor.replaceSelection(`![](${src})`);
-              return true;
-            }
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-
-      // 4) Check plain text for image URL or raw data URL
-      try {
-        const text = (clipboardData.getData && clipboardData.getData('text/plain')) || '';
-        const t = text.trim();
-        if (!t) return false;
-        // data: URL
-        if (/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(t)) {
-          return await insertCached(t);
-        }
-        // remote image URL
-        if (/^https?:\/\/\S+\.(png|jpe?g|gif|webp|bmp)(\?.*)?$/i.test(t)) {
-          editor.replaceSelection(`![](${t})`);
-          return true;
-        }
-      } catch (e) {
-        // ignore
-      }
-
-      // not handled
-      return false;
+      const stored = await Promise.all(sources.map(storeSource));
+      const images = stored.map((src, index) => ({
+        src,
+        alt: imageAlt(sources[index])
+      }));
+      imageApi.complete(editor, operationId, images);
+    } catch (error) {
+      imageApi.fail(
+        editor,
+        operationId,
+        error instanceof Error ? error.message : "图片导入失败"
+      );
     }
   };
 
-  const disp = window.zion?.editor?.registerPasteHandler
-    ? window.zion.editor.registerPasteHandler(handler)
-    : { dispose: () => {} };
+  operationId = imageApi.begin(editor, {
+    count: sources.length,
+    position: options.position,
+    from: options.from,
+    to: options.to,
+    userEvent: options.userEvent || "input.image",
+    retry: run
+  });
+  await run();
+  return true;
+}
 
-  ctx.subscriptions.push(disp);
+function registerExternalDrop(ctx) {
+  const disposable = window.zion?.editor?.registerDecorator?.({
+    id: "dev.paste-image.drop",
+    apply(editor) {
+      const view = editor?.getView?.();
+      if (!view) return { dispose() {} };
+
+      const onDragOver = (event) => {
+        const items = [...(event.dataTransfer?.items || [])]
+          .filter(item => item?.kind === "file" && item?.type?.startsWith("image/"));
+        const files = [...(event.dataTransfer?.files || [])]
+          .filter(file => file?.type?.startsWith("image/"));
+        const count = Math.max(items.length, files.length);
+        if (!count) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+        window.zion?.editor?.images?.showDropTarget?.(
+          editor,
+          { x: event.clientX, y: event.clientY },
+          { count }
+        );
+      };
+      const hide = () => window.zion?.editor?.images?.hideDropTarget?.(editor);
+      const onDragLeave = (event) => {
+        if (!event.relatedTarget || !view.dom.contains(event.relatedTarget)) hide();
+      };
+      const onDrop = (event) => {
+        const files = [...(event.dataTransfer?.files || [])]
+          .filter(file => file?.type?.startsWith("image/"));
+        if (!files.length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const target = window.zion?.editor?.images?.showDropTarget?.(
+          editor,
+          { x: event.clientX, y: event.clientY },
+          { count: files.length }
+        );
+        hide();
+        void insertSources(editor, files, {
+          position: target?.position,
+          from: target?.position,
+          to: target?.position,
+          userEvent: "input.drop"
+        });
+      };
+
+      view.dom.addEventListener("dragover", onDragOver);
+      view.dom.addEventListener("dragleave", onDragLeave);
+      view.dom.addEventListener("drop", onDrop);
+      return {
+        dispose() {
+          view.dom.removeEventListener("dragover", onDragOver);
+          view.dom.removeEventListener("dragleave", onDragLeave);
+          view.dom.removeEventListener("drop", onDrop);
+          hide();
+        }
+      };
+    }
+  });
+  if (disposable) ctx.subscriptions.push(disposable);
+}
+
+function registerFilePicker(ctx) {
+  const command = window.zion?.commands?.registerCommand?.("image.insertFromFile", () => {
+    const editor = window.zion?.window?.activeEditor;
+    if (!editor) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.multiple = true;
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.addEventListener("change", () => {
+      const files = [...(input.files || [])].filter(file => file.type.startsWith("image/"));
+      if (files.length) void insertSources(editor, files, { userEvent: "input.file-picker" });
+      input.remove();
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+  if (command) ctx.subscriptions.push(command);
+}
+
+export async function activate(ctx) {
+  ctx.subscriptions = ctx.subscriptions || [];
+  const handler = {
+    id: "dev.paste-image.handler",
+    priority: 100,
+    claim({ clipboardData }) {
+      const sources = probeClipboard(clipboardData);
+      return sources.length ? { sources } : false;
+    },
+    async handle({ editor, claim }) {
+      const sources = Array.isArray(claim?.sources) ? claim.sources : [];
+      return await insertSources(editor, sources, { userEvent: "input.paste" });
+    }
+  };
+  const pasteDisposable = window.zion?.editor?.registerPasteHandler?.(handler);
+  if (pasteDisposable) ctx.subscriptions.push(pasteDisposable);
+  registerExternalDrop(ctx);
+  registerFilePicker(ctx);
 }
 
 export function deactivate(ctx) {
-  // optional cleanup if host calls deactivate with ctx
-  if (ctx && Array.isArray(ctx.subscriptions)) {
-    for (const d of ctx.subscriptions) {
-      try { d && typeof d.dispose === 'function' && d.dispose(); } catch (_) {}
-    }
+  for (const disposable of ctx?.subscriptions || []) {
+    try { disposable?.dispose?.(); } catch {}
   }
 }

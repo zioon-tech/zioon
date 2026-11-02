@@ -1,3 +1,6 @@
+import type { RunLedger, RunSourceRef, RunTrigger } from "../core/run-ledger";
+import type { CapabilityPolicy, RunPolicyCounters, ToolCallLike, ToolLike } from "../core/run-policy";
+
 export type Disposable = { dispose(): void };
 
 export type Keybinding = {
@@ -9,29 +12,46 @@ export type Keybinding = {
 export type CommandHandler = (...args: any[]) => any;
 
 export interface EditorProxy {
+  panelId?: string | null;
+  editorId?: string;
+  sessionId?: string | null;
   getValue(): string;
-  setValue(v: string): void;
+  setValue(v: string, opts?: {
+    source?: "session-load" | "session-seed" | "collaboration-hydration";
+  }): void;
   replaceSelection(text: string): void;
   getSelection(): string;
   replaceRange(text: string, from: { line: number; ch: number }, to?: { line: number; ch: number }): void;
   getCursor(): { line: number; ch: number };
   setCursor(pos: { line: number; ch: number }): void;
   focus(): void;
+  setSessionId?(sessionId: string | null): void;
   /** Inject a custom CM6 visual extension (e.g., ViewPlugin/Decoration) */
   addVisualExtension(ext: any): void;
+  /** Get raw CM6 EditorView for advanced extensions */
+  getView(): any;
 }
 
 export type PasteHandler = {
   id: string;
   priority?: number; // higher first, default 50
-  handle(ctx: { clipboardData: DataTransfer; editor: EditorProxy }): boolean | Promise<boolean>;
+  claim?(ctx: { clipboardData: DataTransfer; editor: EditorProxy }): unknown | false | null;
+  handle(ctx: { clipboardData: DataTransfer; editor: EditorProxy; claim?: unknown }): boolean | Promise<boolean>;
 };
 
 export type MessageContributor = {
   id: string;
   order?: number; // default 50, smaller runs earlier
   stage?: "pre" | "post"; // default "pre"
-  contribute: (messages: any[], ctx: { editor: EditorProxy | null; state: any; events: any }) => any[] | Promise<any[]>;
+  contribute: (messages: any[], ctx: {
+    editor: EditorProxy | null;
+    state: any;
+    events: any;
+    sessionId?: string | null;
+    panelId?: string | null;
+    requestSource?: string | null;
+    runId?: string | null;
+  }) => any[] | Promise<any[]>;
 };
 
 export type Decorator = {
@@ -39,21 +59,64 @@ export type Decorator = {
   apply(editor: EditorProxy): Disposable;
 };
 
+export type MemoryItem = {
+  id: string;
+  providerId?: string;
+  path?: string;
+  title: string;
+  content: string;
+  layer?: "working" | "long-term" | string;
+  type?: "semantic" | "episodic" | "procedural" | "preference" | string;
+  scope?: "user" | "project" | "workspace" | "agent" | string;
+  tags?: string[];
+  enabled?: boolean;
+  pinned?: boolean;
+  confidence?: number;
+  source?: string;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
+export type MemoryProvider = {
+  id: string;
+  label?: string;
+  kind?: "local" | "external" | string;
+  writable?: boolean;
+  disabled?: boolean;
+  description?: string;
+  capabilities?: string[];
+  list?: () => MemoryItem[] | Promise<MemoryItem[]>;
+  search?: (query: string, opts?: any) => MemoryItem[] | Promise<MemoryItem[]>;
+  read?: (id: string) => MemoryItem | null | Promise<MemoryItem | null>;
+  write?: (item: Partial<MemoryItem>) => MemoryItem | Promise<MemoryItem>;
+  delete?: (id: string) => boolean | Promise<boolean>;
+};
+
 export type MenuItem = {
   command?: string;
   title?: string;
+  subtitle?: string;
   when?: "editorFocus" | "hasSelection";
   submenu?: MenuItem[];
   order?: number; // 默认 50，越小越靠前
   pinned?: boolean; // 是否置顶
   group?: string; // 分组标识，相同分组的可以一起拖拽
+  /** If provided, called when building the menu to compute the title dynamically */
+  dynamicTitle?: () => string | null;
 };
 
 export type SelectionToolbarContext = {
-  view: any;
+  view: any | null;
   selectionText: string;
   from: number;
   to: number;
+  sourceKind?: "editor" | "inspector" | string;
+  inspectorItemId?: string;
+  sourceSessionId?: string;
+  sourcePath?: string;
+  sourceTitle?: string;
+  sourceText?: string;
+  getEditor?: () => EditorProxy | null;
 };
 
 export type SelectionToolbarItem = {
@@ -67,11 +130,52 @@ export type SelectionToolbarItem = {
   render?: (ctx: SelectionToolbarContext & { anchorEl: HTMLElement; event?: Event }) => HTMLElement;
 };
 
-export type ModelInfo = { id: string; label?: string };
+export type ModelLimits = {
+  contextWindowTokens?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  defaultOutputTokens?: number;
+  source?: "provider-api" | "builtin" | "user" | "unknown" | string;
+  updatedAt?: number | string;
+};
+
+export type ModelAvailability = {
+  status: "available" | "degraded" | "unavailable" | "misconfigured" | "unknown";
+  reason?: string;
+  source?: "provider-list" | "actual-run" | "config" | "unknown" | string;
+  checkedAt?: number;
+  expiresAt?: number | null;
+  stale?: boolean;
+  latencyMs?: number;
+  httpStatus?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  consecutiveFailures?: number;
+};
+
+export type ModelInfo = {
+  id: string;
+  label?: string;
+  description?: string;
+  limits?: ModelLimits;
+  capabilities?: Record<string, boolean | string | number>;
+  availability?: ModelAvailability;
+};
 export type ModelProvider = {
   id: string;
   list(): ModelInfo[] | Promise<ModelInfo[]>;
   resolve(modelId: string): any | Promise<any>;
+  checkAvailability?(options?: {
+    modelIds?: string[];
+    force?: boolean;
+  }): any | Promise<any>;
+};
+
+export type PluginDevSessionRecord = {
+  pluginId: string;
+  devId: string;
+  baseUrl: string;
+  dir: string;
 };
 
 // Slash Commands
@@ -100,6 +204,7 @@ export interface SlashCommand {
   priority?: number;
   params?: SlashParamSchema[];
   submenu?: any;
+  retainTrigger?: boolean;
   execute: (params?: Record<string, any>, editor?: EditorProxy) => void | Promise<void>;
 }
 
@@ -129,6 +234,7 @@ declare global {
       // events bus
       events: {
         emit(topic: string, payload?: any): void;
+        emitAsync(topic: string, payload?: any): Promise<void>;
         on(topic: string, handler: (payload: any) => void): Disposable;
       };
       // state bus
@@ -141,9 +247,116 @@ declare global {
           handler: (newVal: T | undefined, oldVal: T | undefined) => void
         ): Disposable;
       };
+      plugins?: {
+        list(): any[];
+        get(id: string): any | undefined;
+        getStats(): any;
+        getPluginOrigin(plugin: any): "builtin" | "dev" | "external";
+        installFromInfo(plugin: any, options?: { enabled?: boolean }): Promise<any>;
+        hotReloadFromInfo(plugin: any, options?: { enabled?: boolean; skipNotification?: boolean }): Promise<any>;
+        enable(id: string): Promise<void>;
+        disable(id: string): Promise<void>;
+        uninstall(id: string): Promise<void>;
+        on(event: string, handler: (...args: any[]) => void): void;
+        off(event: string, handler: (...args: any[]) => void): void;
+        listDevSessionRecords(): Record<string, PluginDevSessionRecord>;
+        saveDevSessionRecord(record: PluginDevSessionRecord): boolean;
+        removeDevSessionRecord(filter: { pluginId?: string; devId?: string }): boolean;
+      };
+      pluginInstaller?: {
+        setBaseUrl(url: string): void;
+        installFromFile(file: File): Promise<any>;
+        installFromService(pluginId: string): Promise<any>;
+        installFromDevBase(baseUrl: string, devId: string, options?: { sourceDir?: string }): Promise<any>;
+        searchPlugins(query: string, limit?: number): Promise<any>;
+        listPlugins(limit?: number, offset?: number): Promise<any>;
+      };
+        styles: {
+        register(id: string, css: string): Disposable;
+        get(id: string): string | undefined;
+        list(): string[];
+      };
+      runs?: RunLedger;
+      policies?: {
+        normalizeCapabilityPolicy(input?: any): CapabilityPolicy;
+        authorizeToolCall(call: ToolCallLike, inputPolicy?: any, counters?: RunPolicyCounters): { allowed: boolean; reason?: string };
+        filterToolsForPolicy<T extends ToolLike>(tools: T[], inputPolicy?: any): T[];
+      };
       // ui
       statusBar: {
         registerItem(opts: { id: string; text: string; tooltip?: string; onClick?: () => void; priority?: number; align?: "left" | "right" }): Disposable;
+      };
+      settings?: {
+        registerPage(page: any): Disposable;
+        registerItem(item: any): Disposable;
+        open(): void;
+        close(): void;
+      };
+      memory?: {
+        registerProvider(provider: MemoryProvider): Disposable;
+        listProviders(): MemoryProvider[];
+        listMemories(): MemoryItem[];
+        getMemory(id: string): MemoryItem | null;
+        getMemoryByPath(path: string): MemoryItem | null;
+        getRootPath(): string;
+        createMemory(input?: Partial<MemoryItem>): MemoryItem;
+        updateMemory(id: string, patch: Partial<MemoryItem>): MemoryItem | null;
+        deleteMemory(id: string): void;
+        search(query?: string, opts?: any): MemoryItem[];
+        buildContext(query?: string, opts?: any): { text: string; items: MemoryItem[]; maxChars: number };
+        importMarkdown(markdown: string, opts?: Partial<MemoryItem>): MemoryItem;
+        exportMarkdown(items?: MemoryItem[]): string;
+        getSettings(): Record<string, any>;
+        saveSettings(patch: Record<string, any>): Record<string, any>;
+        setActiveMemory(id: string): void;
+        openMemory(id: string): void;
+        getActiveMemory(): MemoryItem | null;
+      };
+      i18n?: {
+        getLocale(): "zh-CN" | "en-US";
+        getDefaultLocale(): "zh-CN";
+        getSupportedLocales(): Array<{ value: "zh-CN" | "en-US"; label: string; nativeLabel: string }>;
+        setLocale(locale: "zh-CN" | "en-US"): void;
+        toggleLocale(): void;
+        registerNamespace(
+          namespace: string,
+          messages: Partial<Record<"zh-CN" | "en-US", Record<string, string>>>
+        ): Disposable;
+        t(key: string, values?: Record<string, string | number | boolean | null | undefined>): string;
+        getMessageVariants(key: string, values?: Record<string, string | number | boolean | null | undefined>): string[];
+      };
+      theme?: {
+        getPreference(): "system" | "light" | "dark";
+        getSelection(): string;
+        getResolvedTheme(): "light" | "dark";
+        getVariant(): string;
+        setPreference(preference: "system" | "light" | "dark"): void;
+        setSelection(selection: string): void;
+        setVariant(variant: string): void;
+        registerVariant(id: string, opts: { title: string; baseTheme: "system" | "light" | "dark"; css: string }): Disposable;
+        toggle(): void;
+        refresh(): void;
+        getToken(name: string): string;
+      };
+      editorHeaderMenu?: {
+        register(item: {
+          id: string;
+          title?: string;
+          section?: string;
+          order?: number;
+          kind?: "action" | "toggle" | "separator";
+          command?: string;
+          args?: any[];
+          onClick?: () => void;
+          getChecked?: () => boolean;
+        }): Disposable;
+        list(): Array<{
+          id: string;
+          title?: string;
+          section?: string;
+          order?: number;
+          kind?: "action" | "toggle" | "separator";
+        }>;
       };
       activityBar?: {
         registerItem(opts: {
@@ -151,6 +364,7 @@ declare global {
           pluginId: string;
           icon: string;
           tooltip?: string;
+          tooltipKey?: string;
           order?: number;
           when?: string;
           sideBarViewId?: string;
@@ -169,12 +383,23 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'sidebar' | string;
           order?: number;
           when?: string;
           canClose?: boolean;
-          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          showHideAction?: boolean;
+          headerLeading?: {
+            render: (
+              container: HTMLElement,
+              context: {
+                setVisible(visible: boolean): void;
+                setWidth(px: number): void;
+              }
+            ) => { dispose?: () => void } | void;
+          };
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; textKey?: string; active?: boolean | (() => boolean); onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -195,13 +420,14 @@ declare global {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'auxiliarybar' | string;
           order?: number;
           when?: string;
           canClose?: boolean;
           keepWhenActive?: boolean;
-          headerActions?: Array<{ id: string; title: string; ariaLabel?: string; icon?: string; onClick: () => void }>;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; text?: string; active?: boolean | (() => boolean); onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -213,22 +439,84 @@ declare global {
         activateView(id: string): void;
         closeView(id: string): void;
         getViews(): any[];
+        getActiveViewId(): string | null;
+        getLastOpenedViewId(): string | null;
         show(): void;
         hide(): void;
         toggle(): boolean;
         setWidth(w: number): void;
+        requestTemporaryWidth(ownerId: string, w: number): void;
+        releaseTemporaryWidth(ownerId: string): void;
+      };
+      inspector?: {
+        registerRenderer(renderer: {
+          id: string;
+          priority?: number;
+          canRender: (item: any) => boolean;
+          render: (
+            container: HTMLElement,
+            context: {
+              item: any;
+              update: (patch: Record<string, any>) => boolean;
+              close: () => void;
+              openInEditor: () => void;
+            }
+          ) => void | { dispose?: () => void };
+        }): Disposable;
+        registerTextEditorDecorator(decorator: {
+          id: string;
+          priority?: number;
+          createExtension: (editor: EditorProxy, item: any) => any;
+        }): Disposable;
+        open(item: {
+          id: string;
+          ownerId?: string;
+          title: string;
+          path?: string;
+          displayPath?: string;
+            url?: string;
+          language?: string;
+            file?: { kind?: "loading" | "error" | "text" | "image" | "pdf" | "binary"; content?: string; blob?: Blob; message?: string; size?: number; truncated?: boolean; loadedBytes?: number; previewContent?: string; loadFullContent?: () => Promise<string> };
+          editable?: boolean;
+          onSave?: (content: string) => void | Promise<void>;
+          actions?: Array<{ id: string; title: string; icon?: string; run: (item: any) => void | Promise<void> }>;
+          render?: (
+            container: HTMLElement,
+            context: {
+              item: any;
+              update: (patch: Record<string, any>) => boolean;
+              close: () => void;
+              openInEditor: () => void;
+            }
+          ) => void | { dispose?: () => void };
+        }): string;
+        update(id: string, patch: Record<string, any>): boolean;
+        close(id: string): void;
+        clearOwner(ownerId: string): void;
+        activate(id: string): void;
+        show(): void;
+        hide(): void;
+        isVisible(): boolean;
+        getItems(): any[];
+        getActiveItemId(): string | null;
+        getTextEditor(itemIdOrSessionId?: string): EditorProxy | null;
+        getTextSource(itemIdOrSessionId?: string): { item: any; sessionId: string; content: string } | null;
+        revealText(itemId: string, options?: { from?: number; to?: number; focus?: boolean }): EditorProxy | null;
+        setWidth(width: number): void;
       };
       bottomPanel?: {
         registerView(opts: {
           id: string;
           pluginId: string;
           title: string;
+          titleKey?: string;
           icon?: string;
           location?: 'bottompanel' | string;
           order?: number;
           when?: string;
           keepWhenActive?: boolean;
           maximizable?: boolean;
+          headerActions?: Array<{ id: string; title: string; titleKey?: string; ariaLabel?: string; ariaLabelKey?: string; icon?: string; onClick: () => void }>;
           component: {
             render: (container: HTMLElement) => { dispose?: () => void } | void;
           };
@@ -263,21 +551,139 @@ declare global {
       editor: {
         registerPasteHandler(handler: PasteHandler): Disposable;
         registerDecorator(dec: { id: string; apply: (editor: EditorProxy) => Disposable }): Disposable;
+        attachEditor?(core: any, panelId?: string): EditorProxy | null;
+        detachEditor?(panelId: string): EditorProxy | null;
+        listAttachedEditorCores?(): any[];
+        getEditorForView?(view: any): EditorProxy | null;
+        images?: {
+          begin(editor: EditorProxy, options: {
+            count: number;
+            from?: number;
+            to?: number;
+            position?: number;
+            kind?: "inline" | "solo" | "gallery";
+            userEvent?: string;
+            retry?: () => void | Promise<void>;
+            cancel?: () => void;
+          }): string;
+          complete(editor: EditorProxy, operationId: string, images: Array<{ src: string; alt?: string }>): boolean;
+          fail(editor: EditorProxy, operationId: string, message?: string): boolean;
+          cancel(editor: EditorProxy, operationId: string): boolean;
+          showDropTarget(editor: EditorProxy, point: { x: number; y: number }, options?: { count?: number; moving?: boolean }): {
+            position: number;
+            kind: "inline" | "solo" | "gallery";
+          } | null;
+          hideDropTarget(editor: EditorProxy): void;
+        };
         selectionToolbar?: {
           registerItem(item: SelectionToolbarItem): Disposable;
           list(): SelectionToolbarItem[];
           onDidChange(handler: () => void): Disposable;
         };
       };
+      media?: {
+        isImageAssetUri(source: string): boolean;
+        putImage(source: Blob | string, metadata?: {
+          name?: string;
+          mimeType?: string;
+          width?: number;
+          height?: number;
+        }): Promise<string>;
+        resolveImage(source: string): Promise<string | null>;
+        readImageDataUrl(source: string): Promise<string | null>;
+        getImageMetadata(source: string): Promise<{
+          id: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          width?: number;
+          height?: number;
+          createdAt?: number;
+        } | null>;
+      };
       // active editor
       window: {
         activeEditor: EditorProxy | null;
+      };
+      panels?: {
+        getActivePanelId(): string | null;
+        getMaximizedPanelId(): string | null;
+        isMaximized(panelId?: string): boolean;
+        list(): Array<{ id: string; activeTabId: string | null }>;
+        findAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
+        ensureAtSide(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
+        openSession(panelId: string, sessionId: string, opts?: { focus?: boolean; forceReload?: boolean }): boolean | Promise<boolean>;
+        openTab?(panelId: string, tabId: string, opts?: { focus?: boolean }): boolean | Promise<boolean>;
+        openFileTab?(args: {
+          panelId?: string;
+          id?: string;
+          ownerId?: string;
+          target?: "editor" | "inspector";
+          title?: string;
+          name?: string;
+          path?: string;
+          displayPath?: string;
+          language?: string;
+          meta?: any;
+          file?: any;
+          focus?: boolean;
+          render?: (
+            container: HTMLElement,
+            context: { meta: any }
+          ) => void | { dispose?: () => void };
+        }): boolean | string | Promise<boolean | string>;
+        split(direction: "horizontal" | "vertical", panelId?: string): string | null;
+        splitAt(side: "left" | "right" | "up" | "down", panelId?: string): string | null;
+        focus(panelId: string): void;
+        close(panelId?: string): void;
+        maximize(panelId?: string): void;
+        restore(): void;
+        toggleMaximize(panelId?: string): void;
+        getEditor(panelId: string): EditorProxy | null;
+        getEditorBySession(panelId: string, sessionId: string): EditorProxy | null;
+        listEditors(panelId?: string): Array<{ panelId: string; sessionId: string; editorId: string | null; active: boolean }>;
+      };
+      sessions?: {
+        runtime?: any;
+        resolveContext(opts?: { panelId?: string | null; sessionId?: string | null; editor?: EditorProxy | null }): {
+          panelId: string | null;
+          sessionId: string | null;
+          editor: EditorProxy | null;
+          panel: any | null;
+        };
+        getPanelSessionId(panelId: string): string | null;
+        isEditorShowingSession(editor: EditorProxy | null, sessionId: string | null): boolean;
+        parseMessages(docText: string): any[];
+        getDocument(sessionId: string, opts?: { flush?: boolean }): Promise<string>;
+        getMessages(sessionId: string, opts?: { flush?: boolean }): Promise<any[]>;
+        publishDerivedTagSource(source: {
+          id: string;
+          label?: string;
+          readOnly?: boolean;
+          sessions?: Record<string, Array<string | { path: string; kind?: string }>>;
+        }): boolean;
+        removeDerivedTagSource(sourceId: string): boolean;
       };
       // models registry (placeholder)
       models?: {
         registerProvider(provider: ModelProvider): Disposable;
         listProviders(): string[];
         getProvider(id: string): ModelProvider | null;
+      };
+      llm?: {
+        runStream(opts: {
+          messages: any[];
+          tools?: any;
+          onToken?: (token: any) => void;
+          onEnd?: () => void;
+          onError?: (error: any) => void;
+          getController?: (controller: any) => void;
+          onToolCall?: (toolCall: any) => void;
+          runId?: string;
+          sessionId?: string;
+          activeModel?: { providerId: string; modelId: string; label?: string } | null;
+          silentReasoning?: boolean;
+        }): Promise<any>;
       };
       // slash commands registry
       slash?: {
@@ -288,11 +694,72 @@ declare global {
         onCommandsChanged(handler: () => void): Disposable;
       };
       chat?: {
-        run(opts?: { useSelection?: boolean; prompt?: string }): void;
-        stop(): void;
-        retry(): void;
+        run(opts?: { useSelection?: boolean; prompt?: string; sessionId?: string; panelId?: string; editor?: EditorProxy | null }): void;
+        execute(request: {
+          prompt: string;
+          executionMode: "local-only" | "service-backed";
+          title?: string;
+          trigger?: RunTrigger;
+          source?: RunSourceRef;
+          metadata?: Record<string, any>;
+          sessionId?: string;
+          policy?: {
+            preset: "read-only" | "workspace-write" | "trusted-automation";
+            allowedTools?: string[];
+            fileRoots?: string[];
+            allowedCommandPrefixes?: string[];
+            allowedTerminalSessionIds?: string[];
+            allowedRecipients?: string[];
+            maxMailPerRun?: number;
+            maxToolCalls?: number;
+          };
+        }): {
+          runId: string;
+          completion: Promise<{
+            runId: string;
+            status: "completed" | "failed" | "aborted";
+            output?: string;
+            error?: string;
+            reason?: string;
+            usage?: { input_tokens: number; output_tokens: number };
+          }>;
+          abort(reason?: "timeout" | "user" | "superseded"): Promise<void>;
+          events: AsyncIterable<{
+            schemaVersion: 1;
+            eventId: string;
+            runId: string;
+            sequence: number;
+            type: string;
+            ts: number;
+            data: any;
+          }>;
+        };
+        stop(sessionId?: string): void;
+        retry(sessionId?: string): void;
+        isStreaming(sessionId?: string): boolean;
         setActiveModel(model: { providerId: string; modelId: string } | null): void;
         getActiveModel(): { providerId: string; modelId: string } | null;
+      };
+      agents?: {
+        listTasks(): any[];
+        getTask(id: string): any | null;
+        getTasksForSession(sessionId?: string | null): any[];
+        getExecutionPlan(task: any): any;
+        isRunning(id: string): boolean;
+        runTask(id: string, handle?: any): Promise<void> | null;
+        runTaskHeadless(id: string): Promise<{
+          ok: boolean;
+          error?: string;
+          task?: { id: string; status: string; result: any; error: string } | null;
+        }>;
+        stopTask(id: string): void | null;
+        createTask(task: any): any;
+        updateTask(id: string, patch: any): any | null;
+        deleteTask(id: string): void;
+        revealTask(id: string, opts?: any): boolean;
+        openPanel(): void;
+        listAgents(): any[];
+        getAgent(id: string): any;
       };
       notification?: {
         show(message: string, options?: {
@@ -305,7 +772,7 @@ declare global {
       // internal helper to refresh keymap after new bindings
       __applyKeymap?: () => void;
       // internal helpers (optional)
-      __runMessageContributors?: (messages: any[], stage?: "pre" | "post") => Promise<any[]>;
+      __runMessageContributors?: (messages: any[], stage?: "pre" | "post", ctx?: any) => Promise<any[]>;
     };
   }
 }

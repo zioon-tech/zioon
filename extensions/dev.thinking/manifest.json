@@ -1,19 +1,43 @@
 {
   "name": "dev.thinking",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.thinking",
+  "description": "Control and display model thinking-related content.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.thinking",
-    "name": "dev.thinking",
+    "name": "Thinking",
     "version": "0.0.1",
     "main": "./thinking-main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "思考过程",
+        "en-US": "Thinking"
+      },
+      "description": {
+        "zh-CN": "控制和展示模型思考过程相关内容。",
+        "en-US": "Control and display model thinking-related content."
+      },
+      "icon": "lightbulb",
+      "category": "ai",
+      "features": {
+        "zh-CN": [
+          "控制和展示模型思考过程相关内容。"
+        ],
+        "en-US": [
+          "Control and display model thinking-related content."
+        ]
+      }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.thinking",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.thinking",
     "contributes": {
       "commands": [
         {
           "id": "thinking.toggleVisibility",
-          "title": "Toggle Thinking Visibility"
+          "title": "Toggle Thinking Visibility",
+          "titleKey": "dev.thinking.cmd.toggleVisibility",
+          "categoryKey": "dev.thinking.category.chat"
         }
       ]
     },

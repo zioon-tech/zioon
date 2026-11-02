@@ -1,23 +1,67 @@
 {
   "name": "dev.mail",
   "version": "0.0.1",
-  "description": "Zion Next Plugin: dev.mail",
+  "description": "Configure SMTP sending, default recipients, and run-finished notifications.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.mail",
-    "name": "dev.mail",
+    "name": "Mail",
     "version": "0.0.1",
     "main": "./main.js",
+    "entries": {
+      "ui": "./main.js",
+      "runtime": "./runtime.js"
+    },
+    "runtime": {
+      "apiVersion": 2
+    },
+    "presentation": {
+      "displayName": {
+        "zh-CN": "邮件",
+        "en-US": "Mail"
+      },
+      "description": {
+        "zh-CN": "配置 SMTP 发信、默认收件人和会话结束通知。",
+        "en-US": "Configure SMTP sending, default recipients, and run-finished notifications."
+      },
+      "icon": "mail",
+      "category": "integration",
+      "features": {
+        "zh-CN": [
+          "配置 SMTP 发信、默认收件人和会话结束通知。"
+        ],
+        "en-US": [
+          "Configure SMTP sending, default recipients, and run-finished notifications."
+        ]
+      },
+      "permissions": [
+        {
+          "id": "network",
+          "label": {
+            "zh-CN": "网络访问",
+            "en-US": "Network access"
+          },
+          "description": {
+            "zh-CN": "连接用户配置的 SMTP 服务发送邮件。",
+            "en-US": "Connect to the configured SMTP service to send email."
+          }
+        }
+      ]
+    },
     "contributes": {
       "commands": [
         {
           "id": "tools.openMailConfig",
-          "title": "Open Mail Configuration"
+          "title": "Open Mail Configuration",
+          "titleKey": "dev.mail.cmd.openConfig",
+          "categoryKey": "dev.mail.category.mail"
         },
         {
           "id": "tools.closeMailConfig",
-          "title": "Close Mail Configuration"
+          "title": "Close Mail Configuration",
+          "titleKey": "dev.mail.cmd.closeConfig",
+          "categoryKey": "dev.mail.category.mail"
         }
       ]
     },
@@ -26,6 +70,8 @@
     ],
     "engines": {
       "zion": ">=1.0.0"
-    }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.mail",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.mail"
   }
 }

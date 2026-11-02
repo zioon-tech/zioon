@@ -1,31 +1,61 @@
 {
   "name": "dev.image-enhanced",
   "version": "0.0.1",
-  "description": "Enhance markdown images with an in-editor toolbar (open/copy/delete).",
+  "description": "Enhance Markdown image previews with contextual actions.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.image-enhanced",
-    "name": "dev.image-enhanced",
+    "name": "Image Enhanced",
     "version": "0.0.1",
     "main": "./main.js",
+    "presentation": {
+      "displayName": {
+        "zh-CN": "图片增强",
+        "en-US": "Image Enhanced"
+      },
+      "description": {
+        "zh-CN": "增强 Markdown 图片预览与快捷操作。",
+        "en-US": "Enhance Markdown image previews with contextual actions."
+      },
+      "icon": "file-media",
+      "category": "editor",
+      "features": {
+        "zh-CN": [
+          "增强 Markdown 图片预览与快捷操作。"
+        ],
+        "en-US": [
+          "Enhance Markdown image previews with contextual actions."
+        ]
+      }
+    },
+    "nameKey": "dev.plugins.pluginName.dev.image-enhanced",
+    "descriptionKey": "dev.plugins.pluginDescription.dev.image-enhanced",
     "contributes": {
       "commands": [
         {
           "id": "imageEnhancer.copyImage",
-          "title": "图片增强: 复制图片到剪贴板"
+          "title": "图片增强: 复制图片到剪贴板",
+          "titleKey": "dev.image-enhanced.cmd.copyImage",
+          "categoryKey": "dev.image-enhanced.category.image"
         },
         {
           "id": "imageEnhancer.downloadImage",
-          "title": "图片增强: 下载图片"
+          "title": "图片增强: 下载图片",
+          "titleKey": "dev.image-enhanced.cmd.downloadImage",
+          "categoryKey": "dev.image-enhanced.category.image"
         },
         {
           "id": "imageEnhancer.openInNewTab",
-          "title": "图片增强: 在新标签页打开图片"
+          "title": "图片增强: 在新标签页打开图片",
+          "titleKey": "dev.image-enhanced.cmd.openInNewTab",
+          "categoryKey": "dev.image-enhanced.category.image"
         },
         {
           "id": "imageEnhancer.showImageInfo",
-          "title": "图片增强: 显示图片信息"
+          "title": "图片增强: 显示图片信息",
+          "titleKey": "dev.image-enhanced.cmd.showImageInfo",
+          "categoryKey": "dev.image-enhanced.category.image"
         }
       ],
       "keybindings": []

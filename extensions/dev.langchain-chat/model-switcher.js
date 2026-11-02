@@ -7,22 +7,45 @@
  * - 空列表时提供“创建第一个模型”入口
  * - 行内操作：编辑/删除（仅 user.dynamic 可删除/保存）
  */
-export function installModelSwitcher() {
-  const DYN_KEY = "zion.models.dynamic";
-  const DYN_PROVIDER_ID = "user.dynamic";
+import {
+  DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS,
+  MAX_MODEL_DESCRIPTION_LENGTH,
+  THINKING_MODE_FIELDS,
+  getThinkingEffortOptions,
+  getThinkingEffortOptionLabel,
+  getThinkingModeBadge,
+  getThinkingModeLabel,
+  getThinkingModeOptions,
+  getThinkingModeOptionLabel,
+  normalizeAutoContinueOnColonMaxAttempts,
+  normalizeModelDescription,
+  normalizeThinkingEffort,
+  normalizeThinkingMode
+} from "./model-config-fields.js";
+import {
+  DYNAMIC_PROVIDER_ID,
+  deleteDynamicModel,
+  loadLocalDynamicModelStore,
+  upsertDynamicModel
+} from "./runtime-user-model-store.js";
+import {
+  loadProviderConfig,
+  saveProviderConfig
+} from "./provider-config-storage.js";
 
+function t(key, fallback, values) {
+  const fullKey = `dev.langchain-chat.${key}`;
+  try {
+    const translated = window.zion?.i18n?.t?.(fullKey, values);
+    if (translated && translated !== fullKey) return translated;
+  } catch {}
+  return fallback;
+}
+
+export function installModelSwitcher() {
   function loadDynamicStore() {
-    try {
-      const raw = localStorage.getItem(DYN_KEY);
-      if (!raw) return {};
-      const j = JSON.parse(raw);
-      return j && typeof j === "object" ? j : {};
-    } catch {
-      return {};
-    }
-  }
-  function saveDynamicStore(dict) {
-    try { localStorage.setItem(DYN_KEY, JSON.stringify(dict)); } catch {}
+    return loadLocalDynamicModelStore();
   }
   async function refreshCatalog() {
     try { await window.zion?.commands?.executeCommand("models.listModels"); } catch {}
@@ -30,8 +53,22 @@ export function installModelSwitcher() {
   function getActive() {
     return window.zion?.state?.get("chat.activeModel");
   }
-  function setActive(providerId, modelId, label) {
-    window.zion?.state?.set("chat.activeModel", { providerId, modelId, label: label || modelId });
+  function setActive(providerId, modelId, label, config = {}) {
+    const capabilities = {};
+    for (const field of [
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort"
+    ]) {
+      if (config[field] !== undefined) capabilities[field] = config[field];
+    }
+    window.zion?.state?.set("chat.activeModel", {
+      providerId,
+      modelId,
+      label: label || modelId,
+      ...capabilities
+    });
   }
 
   let root = document.getElementById("zion-model-switcher-root");
@@ -44,7 +81,7 @@ export function installModelSwitcher() {
     position: "fixed",
     inset: "0",
     background: "transparent",
-    zIndex: "1000",
+    zIndex: "100001",
     display: "none"
   });
 
@@ -54,17 +91,20 @@ export function installModelSwitcher() {
     position: "fixed",
     top: "48px",
     right: "12px",
-    width: "380px",
+    width: "360px",
+    maxWidth: "calc(100vw - 16px)",
     maxHeight: "65vh",
     overflow: "auto",
-    background: "var(--panel)",
+    background: "var(--surface-overlay, var(--panel))",
     color: "var(--fg)",
-    border: "1px solid var(--border)",
-    borderRadius: "6px",
-    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+    border: "1px solid var(--surface-border, var(--border))",
+    borderRadius: "10px",
+    boxShadow: "var(--elevation-overlay, 0 18px 56px rgba(0,0,0,0.18))",
     padding: "8px",
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
   });
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", t("modelSwitcher.title", "Select Model"));
 
   // 标题区 + 操作按钮
   const header = document.createElement("div");
@@ -75,7 +115,6 @@ export function installModelSwitcher() {
     marginBottom: "6px"
   });
   const title = document.createElement("div");
-  title.textContent = "Select Model";
   Object.assign(title.style, {
     fontSize: "11px",
     opacity: "0.8",
@@ -86,20 +125,20 @@ export function installModelSwitcher() {
   const actions = document.createElement("div");
   const btnAdd = document.createElement("button");
   btnAdd.type = "button";
-  btnAdd.title = "Add Model";
-  btnAdd.setAttribute("aria-label", "Add Model");
+  btnAdd.title = t("modelSwitcher.addModel", "Add Model");
+  btnAdd.setAttribute("aria-label", t("modelSwitcher.addModel", "Add Model"));
   Object.assign(btnAdd.style, {
-    border: "1px solid var(--border)",
-    background: "var(--panel)",
-    color: "var(--fg)",
-    borderRadius: "4px",
-    padding: "2px 6px",
+    border: "1px solid transparent",
+    background: "var(--active-bg)",
+    color: "var(--accent)",
+    borderRadius: "8px",
+    padding: "4px 8px",
     fontSize: "11px",
     cursor: "pointer"
   });
   btnAdd.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">
     ${svgPlus()}
-    <span>Add</span>
+    <span>${t("modelSwitcher.add", "Add")}</span>
   </span>`;
   btnAdd.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -112,13 +151,12 @@ export function installModelSwitcher() {
   // 搜索框
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "Search models…";
   Object.assign(input.style, {
     width: "100%",
     boxSizing: "border-box",
-    border: "1px solid var(--border)",
-    borderRadius: "4px",
-    background: "var(--panel)",
+    border: "1px solid var(--surface-border-soft, var(--border))",
+    borderRadius: "8px",
+    background: "var(--surface-raised, var(--panel))",
     color: "var(--fg)",
     outline: "none",
     padding: "4px 6px",
@@ -139,16 +177,15 @@ export function installModelSwitcher() {
   const editorWrap = document.createElement("div");
   Object.assign(editorWrap.style, {
     display: "none",
-    border: "1px solid var(--border)",
-    borderRadius: "6px",
+    border: "1px solid var(--surface-border-soft, var(--border))",
+    borderRadius: "10px",
     padding: "8px",
-    background: "var(--panel)",
+    background: "var(--surface-raised, var(--panel))",
     marginTop: "6px"
   });
 
   // 底部提示
   const footer = document.createElement("div");
-  footer.textContent = "Enter: select • Esc: close • ↑↓: navigate";
   Object.assign(footer.style, {
     fontSize: "10px",
     opacity: "0.6",
@@ -178,6 +215,29 @@ export function installModelSwitcher() {
   let currentItems = [];
   const metaCache = new Map(); // spec -> { stream?: boolean, supportsImage?: boolean, preservedThinking?: boolean, interleavedThinking?: boolean }
 
+  function withCatalogRuntimeConfig(item, config) {
+    const next = { ...(config || {}) };
+    if (!item?.runtimeProfileId) return next;
+    for (const key of [
+      "stream",
+      "supportsImage",
+      "supportsThinking",
+      "supportsThinkingEffort",
+      "thinkingMode",
+      "thinkingEffort",
+      "preservedThinking",
+      "interleavedThinking"
+    ]) {
+      if (item[key] !== undefined) next[key] = item[key];
+    }
+    next._runtimeBacked = true;
+    next._runtimeProfileId = item.runtimeProfileId;
+    next._credentialConfigured =
+      item.credentialConfigured === true
+      || next._credentialConfigured === true;
+    return next;
+  }
+
   function activeSpec() {
     const a = window.zion?.state?.get("chat.activeModel");
     return a ? `${a.providerId}:${a.modelId}` : null;
@@ -185,15 +245,15 @@ export function installModelSwitcher() {
 
   function rowStyle(div, active, requiresConfig) {
     Object.assign(div.style, {
-      padding: "4px 6px",
-      borderRadius: "4px",
+      padding: "6px 8px",
+      borderRadius: "8px",
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
       cursor: "pointer",
-      background: active ? "var(--accent)" : (requiresConfig ? "rgba(255, 200, 0, 0.1)" : "transparent"),
-      color: active ? "var(--panel)" : (requiresConfig ? "rgb(220, 150, 0)" : "var(--fg)"),
-      border: requiresConfig ? "1px solid rgba(255, 200, 0, 0.3)" : "none",
+      background: active ? "var(--active-bg)" : (requiresConfig ? "rgba(255, 200, 0, 0.1)" : "transparent"),
+      color: active ? "var(--accent)" : (requiresConfig ? "rgb(220, 150, 0)" : "var(--fg)"),
+      border: requiresConfig ? "1px solid rgba(255, 200, 0, 0.3)" : "1px solid transparent",
       transition: "background-color 120ms ease, color 120ms ease",
       fontFamily: "inherit",
       fontSize: "11px",
@@ -207,8 +267,8 @@ export function installModelSwitcher() {
     Object.assign(el.style, {
       fontSize: "9px",
       opacity: "0.7",
-      border: "1px solid var(--border)",
-      borderRadius: "3px",
+      border: "1px solid transparent",
+      borderRadius: "999px",
       padding: "0 2px",
       marginLeft: "4px",
       background: "rgba(128,128,128,0.08)",
@@ -231,8 +291,8 @@ export function installModelSwitcher() {
     Object.assign(btn.style, {
       border: "none",
       background: "transparent",
-      color: "var(--fg)",
-      borderRadius: "4px",
+      color: "color-mix(in srgb, var(--fg) 64%, transparent)",
+      borderRadius: "7px",
       padding: "2px",
       width: "20px",
       height: "20px",
@@ -247,11 +307,13 @@ export function installModelSwitcher() {
     btn.innerHTML = svg;
     btn.addEventListener("mouseenter", () => {
       btn.style.opacity = "1";
-      btn.style.backgroundColor = "rgba(128, 128, 128, 0.1)";
+      btn.style.backgroundColor = "var(--hover-bg)";
+      btn.style.color = "var(--fg)";
     });
     btn.addEventListener("mouseleave", () => {
       btn.style.opacity = "0.7";
       btn.style.backgroundColor = "transparent";
+      btn.style.color = "color-mix(in srgb, var(--fg) 64%, transparent)";
     });
     btn.addEventListener("mousedown", (e) => e.stopPropagation());
     btn.addEventListener("click", (e) => e.stopPropagation());
@@ -266,17 +328,24 @@ export function installModelSwitcher() {
       if (metaWrap && m) {
         if (m.stream) metaWrap.appendChild(metaBadge("stream"));
         if (m.supportsImage) metaWrap.appendChild(metaBadge("img"));
-        if (m.preservedThinking) metaWrap.appendChild(metaBadge("pThink"));
-        if (m.interleavedThinking) metaWrap.appendChild(metaBadge("iThink"));
+        if (m.thinkingMode && m.thinkingMode !== "auto") metaWrap.appendChild(metaBadge(getThinkingModeOptionLabel(m.thinkingMode)));
+        if (m.thinkingEffort && m.thinkingEffort !== "auto") metaWrap.appendChild(metaBadge(getThinkingEffortOptionLabel(m.thinkingEffort)));
+        if (m.preservedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("preservedThinking")));
+        if (m.interleavedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("interleavedThinking")));
       }
       return;
     }
     try {
       const prov = window.zion?.models?.getProvider(item.providerId);
-      const cfg = await prov?.resolve?.(item.id);
+      const cfg = withCatalogRuntimeConfig(
+        item,
+        await prov?.resolve?.(item.id)
+      );
       const m = {
         stream: cfg && cfg.stream !== false,
         supportsImage: !!cfg?.supportsImage,
+        thinkingMode: normalizeThinkingMode(cfg?.thinkingMode),
+        thinkingEffort: normalizeThinkingEffort(cfg?.thinkingEffort),
         preservedThinking: !!cfg?.preservedThinking,
         interleavedThinking: !!cfg?.interleavedThinking
       };
@@ -285,8 +354,10 @@ export function installModelSwitcher() {
       if (metaWrap && m) {
         if (m.stream) metaWrap.appendChild(metaBadge("stream"));
         if (m.supportsImage) metaWrap.appendChild(metaBadge("img"));
-        if (m.preservedThinking) metaWrap.appendChild(metaBadge("pThink"));
-        if (m.interleavedThinking) metaWrap.appendChild(metaBadge("iThink"));
+        if (m.thinkingMode && m.thinkingMode !== "auto") metaWrap.appendChild(metaBadge(getThinkingModeOptionLabel(m.thinkingMode)));
+        if (m.thinkingEffort && m.thinkingEffort !== "auto") metaWrap.appendChild(metaBadge(getThinkingEffortOptionLabel(m.thinkingEffort)));
+        if (m.preservedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("preservedThinking")));
+        if (m.interleavedThinking) metaWrap.appendChild(metaBadge(getThinkingModeBadge("interleavedThinking")));
       }
     } catch {
       // ignore
@@ -298,7 +369,7 @@ export function installModelSwitcher() {
 
     if (items.length === 0) {
       const empty = document.createElement("div");
-      empty.textContent = "No models found";
+      empty.textContent = t("modelSwitcher.noModels", "No models found");
       Object.assign(empty.style, {
         fontSize: "11px",
         opacity: "0.6",
@@ -316,8 +387,8 @@ export function installModelSwitcher() {
       });
       const btnFirst = document.createElement("button");
       btnFirst.type = "button";
-      btnFirst.title = "Create your first model";
-      btnFirst.setAttribute("aria-label", "Create your first model");
+      btnFirst.title = t("modelSwitcher.createFirst", "Create your first model");
+      btnFirst.setAttribute("aria-label", t("modelSwitcher.createFirst", "Create your first model"));
       Object.assign(btnFirst.style, {
         border: "1px solid var(--border)",
         background: "var(--panel)",
@@ -327,7 +398,7 @@ export function installModelSwitcher() {
         fontSize: "11px",
         cursor: "pointer"
       });
-      btnFirst.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${svgPlus()}<span>Add Model</span></span>`;
+      btnFirst.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;">${svgPlus()}<span>${t("modelSwitcher.addModel", "Add Model")}</span></span>`;
       btnFirst.addEventListener("click", (e) => { e.stopPropagation(); openEditor(null); });
       cta.appendChild(btnFirst);
       list.appendChild(cta);
@@ -371,22 +442,33 @@ export function installModelSwitcher() {
       });
       // providerId 显示
       const provSpan = document.createElement("span");
-      provSpan.textContent = m.providerId;
+      provSpan.textContent = m.accountExtension ? "账户插件" : m.providerId;
       right.appendChild(provSpan);
 
       // 操作按钮
-      const canEdit = m.providerId === DYN_PROVIDER_ID;
-      const btnEdit = iconButton(svgEdit(), canEdit ? "Edit Model" : "View Model (read-only)");
+      const canEdit = m.providerId === DYNAMIC_PROVIDER_ID;
+      const btnEdit = iconButton(svgEdit(), canEdit ? t("modelSwitcher.edit", "Edit Model") : t("modelSwitcher.view", "View Model (read-only)"));
       btnEdit.addEventListener("click", async () => {
         const prov = window.zion?.models?.getProvider(m.providerId);
         let cfg = null;
         try { cfg = await prov?.resolve?.(m.id); } catch {}
-        openEditor({ providerId: m.providerId, id: m.id, label: m.label, cfg, readonly: !canEdit });
+        openEditor({
+          providerId: m.providerId,
+          id: m.id,
+          label: m.label,
+          cfg: {
+            ...withCatalogRuntimeConfig(m, cfg),
+            _credentialConfigured:
+              m.credentialConfigured === true
+              || cfg?._credentialConfigured === true
+          },
+          readonly: !canEdit
+        });
       });
       right.appendChild(btnEdit);
 
       if (canEdit) {
-        const btnDel = iconButton(svgTrash(), "Delete Model");
+        const btnDel = iconButton(svgTrash(), t("modelSwitcher.delete", "Delete Model"));
         btnDel.addEventListener("click", () => { doDeleteModel(m); });
         right.appendChild(btnDel);
       }
@@ -470,15 +552,64 @@ export function installModelSwitcher() {
 
   root.addEventListener("click", (e) => { if (e.target === root) close(); });
 
+  function positionPanel() {
+    const btn = document.querySelector('[data-zion-status-id="langchain.chat.model"]')
+      || Array.from(document.querySelectorAll("#bottombar .status-item, #statusbar .status-item"))
+        .find((b) => b.textContent?.includes("Model:"));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+    panel.style.maxHeight = "min(65vh, calc(100vh - 24px))";
+    if (!btn) {
+      panel.style.right = "12px";
+      panel.style.bottom = "36px";
+      return;
+    }
+    const rect = btn.getBoundingClientRect();
+    const width = Math.min(360, Math.max(220, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(160, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
+  }
+
   function open() {
-    window.zion?.commands?.executeCommand("models.listModels");
+    refreshLabels();
     refresh();
     root.style.display = "block";
+    positionPanel();
     input.focus();
     input.select();
   }
   function close() { root.style.display = "none"; }
-  function dispose() { root.remove(); }
+  function refreshLabels() {
+    const titleText = t("modelSwitcher.title", "Select Model");
+    panel.setAttribute("aria-label", titleText);
+    title.textContent = titleText;
+    btnAdd.title = t("modelSwitcher.addModel", "Add Model");
+    btnAdd.setAttribute("aria-label", t("modelSwitcher.addModel", "Add Model"));
+    btnAdd.querySelector("span span").textContent = t("modelSwitcher.add", "Add");
+    input.placeholder = t("modelSwitcher.search", "Search models...");
+    footer.textContent = t("modelSwitcher.footer", "Enter: select • Esc: close • ↑↓: navigate");
+    refresh();
+  }
+  const dispI18n = window.zion?.events?.on?.("i18n/changed", refreshLabels);
+  const dispCatalog = window.zion?.state?.onDidChange?.("models.catalog", () => {
+    metaCache.clear();
+    refresh();
+  });
+  function dispose() {
+    try { dispI18n?.dispose?.(); } catch {}
+    try { dispCatalog?.dispose?.(); } catch {}
+    root.remove();
+  }
 
   // ====== 编辑器实现 ======
   function fieldRow(labelText, inputEl) {
@@ -502,9 +633,9 @@ export function installModelSwitcher() {
       flex: "1",
       minWidth: "0",
       boxSizing: "border-box",
-      border: "1px solid var(--border)",
-      borderRadius: "4px",
-      background: "var(--panel)",
+      border: "1px solid var(--surface-border-soft, var(--border))",
+      borderRadius: "8px",
+      background: "var(--surface-raised, var(--panel))",
       color: "var(--fg)",
       outline: "none",
       padding: "4px 6px",
@@ -542,10 +673,10 @@ export function installModelSwitcher() {
     btn.title = text;
     btn.setAttribute("aria-label", aria || text);
     Object.assign(btn.style, {
-      border: "1px solid var(--border)",
-      background: "var(--accent)",
-      color: "var(--panel)",
-      borderRadius: "4px",
+      border: "1px solid transparent",
+      background: "var(--active-bg)",
+      color: "var(--accent)",
+      borderRadius: "8px",
       padding: "4px 8px",
       fontSize: "11px",
       cursor: "pointer",
@@ -562,10 +693,10 @@ export function installModelSwitcher() {
     btn.title = text;
     btn.setAttribute("aria-label", aria || text);
     Object.assign(btn.style, {
-      border: "1px solid var(--border)",
-      background: "var(--panel)",
+      border: "1px solid var(--surface-border-soft, var(--border))",
+      background: "transparent",
       color: "var(--fg)",
-      borderRadius: "4px",
+      borderRadius: "8px",
       padding: "4px 8px",
       fontSize: "11px",
       cursor: "pointer",
@@ -591,29 +722,25 @@ export function installModelSwitcher() {
   }
 
   async function doDeleteModel(m) {
-    if (!m || m.providerId !== DYN_PROVIDER_ID) return;
+    if (!m || m.providerId !== DYNAMIC_PROVIDER_ID) return;
     const ok = window.confirm(`Delete model "${m.id}"?`);
     if (!ok) return;
-    const dict = loadDynamicStore();
-    if (dict[m.id]) {
-      delete dict[m.id];
-      saveDynamicStore(dict);
-      await refreshCatalog();
-      // 如果删除的是激活模型，选择第一个
-      const act = getActive();
-      if (act?.providerId === m.providerId && act?.modelId === m.id) {
-        const cat = catalog();
-        const next = cat[0] || null;
-        if (next) setActive(next.providerId, next.id, next.label);
-        else window.zion?.state?.set("chat.activeModel", null);
-      }
-      refresh();
+    await deleteDynamicModel({ modelId: m.id });
+    await refreshCatalog();
+    // 如果删除的是激活模型，选择第一个
+    const act = getActive();
+    if (act?.providerId === m.providerId && act?.modelId === m.id) {
+      const cat = catalog();
+      const next = cat[0] || null;
+      if (next) setActive(next.providerId, next.id, next.label);
+      else window.zion?.state?.set("chat.activeModel", null);
     }
+    refresh();
   }
 
   async function testConnectivity(cfg, statusEl) {
     if (!cfg?.url || !(cfg?.key || cfg?.apiKey)) {
-      statusEl.textContent = "Missing url or key";
+      statusEl.textContent = t("modelSwitcher.missingUrlOrKey", "Missing url or key");
       statusEl.style.color = "rgb(220,80,80)";
       return;
     }
@@ -625,7 +752,7 @@ export function installModelSwitcher() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     const t0 = performance.now();
-    statusEl.textContent = "Testing…";
+    statusEl.textContent = t("modelSwitcher.testing", "Testing...");
     statusEl.style.color = "inherit";
     try {
       const res = await fetch(cfg.url, {
@@ -647,7 +774,7 @@ export function installModelSwitcher() {
         statusEl.style.color = "rgb(220,80,80)";
       }
     } catch (e) {
-      statusEl.textContent = e?.name === "AbortError" ? "Timeout" : (e?.message || String(e));
+      statusEl.textContent = e?.name === "AbortError" ? t("modelSwitcher.timeout", "Timeout") : (e?.message || String(e));
       statusEl.style.color = "rgb(220,80,80)";
     } finally {
       clearTimeout(timer);
@@ -659,28 +786,29 @@ export function installModelSwitcher() {
     editorWrap.style.display = "block";
 
     const isNew = !spec;
-    const providerId = spec?.providerId || DYN_PROVIDER_ID;
+    const providerId = spec?.providerId || DYNAMIC_PROVIDER_ID;
     // 对于 deepseek 提供者，允许编辑 API Key，其他字段只读
     const isDeepseekProvider = providerId === "deepseek";
-    const isDynamicProvider = providerId === DYN_PROVIDER_ID;
     const readonly = !!spec?.readonly && !isDeepseekProvider;
 
     const title = document.createElement("div");
-    title.textContent = isNew ? "Add Model" : (readonly ? "View Model" : "Edit Model");
+    title.textContent = isNew ? t("modelSwitcher.addModel", "Add Model") : (readonly ? t("modelSwitcher.viewModel", "View Model") : t("modelSwitcher.edit", "Edit Model"));
     Object.assign(title.style, { fontSize: "11px", opacity: "0.8", fontWeight: "500", marginBottom: "6px" });
     editorWrap.appendChild(title);
 
     // 字段
-    const inpId = textInput("e.g. deepseek-chat");
-    const inpLabel = textInput("Display label (optional)");
+    const inpId = textInput(t("modelSwitcher.placeholder.modelId", "e.g. deepseek-v4-flash"));
+    const inpLabel = textInput(t("modelSwitcher.placeholder.label", "e.g. My Model"));
+    const inpDescription = textInput(t("modelSwitcher.placeholder.description", "Model purpose or strengths"));
+    inpDescription.maxLength = MAX_MODEL_DESCRIPTION_LENGTH;
     const selProviderType = document.createElement("select");
     Object.assign(selProviderType.style, {
       flex: "1",
       minWidth: "0",
       boxSizing: "border-box",
-      border: "1px solid var(--border)",
-      borderRadius: "4px",
-      background: "var(--panel)",
+      border: "1px solid var(--surface-border-soft, var(--border))",
+      borderRadius: "8px",
+      background: "var(--surface-raised, var(--panel))",
       color: "var(--fg)",
       outline: "none",
       padding: "4px 6px",
@@ -690,45 +818,115 @@ export function installModelSwitcher() {
     ["openai", "claude", "gemini"].forEach(v => {
       const opt = document.createElement("option");
       opt.value = v;
-      opt.textContent = v === "openai" ? "OpenAI Compatible" : (v === "claude" ? "Claude (Anthropic)" : "Gemini (Google)");
+      opt.textContent = v === "openai" ? t("modelSwitcher.openaiCompatible", "OpenAI compatible") : (v === "claude" ? "Claude" : "Gemini");
       selProviderType.appendChild(opt);
     });
-    const inpUrl = textInput("OpenAI-compatible base URL, e.g. https://api.openai.com/v1/chat/completions");
+    const createSelect = (options) => {
+      const el = document.createElement("select");
+      Object.assign(el.style, {
+        flex: "1",
+        minWidth: "0",
+        boxSizing: "border-box",
+        border: "1px solid var(--surface-border-soft, var(--border))",
+        borderRadius: "8px",
+        background: "var(--surface-raised, var(--panel))",
+        color: "var(--fg)",
+        outline: "none",
+        padding: "4px 6px",
+        fontSize: "11px",
+        fontFamily: "inherit"
+      });
+      options.forEach((option) => {
+        const opt = document.createElement("option");
+        opt.value = option.value;
+        opt.textContent = option.label;
+        el.appendChild(opt);
+      });
+      return el;
+    };
+    const selThinkingMode = createSelect(getThinkingModeOptions());
+    const selectedCfg = spec?.cfg || {};
+    const selThinkingEffort = createSelect(getThinkingEffortOptions(isNew ? null : {
+      providerId,
+      providerType: selectedCfg.providerType || selectedCfg.provider_type,
+      modelId: spec?.id,
+      modelName: selectedCfg.modelName || selectedCfg.model || spec?.id,
+      cfg: selectedCfg
+    }));
+    const inpUrl = textInput(t("modelSwitcher.placeholder.baseUrl", "e.g. https://api.openai.com/v1/chat/completions"));
     const inpKey = textInput("API Key", "password");
-    const inpModelName = textInput("Override body.model (optional)");
-    const inpTemp = numberInput("Temperature (0-2)");
-    const inpMaxTok = numberInput("Max tokens (optional)");
-    const { wrap: cbStreamWrap, cb: cbStream } = checkboxInput("Stream");
-    const { wrap: cbImgWrap, cb: cbImg } = checkboxInput("Supports Image");
-    const { wrap: cbPreservedThinkingWrap, cb: cbPreservedThinking } = checkboxInput("Preserved Thinking");
-    const { wrap: cbInterleavedThinkingWrap, cb: cbInterleavedThinking } = checkboxInput("Interleaved Thinking");
+    const inpModelName = textInput(t("modelSwitcher.placeholder.modelOverride", "Optional, e.g. gpt-4o-mini"));
+    const inpTemp = numberInput("0.7");
+    const inpMaxTok = numberInput("4096");
+    const inpContextWindow = numberInput("128000");
+    const inpMaxInput = numberInput("128000");
+    const inpMaxOutput = numberInput("8192");
+    const inpAutoContinueOnColon = numberInput(String(DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS));
+    inpAutoContinueOnColon.min = "0";
+    inpAutoContinueOnColon.max = String(MAX_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS);
+    inpAutoContinueOnColon.step = "1";
+    const inpInputPrice = numberInput("0");
+    const inpOutputPrice = numberInput("0");
+    const { wrap: cbStreamWrap, cb: cbStream } = checkboxInput(t("modelSwitcher.stream", "Stream"));
+    const { wrap: cbImgWrap, cb: cbImg } = checkboxInput(t("modelSwitcher.supportsImage", "Supports images"));
+    const thinkingControls = Object.fromEntries(
+      THINKING_MODE_FIELDS.map((field) => [field.key, checkboxInput(getThinkingModeLabel(field.key))])
+    );
+    const cbPreservedThinking = thinkingControls.preservedThinking.cb;
+    const cbInterleavedThinking = thinkingControls.interleavedThinking.cb;
 
     // 赋初值
     if (isNew) {
       inpId.value = "";
       inpLabel.value = "";
+      inpDescription.value = "";
       selProviderType.value = "openai";
       inpUrl.value = "";
       inpKey.value = "";
       inpModelName.value = "";
       inpTemp.value = "0";
       inpMaxTok.value = "";
+      inpContextWindow.value = "";
+      inpMaxInput.value = "";
+      inpMaxOutput.value = "";
+      inpAutoContinueOnColon.value = String(DEFAULT_AUTO_CONTINUE_ON_COLON_MAX_ATTEMPTS);
+      inpInputPrice.value = "";
+      inpOutputPrice.value = "";
       cbStream.checked = true;
       cbImg.checked = false;
+      selThinkingMode.value = "auto";
+      selThinkingEffort.value = "auto";
       cbPreservedThinking.checked = false;
       cbInterleavedThinking.checked = false;
     } else {
       const cfg = spec?.cfg || {};
       inpId.value = spec.id || "";
       inpLabel.value = spec.label || "";
+      inpDescription.value = cfg.description || spec.description || "";
       selProviderType.value = cfg.providerType || cfg.provider_type || "openai";
       inpUrl.value = cfg.url || cfg.baseURL || "";
       inpKey.value = cfg.key || cfg.apiKey || "";
+      if (cfg._credentialConfigured && !inpKey.value) {
+        inpKey.placeholder = t(
+          "modelSwitcher.runtimeCredentialStored",
+          "Stored securely in Runtime; leave blank to keep"
+        );
+      }
       inpModelName.value = cfg.modelName || cfg.model || "";
       inpTemp.value = typeof cfg.temperature === "number" ? String(cfg.temperature) : "0";
       inpMaxTok.value = cfg.max_tokens != null ? String(cfg.max_tokens) : "";
+      inpContextWindow.value = cfg.contextWindowTokens ?? cfg.limits?.contextWindowTokens ?? "";
+      inpMaxInput.value = cfg.maxInputTokens ?? cfg.limits?.maxInputTokens ?? "";
+      inpMaxOutput.value = cfg.maxOutputTokens ?? cfg.limits?.maxOutputTokens ?? "";
+      inpAutoContinueOnColon.value = String(
+        normalizeAutoContinueOnColonMaxAttempts(cfg.autoContinueOnColonMaxAttempts)
+      );
+      inpInputPrice.value = cfg.pricing?.inputPerMTok != null ? String(cfg.pricing.inputPerMTok) : "";
+      inpOutputPrice.value = cfg.pricing?.outputPerMTok != null ? String(cfg.pricing.outputPerMTok) : "";
       cbStream.checked = cfg.stream !== false;
       cbImg.checked = !!cfg.supportsImage;
+      selThinkingMode.value = normalizeThinkingMode(cfg.thinkingMode);
+      selThinkingEffort.value = normalizeThinkingEffort(cfg.thinkingEffort);
       cbPreservedThinking.checked = !!cfg.preservedThinking;
       cbInterleavedThinking.checked = !!cfg.interleavedThinking;
       
@@ -739,16 +937,25 @@ export function installModelSwitcher() {
         inpUrl.disabled = true;
         // 其他字段都可编辑
         inpLabel.disabled = false;
+        inpDescription.disabled = false;
         inpKey.disabled = false;
         inpModelName.disabled = false;
         inpTemp.disabled = false;
         inpMaxTok.disabled = false;
+        inpContextWindow.disabled = false;
+        inpMaxInput.disabled = false;
+        inpMaxOutput.disabled = false;
+        inpAutoContinueOnColon.disabled = false;
+        inpInputPrice.disabled = false;
+        inpOutputPrice.disabled = false;
+        selThinkingMode.disabled = false;
+        selThinkingEffort.disabled = false;
         cbStream.disabled = false;
         cbImg.disabled = false;
         cbPreservedThinking.disabled = false;
         cbInterleavedThinking.disabled = false;
       } else if (readonly) {
-        [inpId, inpLabel, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok].forEach(el => el.disabled = true);
+        [inpId, inpLabel, inpDescription, selProviderType, inpUrl, inpKey, inpModelName, inpTemp, inpMaxTok, inpContextWindow, inpMaxInput, inpMaxOutput, inpAutoContinueOnColon, inpInputPrice, inpOutputPrice, selThinkingMode, selThinkingEffort].forEach(el => el.disabled = true);
         [cbStream, cbImg, cbPreservedThinking, cbInterleavedThinking].forEach(el => el.disabled = true);
       }
     }
@@ -756,26 +963,45 @@ export function installModelSwitcher() {
     // ID 只在新建时可编辑；编辑时避免改 keyPath 带来不一致
     if (!isNew && !isDeepseekProvider) inpId.disabled = true;
 
-    editorWrap.appendChild(fieldRow("Provider", (() => {
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.provider", "Provider"), (() => {
       const el = document.createElement("div");
       let providerText = providerId;
       if (isDeepseekProvider) {
-        providerText += " (edit parameters)";
-      } else if (providerId !== DYN_PROVIDER_ID) {
-        providerText += " (read-only)";
+        providerText += t("modelSwitcher.editableSuffix", " (editable)");
+      } else if (providerId !== DYNAMIC_PROVIDER_ID) {
+        providerText += t("modelSwitcher.readonlySuffix", " (read-only)");
       }
       el.textContent = providerText;
       Object.assign(el.style, { fontSize: "11px", opacity: "0.8" });
       return el;
     })()));
-    editorWrap.appendChild(fieldRow("Model ID", inpId));
-    editorWrap.appendChild(fieldRow("Label", inpLabel));
-    editorWrap.appendChild(fieldRow("Provider Type", selProviderType));
-    editorWrap.appendChild(fieldRow("Base URL", inpUrl));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.modelId", "Model ID"), inpId));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.displayName", "Display Name"), inpLabel));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.description", "Model Description"), inpDescription));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.providerType", "Provider Type"), selProviderType));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.baseUrl", "Base URL"), inpUrl));
     editorWrap.appendChild(fieldRow("API Key", inpKey));
-    editorWrap.appendChild(fieldRow("Model Param", inpModelName));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.modelOverride", "Model Override"), inpModelName));
     editorWrap.appendChild(fieldRow("Temperature", inpTemp));
-    editorWrap.appendChild(fieldRow("Max Tokens", inpMaxTok));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.contextWindow", "Context Window"), inpContextWindow));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.maxInputTokens", "Max Input Tokens"), inpMaxInput));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.maxOutputTokens", "Max Output Tokens"), inpMaxOutput));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.defaultOutputTokens", "Default Output Tokens"), inpMaxTok));
+    if (isDeepseekProvider) {
+      const row = fieldRow(
+        t("modelSwitcher.autoContinueOnColonMaxAttempts", "Abnormal-stop Continuations"),
+        inpAutoContinueOnColon
+      );
+      row.title = t(
+        "modelSwitcher.autoContinueOnColonMaxAttempts.description",
+        "Maximum automatic continuations after an abnormal DeepSeek stop, including trailing-colon and reasoning-only responses; set to 0 to disable."
+      );
+      editorWrap.appendChild(row);
+    }
+    editorWrap.appendChild(fieldRow("Input $/1M Tokens", inpInputPrice));
+    editorWrap.appendChild(fieldRow("Output $/1M Tokens", inpOutputPrice));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.thinkingMode", "Thinking Mode"), selThinkingMode));
+    editorWrap.appendChild(fieldRow(t("modelSwitcher.thinkingEffort", "Thinking Effort"), selThinkingEffort));
 
     const flagsRow = document.createElement("div");
     Object.assign(flagsRow.style, { display: "flex", gap: "12px", alignItems: "center", marginBottom: "2px", marginTop: "-2px" });
@@ -785,8 +1011,13 @@ export function installModelSwitcher() {
 
     const thinkingRow = document.createElement("div");
     Object.assign(thinkingRow.style, { display: "flex", gap: "12px", alignItems: "center", marginBottom: "2px" });
-    thinkingRow.appendChild(cbPreservedThinkingWrap);
-    thinkingRow.appendChild(cbInterleavedThinkingWrap);
+    THINKING_MODE_FIELDS.forEach((field) => {
+      const control = thinkingControls[field.key];
+      if (control?.wrap) {
+        control.wrap.title = String(window.zion?.i18n?.getLocale?.() || "").startsWith("en") ? field.descriptionEn || field.description || "" : field.description || "";
+        thinkingRow.appendChild(control.wrap);
+      }
+    });
     editorWrap.appendChild(thinkingRow);
 
     // 状态行（测试结果）
@@ -795,7 +1026,7 @@ export function installModelSwitcher() {
     editorWrap.appendChild(status);
 
     // 按钮
-    const btnTest = secondaryButton("Test", "Test connectivity", svgBolt());
+    const btnTest = secondaryButton(t("modelSwitcher.test", "Test"), t("modelSwitcher.testConnectivity", "Test connectivity"), svgBolt());
     btnTest.addEventListener("click", async () => {
       const cfg = {
         id: inpId.value.trim(),
@@ -806,65 +1037,125 @@ export function installModelSwitcher() {
       await testConnectivity(cfg, status);
     });
 
-    const btnSave = primaryButton(isNew ? "Save" : "Save Changes", "Save Model", svgCheck());
-    btnSave.disabled = (providerId !== DYN_PROVIDER_ID && !isDeepseekProvider) || readonly;
+    const btnSave = primaryButton(isNew ? t("modelSwitcher.save", "Save") : t("modelSwitcher.saveChanges", "Save Changes"), t("modelSwitcher.saveModel", "Save Model"), svgCheck());
+    btnSave.disabled = (providerId !== DYNAMIC_PROVIDER_ID && !isDeepseekProvider) || readonly;
     btnSave.addEventListener("click", async () => {
       const id = inpId.value.trim();
       const url = inpUrl.value.trim();
       const key = inpKey.value.trim();
-      if (!id) { status.textContent = "Missing Model ID"; status.style.color = "rgb(220,80,80)"; return; }
-      if (!url) { status.textContent = "Missing Base URL"; status.style.color = "rgb(220,80,80)"; return; }
-      if (!key) { status.textContent = "Missing API Key"; status.style.color = "rgb(220,80,80)"; return; }
+      if (!id) { status.textContent = t("modelSwitcher.missingModelId", "Missing Model ID"); status.style.color = "rgb(220,80,80)"; return; }
+      if (!url) { status.textContent = t("modelSwitcher.missingBaseUrl", "Missing Base URL"); status.style.color = "rgb(220,80,80)"; return; }
+      const credentialAlreadyConfigured = !!(spec?.cfg?._credentialConfigured);
+      if (
+        providerId === DYNAMIC_PROVIDER_ID
+        && !key
+        && !credentialAlreadyConfigured
+      ) {
+        status.textContent = t("modelSwitcher.missingApiKey", "Missing API Key");
+        status.style.color = "rgb(220,80,80)";
+        return;
+      }
 
       // 对于 deepseek 提供者，保存所有参数到 localStorage
       if (isDeepseekProvider) {
         try {
           // 保存 API Key
-          localStorage.setItem("zion.deepseek.apiKey", key);
+          if (key) localStorage.setItem("zion.deepseek.apiKey", key);
           
           // 保存其他参数
+          const previous = loadProviderConfig("zion.deepseek.config");
+          const modelLimits = { ...(previous.modelLimits || {}) };
+          const modelDescriptions = { ...(previous.modelDescriptions || {}) };
+          const description = normalizeModelDescription(inpDescription.value);
+          if (description) modelDescriptions[id] = description;
+          else delete modelDescriptions[id];
+          modelLimits[id] = {
+            ...(modelLimits[id] || {}),
+            contextWindowTokens: inpContextWindow.value === "" ? undefined : Number(inpContextWindow.value),
+            maxInputTokens: inpMaxInput.value === "" ? undefined : Number(inpMaxInput.value),
+            maxOutputTokens: inpMaxOutput.value === "" ? undefined : Number(inpMaxOutput.value),
+            defaultOutputTokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value)
+          };
           const deepseekConfig = {
+            ...previous,
             label: inpLabel.value.trim() || undefined,
             modelName: inpModelName.value.trim() || undefined,
             temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
-            max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+            modelLimits,
+            modelDescriptions: Object.keys(modelDescriptions).length ? modelDescriptions : undefined,
+            autoContinueOnColonMaxAttempts: normalizeAutoContinueOnColonMaxAttempts(
+              inpAutoContinueOnColon.value
+            ),
+            pricing: {
+              inputPerMTok: inpInputPrice.value === "" ? undefined : Number(inpInputPrice.value),
+              outputPerMTok: inpOutputPrice.value === "" ? undefined : Number(inpOutputPrice.value),
+              currency: "USD"
+            },
             stream: !!cbStream.checked,
             supportsImage: !!cbImg.checked,
+            thinkingMode: normalizeThinkingMode(selThinkingMode.value),
+            thinkingEffort: normalizeThinkingEffort(selThinkingEffort.value),
             preservedThinking: !!cbPreservedThinking.checked,
             interleavedThinking: !!cbInterleavedThinking.checked
           };
-          localStorage.setItem("zion.deepseek.config", JSON.stringify(deepseekConfig));
+          saveProviderConfig("zion.deepseek.config", deepseekConfig);
+
+          const active = getActive();
+          if (active?.providerId === providerId && active?.modelId === id) {
+            window.zion?.state?.set("chat.activeModel", {
+              ...active,
+              thinkingMode: deepseekConfig.thinkingMode,
+              thinkingEffort: deepseekConfig.thinkingEffort
+            });
+          }
           
-          status.textContent = "DeepSeek configuration saved";
+          status.textContent = t("modelSwitcher.deepseekSaved", "DeepSeek configuration saved");
           status.style.color = "rgb(60,180,90)";
           // 刷新模型目录以更新状态
           await refreshCatalog();
+          try { window.zion?.events?.emit?.("models/configChanged", { providerId, modelId: id }); } catch {}
           // 刷新列表并关闭编辑器
           refresh();
           setTimeout(() => closeEditor(), 300);
           return;
         } catch (e) {
-          status.textContent = `Failed to save: ${e?.message || String(e)}`;
+          status.textContent = t("modelSwitcher.failedSave", "Failed to save: {message}", { message: e?.message || String(e) });
           status.style.color = "rgb(220,80,80)";
           return;
         }
       }
 
-      // 对于 user.dynamic 提供者，保存到 localStorage 字典
+      // 对于 user.dynamic 提供者，优先保存到 Runtime Host，离线时回落到 localStorage。
       const dict = loadDynamicStore();
-      if (isNew && dict[id]) {
-        status.textContent = `Model already exists: ${id}`;
+      const existingInCatalog = catalog().some((item) =>
+        item?.providerId === DYNAMIC_PROVIDER_ID && item?.id === id
+      );
+      if (isNew && (dict[id] || existingInCatalog)) {
+        status.textContent = t("modelSwitcher.modelExists", "Model already exists: {id}", { id });
         status.style.color = "rgb(220,80,80)";
         return;
       }
       const cfg = {
         label: inpLabel.value.trim() || undefined,
+        description: normalizeModelDescription(inpDescription.value) || undefined,
         url,
-        key,
+        ...(key ? { key } : {}),
         stream: !!cbStream.checked,
         temperature: inpTemp.value === "" ? undefined : Number(inpTemp.value),
         max_tokens: inpMaxTok.value === "" ? undefined : Number(inpMaxTok.value),
+        contextWindowTokens: inpContextWindow.value === "" ? undefined : Number(inpContextWindow.value),
+        maxInputTokens: inpMaxInput.value === "" ? undefined : Number(inpMaxInput.value),
+        maxOutputTokens: inpMaxOutput.value === "" ? undefined : Number(inpMaxOutput.value),
+        pricing: {
+          inputPerMTok: inpInputPrice.value === "" ? undefined : Number(inpInputPrice.value),
+          outputPerMTok: inpOutputPrice.value === "" ? undefined : Number(inpOutputPrice.value),
+          currency: "USD"
+        },
         supportsImage: !!cbImg.checked,
+        supportsThinking: selectedCfg.supportsThinking,
+        supportsThinkingEffort: selectedCfg.supportsThinkingEffort,
+        thinkingMode: normalizeThinkingMode(selThinkingMode.value),
+        thinkingEffort: normalizeThinkingEffort(selThinkingEffort.value),
         preservedThinking: !!cbPreservedThinking.checked,
         interleavedThinking: !!cbInterleavedThinking.checked,
         providerType: selProviderType.value || "openai"
@@ -876,25 +1167,27 @@ export function installModelSwitcher() {
         cfg.model = modelName;
       }
 
-      dict[id] = cfg;
-      saveDynamicStore(dict);
+      const saved = await upsertDynamicModel({ modelId: id, config: cfg });
       await refreshCatalog();
+      try { window.zion?.events?.emit?.("models/configChanged", { providerId: DYNAMIC_PROVIDER_ID, modelId: id }); } catch {}
       const cat = catalog();
-      const item = cat.find(x => x.providerId === DYN_PROVIDER_ID && x.id === id);
-      setActive(DYN_PROVIDER_ID, id, item?.label || id);
-      status.textContent = "Saved";
+      const item = cat.find(x => x.providerId === DYNAMIC_PROVIDER_ID && x.id === id);
+      setActive(DYNAMIC_PROVIDER_ID, id, item?.label || id, cfg);
+      status.textContent = saved?.warning
+        ? t("modelSwitcher.savedLocalFallback", "Saved locally; Runtime sync failed")
+        : t("modelSwitcher.saved", "Saved");
       status.style.color = "rgb(60,180,90)";
       // 刷新列表并关闭编辑器
       refresh();
       setTimeout(() => closeEditor(), 300);
     });
 
-    const btnCancel = secondaryButton("Cancel", "Cancel", svgClose());
+    const btnCancel = secondaryButton(t("modelSwitcher.cancel", "Cancel"), t("modelSwitcher.cancel", "Cancel"), svgClose());
     btnCancel.addEventListener("click", () => closeEditor());
 
-    const btnDelete = dangerButton("Delete", "Delete Model", svgTrash());
+    const btnDelete = dangerButton(t("modelSwitcher.delete", "Delete"), t("modelSwitcher.delete", "Delete Model"), svgTrash());
     btnDelete.style.marginLeft = "auto";
-    btnDelete.disabled = isNew || providerId !== DYN_PROVIDER_ID || readonly || isDeepseekProvider;
+    btnDelete.disabled = isNew || providerId !== DYNAMIC_PROVIDER_ID || readonly || isDeepseekProvider;
     btnDelete.addEventListener("click", async () => {
       if (isNew) return;
       await doDeleteModel({ providerId, id: inpId.value.trim(), label: inpLabel.value.trim() });
@@ -919,24 +1212,32 @@ export function installModelSwitcher() {
     }
   }
 
-  // ====== SVG 图标 ======
+  function iconHtml(name) {
+    try {
+      const html = window.zionIcons?.htmlFromCodicon?.(name, "", 14);
+      if (html) return html;
+    } catch {}
+    const raw = String(name || "").replace(/^codicon-/, "");
+    return `<span class="codicon codicon-${raw}" aria-hidden="true" style="font-size:14px;"></span>`;
+  }
+
   function svgPlus() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2z"/></svg>`;
+    return iconHtml("add");
   }
   function svgEdit() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 000-1.41l-2.34-2.34a1 1 0 00-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`;
+    return iconHtml("edit");
   }
   function svgTrash() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+    return iconHtml("trash");
   }
   function svgBolt() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 21h-1l1-7H7l6-11h1l-1 7h4l-6 11z"/></svg>`;
+    return iconHtml("zap");
   }
   function svgCheck() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 16.2l-3.5-3.5-1.4 1.4L9 19 20.3 7.7l-1.4-1.4z"/></svg>`;
+    return iconHtml("check");
   }
   function svgClose() {
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.3 5.71L12 12l6.3 6.29-1.41 1.42L12 13.41l-6.29 6.3-1.42-1.42L10.59 12 4.29 5.71 5.7 4.29 12 10.59l6.29-6.3z"/></svg>`;
+    return iconHtml("close");
   }
 
   return { open, close, dispose };
@@ -945,10 +1246,39 @@ export function installModelSwitcher() {
 function createHandle(root) {
   const panel = root.querySelector("div");
   const input = panel?.querySelector("input");
+  const position = () => {
+    if (!panel) return;
+    const btn = document.querySelector('[data-zion-status-id="langchain.chat.model"]')
+      || Array.from(document.querySelectorAll("#bottombar .status-item, #statusbar .status-item"))
+        .find((b) => b.textContent?.includes("Model:"));
+    const pad = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+    panel.style.maxHeight = "min(65vh, calc(100vh - 24px))";
+    if (!btn) {
+      panel.style.right = "12px";
+      panel.style.bottom = "36px";
+      return;
+    }
+    const rect = btn.getBoundingClientRect();
+    const width = Math.min(360, Math.max(220, vw - pad * 2));
+    const maxRight = Math.max(pad, vw - width - pad);
+    const right = Math.min(Math.max(pad, Math.round(vw - rect.right)), maxRight);
+    const spaceAbove = Math.max(160, Math.round(rect.top - pad * 2));
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${Math.min(Math.round(vh * 0.65), spaceAbove)}px`;
+    panel.style.right = `${right}px`;
+    panel.style.bottom = `${Math.max(pad, Math.round(vh - rect.top + pad))}px`;
+  };
   return {
     open() {
-      window.zion?.commands?.executeCommand("models.listModels");
+      input?.dispatchEvent(new Event("input"));
       root.style.display = "block";
+      position();
       input?.focus();
       input?.select();
     },

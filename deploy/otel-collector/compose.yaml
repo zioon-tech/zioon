@@ -1,0 +1,41 @@
+services:
+  jaeger-init:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mkdir -p /badger/data && chown -R 10001:10001 /badger/data"
+    volumes:
+      - jaeger-data:/badger
+    restart: "no"
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    command: ["--config=/etc/jaeger/jaeger.yaml"]
+    depends_on:
+      jaeger-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:16686:16686"
+    volumes:
+      - ./jaeger.yaml:/etc/jaeger/jaeger.yaml:ro
+      - jaeger-data:/badger
+    mem_limit: 512m
+    restart: unless-stopped
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    depends_on:
+      - jaeger
+    environment:
+      ZION_OTEL_BACKEND_ENDPOINT: http://jaeger:4318
+    ports:
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./config.yaml:/etc/otelcol/config.yaml:ro
+    mem_limit: 256m
+    restart: unless-stopped
+
+volumes:
+  jaeger-data:
