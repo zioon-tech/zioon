@@ -16,6 +16,10 @@ if (component === "runtime") {
   for (const entry of readdirSync("packages")) {
     if (existsSync(`packages/${entry}/dist`)) copy(`packages/${entry}/dist`);
   }
+  execFileSync("npm", ["prune", "--omit=dev", "--ignore-scripts"], { cwd: stage, stdio: "inherit" });
+  // Resolve the entrypoint's dependency graph inside the staged release.
+  execFileSync(process.execPath, ["--input-type=module", "-e",
+    'await import("./apps/runtime/src/server.mjs")'], { cwd: stage, stdio: "inherit" });
 } else if (component === "workbench") {
   copy("dist", ".");
 } else if (component === "portals") {
