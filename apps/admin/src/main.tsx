@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, Users, Box, Play, ShieldCheck, History, Radio, LogOut, RefreshCw, ArrowUpRight } from "lucide-react";
 import "./style.css";
+import "./filing-layout.css";
+import { WebsiteFiling } from "../../../packages/account-ui/src/WebsiteFiling";
 
 type Operator = { user: { id: string; name: string; email: string }; role: string };
 type Incident = { id: string; title: string; message: string; status: string; impact: string; components: string[]; revision: number; updatedAt: number };
@@ -114,6 +116,7 @@ export function App() {
       : auth !== "checking" ? <button onClick={() => void authenticate()}>重新检查</button> : null}
     {auth === "denied" ? <button onClick={() => void logout()} disabled={busy}>退出并切换账户</button> : null}
     {error && <p role="alert">{error}</p>}
+    <footer className="admin-filing"><WebsiteFiling /></footer>
   </main>;
   const icons = [Activity, Users, Box, Play, Radio, ShieldCheck, History];
   const columns: Record<string, [string, string][]> = {
@@ -153,6 +156,7 @@ export function App() {
         <div className="table-wrap"><table><thead><tr>{columns[tab]?.map(([key, label]) => <th key={key}>{label}</th>)}</tr></thead><tbody>{data.map((row: any, index: number) => <tr key={index}>{columns[tab]?.map(([key]) => <td key={key} title={typeof row[key] === "string" ? row[key] : undefined}>{key.endsWith("_at") ? time(row[key]) : typeof row[key] === "object" && row[key] ? JSON.stringify(row[key]) : String(row[key] ?? "—")}</td>)}</tr>)}</tbody></table>{!data.length && <p className="empty">没有记录</p>}</div>
         <p className="footnote">仅展示最近记录。任务内容、凭据和用户文件不在平台列表中展示。</p>
       </>}
+      <footer className="admin-filing"><WebsiteFiling /></footer>
     </main>
   </div>;
 }

@@ -1,0 +1,8 @@
+.site-footer {
+  flex-wrap: wrap;
+}
+
+.site-footer .zioon-website-filing {
+  width: 100%;
+  justify-content: flex-start;
+}

@@ -58,6 +58,7 @@ for (const filename of ["site.css", "site.js"]) {
 }
 await cp(join(root, "assets", site.image.file), join(output, "assets", site.image.file));
 await cp(join(root, "assets", "favicon.svg"), join(output, "assets", "favicon.svg"));
+await cp(join(root, "assets", "public-security-filing.png"), join(output, "assets", "public-security-filing.png"));
 
 const header = (isDocs) => `<header class="site-header">
   ${link("/", 'zioon<span class="brand-dot">.</span>', 'class="brand" aria-label="Zioon 首页"')}
@@ -78,6 +79,10 @@ const footer = () => `<footer class="site-footer">
     <nav aria-label="产品入口">${link(site.links.workbench, `Workbench ${arrow}`)}${link(site.links.marketplace, `插件市场 ${arrow}`)}${link(site.links.memory, `Memory ${arrow}`)}${link(site.links.adc, `ADC ${arrow}`)}</nav>
     <nav aria-label="帮助">${link("/docs/quickstart/", "快速开始")}${link("/docs/account/", "账号与安全")}${link("/docs/changelog/", "版本说明")}</nav></div>
   <div class="footer-bottom"><span>© ${site.updated.slice(0, 4)} Zioon</span><span>一个账号，接着工作。</span>${link("/docs/", "阅读文档 →")}</div>
+  <nav class="website-filing" aria-label="网站备案">
+    ${link("https://beian.miit.gov.cn/", "赣ICP备2026025481号-1", 'target="_blank" rel="noreferrer"')}
+    ${link("https://beian.mps.gov.cn/#/query/webSearch?code=33011002020851", '<img src="/assets/public-security-filing.png" width="18" height="20" alt="" aria-hidden="true">浙公网安备33011002020851号', 'target="_blank" rel="noreferrer"')}
+  </nav>
 </footer>`;
 
 const searchDialog = () => `<dialog id="search-dialog" aria-labelledby="search-title">

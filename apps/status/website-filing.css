@@ -1,0 +1,32 @@
+footer {
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.website-filing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.website-filing a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.website-filing a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.website-filing img {
+  width: 18px;
+  height: 20px;
+  object-fit: contain;
+}
