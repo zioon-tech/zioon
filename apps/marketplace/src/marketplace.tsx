@@ -15,6 +15,8 @@ import remarkGfm from "remark-gfm";
 import { ApiError, login, request, runtimePath } from "./api";
 import type { Account, Connection, Contribution, Entry, Kind, Run, Schema, Snapshot } from "./types";
 import { InstallationFiles } from "./installation-files";
+import { WebsiteFiling } from "../../../packages/account-ui/src/WebsiteFiling";
+import "./filing-layout.css";
 
 const names: Record<string, string> = { skill: "技能", plugin: "插件", mcp: "MCP", workbench: "界面组件", model: "模型" };
 const statuses: Record<string, string> = {
@@ -148,7 +150,8 @@ export function Marketplace() {
       </Routes>
     </main>
     <footer className="site-footer"><div><Link to="/" className="footer-brand">Zioon</Link><span>插件、技能与 MCP，随你的账户一起使用。</span></div>
-      <div><a href="https://zioon.tech/">官网</a><a href="https://zioon.tech/docs/">开发文档</a><a href="https://runtime.zioon.tech/">Workbench <ExternalLink size={12} /></a></div></footer>
+      <div><a href="https://zioon.tech/">官网</a><a href="https://zioon.tech/docs/">开发文档</a><a href="https://runtime.zioon.tech/">Workbench <ExternalLink size={12} /></a></div>
+      <WebsiteFiling /></footer>
   </Market.Provider>;
 }
 

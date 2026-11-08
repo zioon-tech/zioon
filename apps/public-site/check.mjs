@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -14,6 +15,11 @@ const { JSDOM, VirtualConsole } = require("jsdom");
 const root = dirname(fileURLToPath(import.meta.url));
 const output = join(root, "dist");
 const info = JSON.parse(await readFile(join(output, "build-info.json"), "utf8"));
+assert.equal(
+  createHash("sha256").update(await readFile(join(output, "assets/public-security-filing.png"))).digest("hex"),
+  "8dfecad0dfcb3dc584f2c2447943eefb1fd65a058856eb0611e2c56ddc4c1fe1",
+  "The filing icon must match the supplied official image"
+);
 const documents = new Map();
 const titles = new Set();
 let linksChecked = 0, snippetsChecked = 0, assertions = 0;
@@ -47,6 +53,11 @@ for (const path of paths) {
     check(!script.textContent.trim(), `${path}: no inline executable script`);
   }
   for (const image of document.images) {
+    if (image.getAttribute("src") === "/assets/public-security-filing.png") {
+      check(image.alt === "" && image.getAttribute("aria-hidden") === "true"
+        && image.width === 18 && image.height === 20, `${path}: decorative official filing icon`);
+      continue;
+    }
     check(image.alt.length > 0 && image.width > 0 && image.height > 0, `${path}: image accessibility and size`);
     check(image.getAttribute("data-source")?.startsWith("https://copilot-cn.bytedance.net/api/ide/v1/tool_text_to_image?"), `${path}: required generated-image provenance`);
   }

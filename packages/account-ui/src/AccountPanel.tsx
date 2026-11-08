@@ -21,6 +21,7 @@ import {
   pendingInvitation, setAccountSession, type AccountSession
 } from "./client";
 import { ZionMark } from "./ZionMark";
+import { WebsiteFiling } from "./WebsiteFiling";
 import "./account.css";
 
 type Member = { id: string; name: string; email: string; role: string; status: string };
@@ -212,6 +213,7 @@ export function AccountPanel({
           ? <p role="alert" className="zion-account-error">{loginError || error}</p>
           : null}
       </div>
+      <footer className="zion-account-filing"><WebsiteFiling /></footer>
     </main>;
   }
 
@@ -474,5 +476,6 @@ export function AccountPanel({
     </div> : null}
     {error ? <p role="alert" className="zion-account-error">{error}</p> : null}
     {notice ? <p role="status" className="zion-account-notice">{notice}</p> : null}
+    <footer className="zion-account-filing"><WebsiteFiling /></footer>
   </div>;
 }

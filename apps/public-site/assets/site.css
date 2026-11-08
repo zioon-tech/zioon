@@ -108,6 +108,10 @@ kbd { font: 11px/1.5 var(--mono); padding: 3px 5px; border: 1px solid var(--line
 .footer-top nav { display: flex; flex-direction: column; gap: 13px; align-items: flex-start; font-size: 12px; }
 .footer-top a:hover { color: var(--accent); }
 .footer-bottom { display: flex; justify-content: space-between; gap: 20px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 10px; color: var(--muted); }
+.website-filing { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; margin-top: 16px; color: var(--muted); font-size: 11px; line-height: 20px; }
+.website-filing a { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.website-filing a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.website-filing img { width: 18px; height: 20px; object-fit: contain; }
 .docs-page { background: var(--white); }
 .docs-page .site-header, .docs-page .site-footer { background: var(--paper); }
 .docs-layout { display: grid; grid-template-columns: 215px minmax(0, 720px) 170px; max-width: 1440px; margin: auto; padding: 0 3.5vw; gap: 55px; }

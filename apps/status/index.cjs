@@ -102,8 +102,14 @@ exports.handler = async (rawEvent, context) => {
       monitoring: "每分钟自动检查；当前暂时无法读取最近的检测记录。" });
   }
   const files = { "/": ["index.html", "text/html; charset=utf-8"],
-    "/app.js": ["app.js", "text/javascript; charset=utf-8"], "/style.css": ["style.css", "text/css; charset=utf-8"] };
+    "/app.js": ["app.js", "text/javascript; charset=utf-8"], "/style.css": ["style.css", "text/css; charset=utf-8"],
+    "/website-filing.css": ["website-filing.css", "text/css; charset=utf-8"],
+    "/public-security-filing.png": ["public-security-filing.png", "image/png"] };
   if (!files[path]) return output(404, { error: "not_found" });
   const [file, type] = files[path];
+  if (type === "image/png") {
+    const body = method === "HEAD" ? "" : (await readFile(join(__dirname, file))).toString("base64");
+    return { ...output(200, body, type), isBase64Encoded: true };
+  }
   return output(200, method === "HEAD" ? "" : await readFile(join(__dirname, file), "utf8"), type);
 };
