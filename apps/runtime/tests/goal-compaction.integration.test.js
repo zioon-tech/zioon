@@ -298,7 +298,11 @@ describe("Persistent goal lifecycle", () => {
       body: JSON.stringify({ ...request({ action: "start", objective: "HTTP 持续目标" }), maxTurns: 1 }) });
     expect(response.status).toBe(202);
     await vi.waitFor(async () => {
-      expect(await goalStatus(resource, "session", null)).toMatchObject({ status: "completed", cycles: 2 });
+      // beforeStop records Goal completion; afterRun clears its live Run only
+      // after the server has finalized the canonical Session transcript.
+      expect(await goalStatus(resource, "session", null)).toMatchObject({
+        status: "completed", cycles: 2, activeRunId: null
+      });
     });
     const transcript = await resource.runs.getSessionTranscript("session");
     expect(transcript.filter((message) => message.role === "user")).toHaveLength(2);
