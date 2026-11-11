@@ -62,6 +62,9 @@ const request = (goal = null) => ({
   policy, ...(goal ? { metadata: { goal } } : {})
 });
 const finish = (executor, input) => executor.execute(input).completion;
+// HTTP lifecycle transitions include multiple PostgreSQL commits and hooks.
+// Keep a bounded wait for the authoritative state on slower CI runners.
+const waitForLifecycle = (assertion) => vi.waitFor(assertion, { timeout: 5000 });
 const call = (id, action, extra = {}) => ({ type: "tool.call",
   call: { id, name: "goalManage", arguments: { action, ...extra } } });
 
@@ -221,7 +224,7 @@ describe("Persistent goal lifecycle", () => {
       body: JSON.stringify({ action: "pause", sessionId: "session" })
     });
     expect(response.status).toBe(200);
-    await vi.waitFor(async () => {
+    await waitForLifecycle(async () => {
       expect(await goalStatus(resource, "session", null)).toMatchObject({
         status: "paused", reason: "user-pause", activeRunId: null
       });
@@ -297,7 +300,7 @@ describe("Persistent goal lifecycle", () => {
     const response = await fetch(`${url}/v1/runs`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...request({ action: "start", objective: "HTTP 持续目标" }), maxTurns: 1 }) });
     expect(response.status).toBe(202);
-    await vi.waitFor(async () => {
+    await waitForLifecycle(async () => {
       // beforeStop records Goal completion; afterRun clears its live Run only
       // after the server has finalized the canonical Session transcript.
       expect(await goalStatus(resource, "session", null)).toMatchObject({
@@ -337,13 +340,13 @@ describe("Persistent goal lifecycle", () => {
       model: { providerId: "test", modelId: "model-a" }, modelOptions: { thinkingEffort: "low" },
       target: { nodeId: "device-a" } });
     expect(initial.status).toBe(202);
-    await vi.waitFor(async () => expect(await goalStatus(resource)).toMatchObject({ status: "blocked", activeRunId: null }));
+    await waitForLifecycle(async () => expect(await goalStatus(resource)).toMatchObject({ status: "blocked", activeRunId: null }));
     resume = true;
     const response = await post("/v1/plugins/dev.goal/commands", { action: "resume", sessionId: "session",
       messages: [{ role: "user", content: "未发送的草稿不能成为输入" }] });
     expect(response.status).toBe(200);
     expect((await response.json()).result).toMatchObject({ status: "accepted" });
-    await vi.waitFor(() => expect(resumedInput).toBeDefined());
+    await waitForLifecycle(() => expect(resumedInput).toBeDefined());
     expect(resumedInput).toMatchObject({ model: { providerId: "test", modelId: "model-a" },
       modelOptions: { thinkingEffort: "low" } });
     expect(authorizeRunRequest.mock.calls.at(-1)[1]).toMatchObject({ target: { nodeId: "device-a" } });
@@ -353,7 +356,7 @@ describe("Persistent goal lifecycle", () => {
     expect(authorizeRunRequest).toHaveBeenCalledTimes(2);
     expect((await post("/v1/plugins/dev.goal/commands", { action: "resume", sessionId: "session" })).status).toBe(409);
     releaseModel();
-    await vi.waitFor(async () => expect(await goalStatus(resource)).toMatchObject({ status: "completed" }));
+    await waitForLifecycle(async () => expect(await goalStatus(resource)).toMatchObject({ status: "completed", activeRunId: null }));
     expect((await resource.runs.listRuns()).length).toBe(2);
   });
 });
