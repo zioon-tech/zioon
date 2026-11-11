@@ -151,7 +151,11 @@ describe("Runtime collaboration service", () => {
       runId: "run-recovery",
       userContent: "next question"
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitFor(async () =>
+      (await workbenchState.readSession("recovery-session")).text
+        .includes("next question"),
+      5_000
+    );
 
     expect((await workbenchState.readSession("recovery-session")).text)
       .not.toContain("user preserved content");
@@ -508,7 +512,11 @@ describe("Runtime collaboration service", () => {
       type: "run.aborted",
       data: { reason: "user" }
     });
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await waitFor(() =>
+      document.getText(COLLABORATION_TEXT_KEY).toString()
+        .includes("runtime stale output"),
+      5_000
+    );
 
     expect(document.getText(COLLABORATION_TEXT_KEY).toString())
       .toContain("owner output");
