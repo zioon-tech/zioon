@@ -163,8 +163,8 @@ try:
     close()
     assert "\x1b[?2004l" in raw.getvalue()
     (output_dir / "workflow-terminal.ansi").write_text(raw.getvalue())
-    result = {"platform": sys.platform, "checks": checks, "passed": len(checks), "local_prompt_ms": prompt_ms,
-              "windows_linux_native_terminal": "not run"}
+    result = {"platform": sys.platform, "terminal": "PTY", "checks": checks,
+              "passed": len(checks), "local_prompt_ms": prompt_ms}
     (output_dir / "workflow-pty-results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps(result, ensure_ascii=False, indent=2))
 finally:

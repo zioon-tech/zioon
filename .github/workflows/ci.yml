@@ -81,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
+        os: [ubuntu-24.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -98,14 +98,14 @@ jobs:
         run: python -m pip install pexpect==4.9.0 pyte==0.8.2
       - if: runner.os == 'Windows'
         run: python -m pip install pywinpty==2.0.15
-      - run: python scripts/verify-zioon-native-pty.py .cli-terminal-results
+      - run: python scripts/verify-zioon-native-pty.py cli-terminal-results
       - if: runner.os != 'Windows'
-        run: python scripts/verify-zioon-workflow-pty.py packages/zioon-cli/bin/zioon.mjs .cli-terminal-results
+        run: python scripts/verify-zioon-workflow-pty.py packages/zioon-cli/bin/zioon.mjs cli-terminal-results
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cli-terminal-${{ matrix.os }}-${{ github.sha }}
-          path: .cli-terminal-results
+          path: cli-terminal-results
           if-no-files-found: error
           retention-days: 14
   required:
