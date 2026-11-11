@@ -4,6 +4,28 @@ import { extensionToolCatalog, assertExtensionToolCatalog, extensionContextEnabl
 
 const fail = (code) => { throw Object.assign(new Error(code), { code, statusCode: 403 }); };
 export const extensionAccountId = (principal) => String(principal?.userId || principal?.user?.id || "");
+/** Rebuild terminal intents from durable bindings without waking an extension host. */
+export function extensionTerminalOutbox(request, result) {
+  const accountId = extensionAccountId(request.principal);
+  const plan = request.metadata?.extensionPlan || [];
+  if (!accountId) return [];
+  if (!Array.isArray(plan) || plan.length > 100) fail("extension_plan_invalid");
+  const jobs = [];
+  for (const entry of plan) {
+    if (!Array.isArray(entry.handlers)) fail("extension_plan_invalid");
+    for (const handler of entry.handlers) {
+      const method = handler.kind === "controller" && handler.hooks?.includes("afterRun") ? "afterRun" : undefined;
+      if (!method && !(result.status === "completed" && (handler.kind === "post-processor"
+        || (handler.kind === "job" && handler.triggers?.includes("run.completed"))))) continue;
+      jobs.push({ id: `job:${hashExtension([result.runId, result.attemptId, entry.listingId, handler.handle])}`,
+        kind: "extension.handler", payload: { accountId, listingId: entry.listingId,
+          epoch: entry.epoch, digest: entry.digest, configDigest: entry.configDigest,
+          handler, ...(method ? { method } : {}) } });
+    }
+  }
+  if (jobs.length > 100) fail("extension_outbox_budget");
+  return jobs;
+}
 // Execution grants and browser identities are never sent to user modules.
 export function extensionRequest(request) {
   const { principal, metadata, ...rest } = request;
@@ -124,17 +146,7 @@ export class ExtensionRunBindings {
       dispose: () => { for (const lease of leases) lease.dispose(); },
       terminalOutbox: (result) => {
         if (context.preview) return [];
-        const jobs = [];
-        for (const entry of plan) for (const handler of entry.handlers) {
-          const method = handler.kind === "controller" && handler.hooks.includes("afterRun") ? "afterRun" : undefined;
-          if (!method && !(result.status === "completed" && (handler.kind === "post-processor"
-            || (handler.kind === "job" && handler.triggers.includes("run.completed"))))) continue;
-          jobs.push({ id: `job:${hashExtension([result.runId, result.attemptId, entry.listingId, handler.handle])}`,
-            kind: "extension.handler", payload: { accountId, listingId: entry.listingId,
-              epoch: entry.epoch, digest: entry.digest, configDigest: entry.configDigest,
-              handler, ...(method ? { method } : {}) } });
-        }
-        return jobs;
+        return extensionTerminalOutbox({ principal: request.principal, metadata: { extensionPlan: plan } }, result);
       }
     };
     } catch (error) { for (const lease of leases) lease.dispose(); throw error; }

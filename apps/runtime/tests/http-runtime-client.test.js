@@ -97,7 +97,8 @@ describe("HttpRuntimeClient", () => {
       "message.delta",
       "message.completed",
       "turn.completed",
-      "run.completed"
+      "run.completed",
+      "run.finalized"
     ]);
 
     await expect(client.getRun(accepted.runId)).resolves.toMatchObject({
@@ -108,7 +109,8 @@ describe("HttpRuntimeClient", () => {
     });
     await expect(client.getEvents(accepted.runId, 4)).resolves.toEqual([
       expect.objectContaining({ sequence: 5, type: "turn.completed" }),
-      expect.objectContaining({ sequence: 6, type: "run.completed" })
+      expect.objectContaining({ sequence: 6, type: "run.completed" }),
+      expect.objectContaining({ sequence: 7, type: "run.finalized" })
     ]);
     await expect(client.getEvent(accepted.runId, 3)).resolves.toMatchObject({
       sequence: 3,
@@ -239,7 +241,8 @@ describe("HttpRuntimeClient", () => {
       handle.completion
     ]);
 
-    expect(events.at(-1)).toMatchObject({ type: "run.completed" });
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "run.completed" })]));
+    expect(events.at(-1)).toMatchObject({ type: "run.finalized" });
     expect(result).toMatchObject({
       runId: handle.runId,
       attemptId: handle.attemptId,
@@ -488,10 +491,11 @@ describe("HttpRuntimeClient", () => {
     await client.abort(accepted.runId, "workbench-user");
 
     const events = await collect(client.subscribe(accepted.runId));
-    expect(events.at(-1)).toMatchObject({
+    expect(events.find((event) => event.type === "run.aborted")).toMatchObject({
       type: "run.aborted",
       data: { reason: "workbench-user" }
     });
+    expect(events.at(-1)).toMatchObject({ type: "run.finalized" });
     await expect(client.getRun(accepted.runId)).resolves.toMatchObject({
       status: "aborted",
       terminalReason: "workbench-user"

@@ -1,6 +1,6 @@
 import type { ContextHealthRecommendation, ContextHealthSeverity } from "./run-health";
 
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "stopped" | "interrupted";
+export type RunStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "stopped" | "interrupted";
 export type RunTrigger = "user" | "schedule" | "supervisor" | "retry" | "system";
 
 export type RunSourceRef = {
@@ -338,7 +338,7 @@ function normalizeContextHealth(input: any, now = Date.now(), fallbackSessionId 
 }
 
 function normalizeStatus(value: any): RunStatus {
-  return ["queued", "running", "completed", "failed", "stopped", "interrupted"].includes(value)
+  return ["queued", "running", "waiting", "completed", "failed", "stopped", "interrupted"].includes(value)
     ? value
     : "running";
 }
@@ -748,6 +748,10 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
           reason: cleanString(data.reason || "", 500)
         });
         next = { ...next, tools, toolCalls: tools.length, deniedToolCalls: tools.filter((tool) => tool.status === "denied").length };
+      } else if (event.type === "run.waiting") {
+        next = { ...next, status: "waiting", terminalReason: cleanString(data.waiting?.reason || "", 500) };
+      } else if (event.type === "attempt.started") {
+        next = { ...next, status: "running", completedAt: undefined, terminalReason: undefined, error: undefined };
       } else if (event.type === "run.completed") {
         const usage = data.usage ? normalizeRunUsage(data.usage) : run.usage;
         next = {

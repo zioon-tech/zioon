@@ -4,6 +4,7 @@ import type {
   RunRecord,
   RunOutboxEntry,
   RunStatus,
+  RunWait,
   RunStore,
   RunTranscriptEntry
 } from "./protocol.js";
@@ -41,12 +42,20 @@ export class MemoryRunStore implements RunStore {
         | "output"
         | "usage"
         | "metadata"
+        | "waiting"
       >>,
     _detailEvent?: RunEvent,
     outbox: RunOutboxEntry[] = []
   ): Promise<void> {
+    this.writeEvent(event, patch, outbox);
+  }
+
+  private writeEvent(event: RunEvent, patch?: Parameters<MemoryRunStore["append"]>[1], outbox: RunOutboxEntry[] = []): void {
     const run = this.runs.get(event.runId);
     if (!run) throw new Error(`Run not found: ${event.runId}`);
+    if (event.attemptId !== run.attemptId && patch?.attemptId !== event.attemptId) {
+      throw new Error("Run attempt no longer owns execution");
+    }
     const events = this.events.get(event.runId) || [];
     const previous = events.at(-1);
     if (previous && event.sequence <= previous.sequence) {
@@ -54,8 +63,8 @@ export class MemoryRunStore implements RunStore {
         `Run event sequence conflict: sequence must increase after ${previous.sequence}, received ${event.sequence}`
       );
     }
-    if (!previous && event.sequence !== 1) {
-      throw new Error(`Run event sequence must start at 1, received ${event.sequence}`);
+    if (!Number.isSafeInteger(event.sequence) || event.sequence < 1) {
+      throw new Error(`Run event sequence must be a positive integer, received ${event.sequence}`);
     }
     for (const entry of outbox) {
       const previous = this.outbox.get(entry.id);
@@ -101,6 +110,12 @@ export class MemoryRunStore implements RunStore {
         )
         .slice(0, normalizedLimit)
     );
+  }
+
+  async getActiveRunForSession(sessionId: string): Promise<RunRecord | null> {
+    const run = [...this.runs.values()].find((item) => item.sessionId === sessionId
+      && ["queued", "running", "waiting"].includes(item.status));
+    return run ? clone(run) : null;
   }
 
   async getEvents(runId: string, afterSequence = 0): Promise<RunEvent[]> {
@@ -150,5 +165,49 @@ export class MemoryRunStore implements RunStore {
   async getLatestCheckpoint(runId: string): Promise<AgentCheckpoint | null> {
     const checkpoint = this.checkpoints.get(runId);
     return checkpoint ? clone(checkpoint) : null;
+  }
+
+  async suspend(event: RunEvent, checkpoint: AgentCheckpoint, waiting: RunWait): Promise<void> {
+    const previous = this.checkpoints.get(event.runId);
+    this.checkpoints.set(event.runId, clone(checkpoint));
+    try {
+      await this.append(event, {
+        status: "waiting", updatedAt: event.timestamp, waiting,
+        output: checkpoint.output, usage: checkpoint.usage
+      });
+    } catch (error) {
+      if (previous) this.checkpoints.set(event.runId, previous);
+      else this.checkpoints.delete(event.runId);
+      throw error;
+    }
+  }
+
+  async claimResume({ runId, previousAttemptId, attemptId, checkpointSequence, waitId, input }: {
+    runId: string; previousAttemptId: string; attemptId: string;
+    checkpointSequence: number; waitId?: string; input?: unknown;
+  }): Promise<boolean> {
+    const run = this.runs.get(runId);
+    const checkpoint = this.checkpoints.get(runId);
+    if (!run || run.attemptId !== previousAttemptId || checkpoint?.sequence !== checkpointSequence
+      || !["waiting", "interrupted", "failed", "aborted"].includes(run.status)
+      || (run.status === "waiting" ? run.waiting?.id !== waitId : waitId !== undefined)) return false;
+    this.runs.set(runId, { ...run, attemptId, status: "queued", waiting: undefined });
+    if (waitId && checkpoint.pending) {
+      checkpoint.pending.resume = clone({ waitId, input });
+    }
+    return true;
+  }
+
+  async cancelWait(event: RunEvent, waitId: string, outbox: RunOutboxEntry[] = []): Promise<boolean> {
+    if (event.type !== "run.aborted" || !waitId) throw new Error("Invalid wait cancellation");
+    const run = this.runs.get(event.runId);
+    if (!run || run.status !== "waiting" || run.attemptId !== event.attemptId
+      || run.waiting?.id !== waitId) return false;
+    this.writeEvent(event, {
+      status: "aborted", updatedAt: event.timestamp, completedAt: event.timestamp,
+      terminalReason: String(event.data.reason || "user"), waiting: undefined
+    }, outbox);
+    this.checkpoints.delete(event.runId);
+    return true;
   }
 }

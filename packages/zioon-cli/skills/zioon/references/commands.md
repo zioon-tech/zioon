@@ -1,7 +1,7 @@
 # Commands
 
 Official endpoints: https://runtime.zioon.tech, https://zioon.tech/docs/.
-The fixed matching CLI download is https://zioon.tech/downloads/zioon-cli-0.2.1.tgz.
+The fixed matching CLI download is https://zioon.tech/downloads/zioon-cli-0.3.0.tgz.
 
 ```sh
 zioon auth login zioon-cloud
@@ -9,9 +9,12 @@ zioon auth status zioon-cloud
 zioon session list --limit 10
 zioon session transcript SESSION_ID
 zioon chat --session SESSION_ID
+zioon chat --continue
+zioon chat --image screenshot.png
 zioon run "Continue the work" --session SESSION_ID --jsonl
 zioon attach RUN_ID --jsonl
 zioon abort RUN_ID --reason "User requested stop"
+zioon resume RUN_ID --wait-id WAIT_ID --input-file response.json
 zioon profile show zioon-cloud
 ```
 
@@ -100,7 +103,9 @@ Account tool request:
 
 Get the actual epoch and configured workspace from the account snapshot. Prefer the SDK's `extensionRunRequest` helper to handwritten requests.
 For full plugins use `runtimePluginToolRequest(pluginId, discoveredTool, args, profileId)`.
-Read the returned Run snapshot and inspect the terminal status. CLI exits are 0 completed, 1 failed, 2 interrupted and 130 aborted.
+Read the returned Run snapshot and inspect the status. CLI exits are 0 completed,
+1 failed, 2 interrupted, 3 waiting and 130 aborted. A waiting Run is not finished.
+Use the observed wait ID and the requested input shape; never invent approval.
 
 Mac credentials use Keychain; Linux uses user-owned private files; Windows uses CurrentUser DPAPI.
 Endpoint config is `~/.zion-next/cli.json`. It contains URLs and auth types, not account token values.

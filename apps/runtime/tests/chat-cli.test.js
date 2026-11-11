@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,17 @@ function jsonResponse(status, value) {
     headers: { "content-type": "application/json" }
   });
 }
+
+let chatStateDirectory;
+beforeEach(() => { chatStateDirectory = mkdtempSync(join(tmpdir(), "zioon-chat-test-")); });
+afterEach(() => { rmSync(chatStateDirectory, { recursive: true, force: true }); });
+const sessionFixture = (session) => vi.fn(async (url) => {
+  if (url.endsWith("/sessions")) return jsonResponse(201, { session });
+  if (url.endsWith("/messages")) return jsonResponse(202, { runId: "fixture-run" });
+  if (url.includes("/stream")) return new Response("", { headers: { "content-type": "text/event-stream" } });
+  if (url.includes("/projection?")) return jsonResponse(200, { events: [] });
+  return jsonResponse(200, { run: { id: "fixture-run", status: "completed" } });
+});
 
 function sseResponse(events) {
   const body = events.map((event) => [
@@ -47,6 +58,9 @@ describe("Runtime chat client", () => {
         attemptId: "attempt-1",
         status: "accepted"
       }))
+      .mockResolvedValueOnce(sseResponse([{
+        sequence: 1, type: "message.delta", data: { delta: "hello " }
+      }]))
       .mockResolvedValueOnce(jsonResponse(200, {
         run: { id: "run-1", status: "completed" }
       }))
@@ -109,13 +123,11 @@ describe("Runtime chat client", () => {
   });
 
   it("creates a project-scoped Session from CLI authorization flags", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, {
-      session: {
+    const fetchImpl = sessionFixture({
         id: "session-remote",
         title: "Remote project",
         projectId: "zion-next"
-      }
-    }));
+    });
 
     await runChatCli({
       argv: [
@@ -128,10 +140,10 @@ describe("Runtime chat client", () => {
         "--terminal-session", "terminal:one",
         "--max-tool-calls", "8"
       ],
-      input: Readable.from([]),
+      input: Readable.from(["first message\n/exit\n"]),
       output: new PassThrough(),
       fetchImpl,
-      environment: {}
+      environment: { ZIOON_CHAT_STATE_DIR: chatStateDirectory }
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -154,12 +166,10 @@ describe("Runtime chat client", () => {
   });
 
   it("creates a Session with a requested Runtime model profile", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, {
-      session: {
+    const fetchImpl = sessionFixture({
         id: "session-model",
         title: "Model session"
-      }
-    }));
+    });
 
     await runChatCli({
       argv: [
@@ -168,10 +178,10 @@ describe("Runtime chat client", () => {
         "--model-profile", "workbench.user.dynamic.kimi-k3",
         "--no-terminal-context"
       ],
-      input: Readable.from([]),
+      input: Readable.from(["first message\n/exit\n"]),
       output: new PassThrough(),
       fetchImpl,
-      environment: {}
+      environment: { ZIOON_CHAT_STATE_DIR: chatStateDirectory }
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -189,12 +199,10 @@ describe("Runtime chat client", () => {
   });
 
   it("can create a Session with no tools for bare-model diagnostics", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(201, {
-      session: {
+    const fetchImpl = sessionFixture({
         id: "session-no-tools",
         title: "No tools"
-      }
-    }));
+    });
 
     await runChatCli({
       argv: [
@@ -202,10 +210,10 @@ describe("Runtime chat client", () => {
         "--title", "No tools",
         "--no-tools"
       ],
-      input: Readable.from([]),
+      input: Readable.from(["first message\n/exit\n"]),
       output: new PassThrough(),
       fetchImpl,
-      environment: {}
+      environment: { ZIOON_CHAT_STATE_DIR: chatStateDirectory }
     });
 
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -268,15 +276,15 @@ describe("Runtime control CLI", () => {
           data: { delta: "hello" }
       }]))
       .mockResolvedValueOnce(jsonResponse(200, {
-        runId: "run-cli",
-        events: []
-      }))
-      .mockResolvedValueOnce(jsonResponse(200, {
         run: {
           id: "run-cli",
           status: "completed",
           output: "hello"
         }
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        runId: "run-cli",
+        events: []
       }));
     const output = new PassThrough();
     let text = "";

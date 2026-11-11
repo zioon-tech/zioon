@@ -1,6 +1,7 @@
 export type RunStatus =
   | "queued"
   | "running"
+  | "waiting"
   | "completed"
   | "failed"
   | "aborted"
@@ -217,6 +218,9 @@ export type RunRequest = {
 };
 
 export type ResumeRunRequest = {
+  /** Required for a suspended Run; stale/duplicate waits are rejected atomically. */
+  waitId?: string;
+  input?: unknown;
   model?: ModelRef;
   modelOptions?: ModelRequestOptions;
   maxTurns?: number;
@@ -243,6 +247,7 @@ export type RunRecord = {
   error?: string;
   output?: string;
   usage?: Usage;
+  waiting?: RunWait;
 };
 
 export type SessionStatus = "active" | "archived";
@@ -290,11 +295,12 @@ export type RunEvent = {
 export type RunResult = {
   runId: string;
   attemptId: string;
-  status: "completed" | "failed" | "aborted";
+  status: "completed" | "failed" | "aborted" | "waiting";
   output: string;
   usage: Usage;
   error?: string;
   reason?: string;
+  waiting?: RunWait;
 };
 
 /** Intent committed atomically with its originating semantic Run event. */
@@ -356,6 +362,60 @@ export type AgentCheckpoint = {
   };
   maxTurns: number;
   createdAt: number;
+  /** Exact execution boundary. Omitted on legacy checkpoints. */
+  pending?: PendingRunStep;
+};
+
+export type RunHookStage = "beforeStart" | "beforeTurn" | "beforeModel"
+  | "beforeTool" | "afterTool" | "beforeStop" | "afterRun";
+
+export type RunWait = {
+  id: string;
+  controllerId: string;
+  stage: RunHookStage;
+  reason: string;
+  createdAt: number;
+  data?: Record<string, unknown>;
+};
+
+export type PendingRunStep = {
+  stage: Exclude<RunHookStage, "afterRun">;
+  controllerIndex: number;
+  /** Detect a changed controller chain rather than silently skipping policy. */
+  controllerIds: string[];
+  completedDecisions?: RunHookDecision[];
+  turn: number;
+  calls?: ToolCall[];
+  callIndex?: number;
+  turnOutput?: string;
+  turnReasoning?: string;
+  turnMetadata?: Record<string, unknown>;
+  toolMessages?: TranscriptMessage[];
+  /** A crash during a side effect requires reconciliation, never blind replay. */
+  inFlight?: boolean;
+  /** Known result awaiting durable result-observer completion; never re-run the tool. */
+  afterToolResult?: ToolResult;
+  resume?: { waitId: string; input?: unknown };
+  stopBoundary?: "max-turns";
+};
+
+export type RunHookDecision =
+  | { action: "pass" }
+  | { action: "deny"; reason: string }
+  | { action: "pause"; reason: string; data?: Record<string, unknown> }
+  | { action: "replace-tool-result"; result: ToolResult }
+  | { action: "continue"; instruction: string }
+  | { action: "accept-stop" }
+  | { action: "continue-run"; instruction: string; metadata?: Record<string, unknown> };
+
+export type RunHookContext = RunControllerContext & {
+  schemaVersion: 1;
+  stage: RunHookStage;
+  controllerId: string;
+  idempotencyKey: string;
+  invocation?: ToolInvocation;
+  result?: ToolResult | RunResult;
+  resume?: { waitId: string; input?: unknown };
 };
 
 export type RunTranscriptEntry = TranscriptMessage & {
@@ -427,6 +487,11 @@ export type RunControllerContext = ContextProviderContext & {
 /** Workflow policy belongs to plugins; execution and admission stay in Runtime. */
 export interface RunController {
   readonly id: string;
+  /** V1 contract. Controllers may implement V1 or legacy hooks, never both per call. */
+  handle?(context: RunHookContext): Promise<RunHookDecision | void>;
+  stages?: RunHookStage[];
+  timeoutMs?: number;
+  failurePolicy?: "fail-open" | "fail-closed";
   beforeStart?(context: RunControllerContext): Promise<void>;
   beforeTurn?(context: RunControllerContext): Promise<string | void>;
   beforeModel?(context: RunControllerContext): Promise<string | void>;
@@ -434,6 +499,12 @@ export interface RunController {
   beforeStop?(context: RunControllerContext): Promise<string | null | void>;
   beforeTool?(invocation: ToolInvocation, context: RunControllerContext): Promise<ToolResult | string | void>;
   afterTool?(invocation: ToolInvocation, result: ToolResult, context: RunControllerContext): Promise<void>;
+  afterRun?(context: {
+    runId: string; request: RunRequest; result: RunResult;
+  }): Promise<{ instruction?: string; metadata?: Record<string, unknown> } | void>;
+  continuationFailed?(context: {
+    request: RunRequest; error: unknown; runId?: string;
+  }): Promise<void>;
 }
 
 export interface ContextProvider {
@@ -465,6 +536,7 @@ export interface RunStore {
         | "output"
         | "usage"
         | "metadata"
+        | "waiting"
       >>,
     detailEvent?: RunEvent,
     outbox?: RunOutboxEntry[]
@@ -482,6 +554,15 @@ export interface RunStore {
   getTranscript(runId: string): Promise<RunTranscriptEntry[]>;
   saveCheckpoint(checkpoint: AgentCheckpoint): Promise<void>;
   getLatestCheckpoint(runId: string): Promise<AgentCheckpoint | null>;
+  /** Atomically persists the wait, event and exact step. */
+  suspend(event: RunEvent, checkpoint: AgentCheckpoint, waiting: RunWait): Promise<void>;
+  /** Cancels only the observed wait/attempt, atomically clearing its checkpoint. */
+  cancelWait(event: RunEvent, waitId: string, outbox?: RunOutboxEntry[]): Promise<boolean>;
+  /** Compare-and-swap against the observed attempt and wait/checkpoint. */
+  claimResume(options: {
+    runId: string; previousAttemptId: string; attemptId: string;
+    checkpointSequence: number; waitId?: string; input?: unknown;
+  }): Promise<boolean>;
 }
 
 export interface SessionStore {

@@ -107,6 +107,7 @@ export function toZionNextRunEvent(event: RunEvent): ZionNextRunEvent {
     event.type === "model.usage"
     || event.type === "turn.completed"
     || event.type === "run.completed"
+    || event.type === "run.waiting"
   ) {
     data.usage = toZionNextUsage(data.usage);
   }

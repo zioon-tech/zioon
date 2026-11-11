@@ -1,12 +1,12 @@
 {
-  "version": "0.2.1",
+  "version": "0.3.0",
   "requires": "Node.js >=22.5",
   "package": "@zioon/cli",
   "files": {
-    "zioon-cli-0.2.1.tgz": "169dcda0a4abaaf57081e0294f901d0f3d1d3acb4b4a6d728e85e9a994e03726",
-    "zioon-skill-0.2.1.tar.gz": "827a961c0892d34015aa1b70bb4201cc9bf2f0dba145fa8a7af19ca88f93e031",
-    "SKILL.md": "6c4621a9011e80d0a43485d257e168d89955130d11edc159a167076a0779929d",
-    "install.sh": "22094953885f082ee2ea17b92e660c8452b9e86fc7cf9434c80ffc1f602d6059",
-    "install.ps1": "6e1c6fca5b228a990379620060238c9f0a4ce3868c3e681d4af03f1f80eb00ab"
+    "zioon-cli-0.3.0.tgz": "116dbcefd44c07fe9464dd538b18eba923862ff6771f9cefaeee393f3bea734c",
+    "zioon-skill-0.3.0.tar.gz": "8a3ae457bd70b37f84140eab9f52d9e26263cdf1a4f051a65cd96e2d0ffe3846",
+    "SKILL.md": "3c98d93cc4e95ba56d66b4c356cee82f4238db3b56999cd093479274462df878",
+    "install.sh": "e63c8b5b779d95c97018032a528ceb9566ba1e7a3b5d3ddb08ab4629949e8d49",
+    "install.ps1": "7ba7510f915ccc72c203f41976b380f7dd2cf4f328ccc75f878b0e7292420932"
   }
 }

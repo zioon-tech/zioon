@@ -932,3 +932,9 @@ export async function abortInteractiveRuntimeRun({
   const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
   await client.abort(runtimeRunId, reason);
 }
+
+export async function respondInteractiveRuntimeRun({ runtimeRunId, waitId, input, baseUrl, fetchImpl }) {
+  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  await client.resumeRun(runtimeRunId, { waitId, input });
+  return await client.getRun(runtimeRunId);
+}

@@ -639,9 +639,19 @@ export class RuntimePluginService {
           });
           pluginContext.runs = Object.freeze({
             registerController: (controller) => {
-              if (!controller?.id || !["beforeStart", "beforeTurn", "beforeModel", "beforeStop", "beforeTool", "afterTool", "afterRun"]
+              const stages = ["beforeStart", "beforeTurn", "beforeModel", "beforeStop", "beforeTool", "afterTool", "afterRun"];
+              if (!controller?.id || !["handle", ...stages]
                 .some((key) => typeof controller[key] === "function")) {
                 throw new Error("Run controller requires an id and lifecycle hooks");
+              }
+              if (typeof controller.handle === "function"
+                && (!Array.isArray(controller.stages) || !controller.stages.length
+                  || controller.stages.some((stage) => !stages.includes(stage)))) {
+                throw new Error("V1 Run controller requires valid stages");
+              }
+              if (registeredControllers.some((item) => item.id === controller.id)
+                || this.controllers.some((item) => item.id === controller.id)) {
+                throw new Error("Run controller id must be unique");
               }
               registeredControllers.push(controller);
               return disposable(() => {

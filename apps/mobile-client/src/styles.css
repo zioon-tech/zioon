@@ -2128,6 +2128,9 @@ button:disabled {
   background: var(--surface);
 }
 
+.run-wait-response { margin: 12px 16px; }
+.run-wait-actions { display: flex; gap: 8px; }
+
 .detail-section h2 {
   margin: 0 0 9px;
   font-size: 13px;

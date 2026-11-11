@@ -10,8 +10,8 @@ let root: Root;
 let host: HTMLDivElement;
 let latest: RunProjectionState;
 const onTerminal = vi.fn();
-function Probe({ runId }: { runId: string }) {
-  latest = useRunProjection(runId, onTerminal);
+function Probe({ runId, observationKey = 0 }: { runId: string; observationKey?: number }) {
+  latest = useRunProjection(runId, onTerminal, observationKey);
   return <div>{latest.blocks.map((block) => block.kind === "text" ? block.content : "").join("|")}</div>;
 }
 beforeEach(() => {
@@ -70,5 +70,29 @@ describe("useRunProjection", () => {
     expect(host.textContent).toBe("Partial");
     expect(latest.error).toBe("Stream offline");
     expect(onTerminal).not.toHaveBeenCalled();
+  });
+
+  it("retains earlier blocks and cursor when reobserving the same resumed Run", async () => {
+    let subscriptions = 0;
+    vi.mocked(subscribeRun).mockImplementation(async function* (runId, options) {
+      subscriptions++;
+      if (subscriptions === 1) {
+        yield { runId, sequence: 1, eventId: "1", type: "message.delta", data: { turn: 1, delta: "PLAN" } };
+        yield { runId, sequence: 2, eventId: "2", type: "run.waiting", data: {
+          waiting: { id: "wait", reason: "Approve" }
+        } };
+      } else {
+        expect(options?.afterSequence).toBe(2);
+        yield { runId, sequence: 3, eventId: "3", type: "attempt.started", data: {} };
+        yield { runId, sequence: 4, eventId: "4", type: "message.delta", data: { turn: 2, delta: "FINAL" } };
+        yield { runId, sequence: 5, eventId: "5", type: "run.completed", data: {} };
+      }
+    });
+    await act(async () => root.render(<Probe runId="first" />));
+    expect(latest.status).toBe("waiting");
+    await act(async () => root.render(<Probe runId="first" observationKey={1} />));
+    expect(host.textContent).toBe("PLAN|FINAL");
+    expect(latest.waiting).toBeUndefined();
+    expect(latest.status).toBe("completed");
   });
 });

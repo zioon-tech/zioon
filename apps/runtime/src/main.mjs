@@ -116,13 +116,18 @@ import { ExtensionInvocationEngine } from "./marketplace/invocation-engine.mjs";
 import { AccountExtensionModelCatalog, AccountExtensionModelEngine, isExtensionModel } from "./marketplace/model-engine.mjs";
 import { AccountModelSelection, createModelManagementPluginService } from "./marketplace/model-selection.mjs";
 import { ExtensionHostBridge } from "./marketplace/host-bridge.mjs";
-import { ExtensionRunBindings } from "./marketplace/run-bindings.mjs";
+import { ExtensionRunBindings, extensionTerminalOutbox } from "./marketplace/run-bindings.mjs";
 import { ExtensionOutbox } from "./marketplace/outbox.mjs";
 import { EXTENSION_HOST_TOOL } from "../../../packages/plugin-sdk/src/host-contract.mjs";
 import { PostgresAccessStore } from "./postgres-access-store.mjs";
 import { PostgresAssetStore } from "./postgres-asset-store.mjs";
 import { PostgresNodeStateStore } from "./postgres-node-state-store.mjs";
 import { PostgresRunStore } from "./postgres-run-store.mjs";
+import { PostgresWebhookStore } from "./postgres-webhook-store.mjs";
+import { RuntimeWebhookWorker } from "./webhook-worker.mjs";
+import { createWebhookHttpHandler } from "./webhook-http-handler.mjs";
+import { createExtensionHttpTransport } from "./extension-http-transport.mjs";
+import { loadRuntimeHookAdapters } from "./runtime-hook-adapters.mjs";
 import { initializePostgresRuntimeSchema } from "./postgres-runtime-schema.mjs";
 import { PostgresSchedulerStore } from "./postgres-scheduler-store.mjs";
 import {
@@ -626,6 +631,17 @@ const marketplace = accountStore ? await new MarketplaceService({
   reviewerIds: String(process.env.ZION_MARKETPLACE_REVIEWER_IDS || "").split(",").filter(Boolean)
 }).initialize() : null;
 await initializePostgresRuntimeSchema(postgresPool);
+const extensionTrustedOrigins = parseList(process.env.ZION_RUNTIME_EXTENSION_TRUSTED_ORIGINS);
+const extensionTransport = createExtensionHttpTransport({ trustedOrigins: extensionTrustedOrigins });
+const configuredRunControllers = await loadRuntimeHookAdapters(process.env.ZION_RUNTIME_HOOKS_FILE, {
+  trustedOrigins: extensionTrustedOrigins,
+  transport: extensionTransport,
+  allowScripts: enabledFlag(process.env.ZION_RUNTIME_ALLOW_SCRIPT_HOOKS)
+});
+const webhookWorker = new RuntimeWebhookWorker({
+  pool: postgresPool, transport: extensionTransport,
+  onError: (code) => process.stderr.write(`[runtime-webhooks] ${code}\n`)
+});
 const automaticWorkspaces = toolMode === "sandbox"
   && enabledFlag(process.env.ZION_SANDBOX_AUTO_PROVISION);
 const sharedSandboxBindings = toolMode === "sandbox"
@@ -737,8 +753,10 @@ const oidcProvider = accountStore ? await (sharedAccountIssuer ? createSharedAcc
   allowLoopbackHttp: enabledFlag(process.env.ZION_ACCOUNT_ALLOW_LOOPBACK_HTTP)
 }) : null;
 startupCleanup.push(() => oidcProvider?.close());
+const webhooks = new PostgresWebhookStore(postgresPool, { spaceId: runtimeSpaceId });
 const runs = new PostgresRunStore(postgresPool, {
   spaceId: runtimeSpaceId,
+  webhooks,
   modelRequestDetailMaxBytes,
   modelRequestDetailMaxRows,
   modelRequestDetailMaxStoredBytes,
@@ -1754,12 +1772,19 @@ const deviceServiceWebSocketHandler = createDeviceServiceWebSocketHandler({
     ? (request, route) => accessControl.authorizeDeviceService(request, route)
     : null
 });
+const listRunControllers = () => {
+  const controllers = [...runtimePlugins.getRunControllers(), ...configuredRunControllers];
+  if (new Set(controllers.map((controller) => controller.id)).size !== controllers.length) {
+    throw new Error("Duplicate Runtime Hook controller id");
+  }
+  return controllers;
+};
 executor = createAgentExecutor({
   engine,
   tools,
   runs,
   contexts: runtimePlugins.getContextProviders(),
-  controllers: runtimePlugins.getRunControllers(),
+  controllers: listRunControllers(),
   bindRun: extensionBindings ? async (request, context) => {
     const bindings = await extensionBindings.prepare(request, context);
     try {
@@ -1823,6 +1848,7 @@ if (legacyMigration.ok) {
   }
 }
 const serviceHttpHandlers = [
+  createWebhookHttpHandler({ store: webhooks, accessControl, trustedOrigins: extensionTrustedOrigins }),
   ...(marketplace ? [createMarketplaceHttpHandler({
     service: marketplace, jobs: extensionOutbox,
     connections: async (principal) => {
@@ -1935,6 +1961,7 @@ const platformAdmin = accessControl && !platformContext
 const runtime = createRuntimeServer({
   executor,
   runs,
+  waitingTerminalOutbox: extensionTerminalOutbox,
   host,
   port,
   allowRemote: allowInsecureRemote,
@@ -1998,7 +2025,7 @@ const runtime = createRuntimeServer({
     }
   },
   runPostProcessors: () => runtimePlugins.getRunPostProcessors(),
-  runControllers: () => runtimePlugins.getRunControllers(),
+  runControllers: listRunControllers,
   pluginCommands: async (id, args, context) => {
     if (runtimePlugins.commandHandlers.has(id)) return runtimePlugins.invokeCommand(id, args, context);
     if (!extensionExecution) throw Object.assign(new Error("Plugin commands unavailable"), { statusCode: 404 });
@@ -2173,6 +2200,7 @@ const gateway = automaticWorkspaces ? new AccountRuntimeGateway({
   }
 }) : null;
 const address = await (gateway || platformRuntime.runtime).start();
+webhookWorker.start();
 process.stdout.write(`Zion Runtime listening at ${address.url} (automaticWorkspaces=${automaticWorkspaces})\n`);
 let closingPlatform = false;
 async function shutdown() {
@@ -2182,6 +2210,7 @@ async function shutdown() {
     if (gateway) await gateway.close();
     else await platformRuntime.close();
   } finally {
+    await webhookWorker.stop();
     await accountStore?.close();
     await postgresPool.end();
   }

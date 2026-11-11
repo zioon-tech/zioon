@@ -5,6 +5,7 @@ import type {
   CapabilityPolicy,
   RunRecord,
   RunRequest,
+  ResumeRunRequest,
   RunResult,
   ToolDefinition,
   Usage
@@ -102,6 +103,7 @@ export type RuntimeEventSubscription = {
 
 export interface RuntimeClient {
   createRun(request: RunRequest): Promise<AcceptedRuntimeRun>;
+  resumeRun(runId: string, request: ResumeRunRequest): Promise<AcceptedRuntimeRun>;
   previewRun(request: RunRequest): Promise<RuntimeRequestPreview>;
   getModels(interactionProfileId?: string): Promise<RuntimeModelCatalog>;
   setModelSelection(profileId: string, interactionProfileId?: string): Promise<{
@@ -230,7 +232,8 @@ const TERMINAL_STATUSES = new Set([
   "completed",
   "failed",
   "aborted",
-  "interrupted"
+  "interrupted",
+  "waiting"
 ]);
 
 function eventUsage(value: unknown): Usage {
@@ -251,8 +254,16 @@ function eventUsage(value: unknown): Usage {
 }
 
 function resultFromTerminalEvent(event: RunEvent): RunResult | null {
-  if (!["run.completed", "run.failed", "run.aborted"].includes(event.type)) {
+  if (!["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
     return null;
+  }
+  if (event.type === "run.waiting") {
+    return {
+      runId: event.runId, attemptId: event.attemptId, status: "waiting",
+      output: String(event.data.output || ""), usage: eventUsage(event.data.usage),
+      waiting: event.data.waiting as RunResult["waiting"],
+      reason: String((event.data.waiting as RunResult["waiting"])?.reason || "")
+    };
   }
   if (event.type === "run.completed") {
     return {
@@ -287,6 +298,13 @@ function resultFromTerminalRun(
   run: RunRecord,
   fallbackError = "Runtime event stream closed"
 ): RunResult {
+  if (run.status === "waiting") {
+    return {
+      runId: run.id, attemptId: run.attemptId, status: "waiting",
+      output: run.output || "", usage: run.usage || { ...EMPTY_USAGE },
+      waiting: run.waiting, reason: run.waiting?.reason
+    };
+  }
   if (run.status === "completed") {
     return {
       runId: run.id,
@@ -709,6 +727,14 @@ export function createHttpRuntimeClient(
         );
       }
       return body.run as RunRecord;
+    },
+
+    async resumeRun(runId, request) {
+      const response = await fetchRequest(runUrl(runId, "/resume"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(request)
+      });
+      return await readJson(response) as AcceptedRuntimeRun;
     },
 
     async getEvent(runId, sequence) {

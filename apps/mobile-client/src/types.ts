@@ -1,6 +1,7 @@
 export type RunStatus =
   | "queued"
   | "running"
+  | "waiting"
   | "completed"
   | "failed"
   | "aborted"
@@ -95,6 +96,15 @@ export type Usage = {
   cacheWriteTokens?: number;
 };
 
+export type RunWait = {
+  id: string;
+  controllerId: string;
+  stage: string;
+  reason: string;
+  createdAt: number;
+  data?: Record<string, unknown>;
+};
+
 export type RunRecord = {
   id: string;
   attemptId: string;
@@ -112,6 +122,7 @@ export type RunRecord = {
   error?: string;
   output?: string;
   usage?: Usage;
+  waiting?: RunWait;
 };
 
 export type RunEvent = {
@@ -129,6 +140,7 @@ export type ActiveRun = {
   runId: string;
   attemptId: string;
   status: RunStatus;
+  waiting?: RunWait;
 };
 
 export type SessionSummary = SessionRecord & {

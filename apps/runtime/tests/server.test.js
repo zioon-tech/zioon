@@ -801,7 +801,7 @@ describe("Runtime Host", () => {
 
     const eventResponse = await fetch(`${address.url}/v1/runs/${created.runId}/events?after=0`);
     const eventBody = await eventResponse.json();
-    expect(eventBody.events.map((event) => event.type)).toEqual([
+    expect(eventBody.events.filter((event) => event.type !== "run.finalized").map((event) => event.type)).toEqual([
       "run.started",
       "turn.started",
       "message.delta",
@@ -817,6 +817,7 @@ describe("Runtime Host", () => {
     expect(streamResponse.headers.get("content-type")).toContain("text/event-stream");
     expect(streamBody).toContain("event: turn.completed");
     expect(streamBody).toContain("event: run.completed");
+    expect(streamBody).toContain("event: run.finalized");
   });
 
   it("serves a cursor-preserving client projection stream", async () => {
@@ -852,6 +853,7 @@ describe("Runtime Host", () => {
       body: JSON.stringify({ prompt: "project" })
     }).then((response) => response.json());
     await waitForRun(address.url, accepted.runId, "completed");
+    await vi.waitFor(() => expect(server.isIdle()).toBe(true));
 
     const raw = await fetch(
       `${address.url}/v1/runs/${accepted.runId}/events?after=0`
@@ -1297,6 +1299,7 @@ describe("Runtime Host", () => {
     expect(new Set(transcript.map((message) => message.runId))).toEqual(
       new Set([first.runId, second.runId])
     );
+    await vi.waitFor(() => expect(server.isIdle()).toBe(true));
 
     const forkResponse = await fetch(
       `${address.url}/v1/sessions/${session.id}/fork`,

@@ -15,7 +15,12 @@
     "./data-location": {
       "types": "./src/data-location.d.mts",
       "default": "./src/data-location.mjs"
-    }
+    },
+    "./runtime-extension-signature": {
+      "types": "./src/runtime-extension-signature.d.mts",
+      "default": "./src/runtime-extension-signature.mjs"
+    },
+    "./runtime-hook-script-host": "./src/runtime-hook-script-host.mjs"
   },
   "scripts": {
     "test": "vitest run tests"

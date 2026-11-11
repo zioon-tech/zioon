@@ -43,6 +43,11 @@ for (const [path, content] of skillFiles) {
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, content);
 }
+// Native terminal CI exercises the same self-contained package before packing.
+if (process.argv.includes("--unpacked-only")) {
+  console.log("CLI package built without archives");
+  process.exit(0);
+}
 await mkdir(downloads, { recursive: true });
 const packed = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", downloads], { cwd: pkg, encoding: "utf8" }))[0];
 const version = JSON.parse(await readFile(join(pkg, "package.json"), "utf8")).version;

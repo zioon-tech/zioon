@@ -11,8 +11,11 @@ function reduce(state: RunProjectionState, action: ProjectionAction): RunProject
 export function useRunProjection(
   runId: string,
   onTerminal?: (state: RunProjectionState) => void,
+  observationKey = 0,
 ): RunProjectionState {
   const [state, dispatch] = useReducer(reduce, undefined, () => initialRunProjection(runId));
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const onTerminalRef = useRef(onTerminal);
 
   useEffect(() => {
@@ -25,13 +28,18 @@ export function useRunProjection(
       return;
     }
     const controller = new AbortController();
-    dispatch({ type: "reset", runId });
+    if (stateRef.current.runId !== runId) {
+      stateRef.current = initialRunProjection(runId);
+      dispatch({ type: "reset", runId });
+    }
     void (async () => {
       try {
         for await (const event of subscribeRun(runId, {
           signal: controller.signal,
+          afterSequence: stateRef.current.cursor,
         })) {
           if (controller.signal.aborted) break;
+          stateRef.current = reduceRunProjection(stateRef.current, { type: "event", event });
           dispatch({ type: "event", event });
         }
       } catch (error) {
@@ -46,13 +54,13 @@ export function useRunProjection(
     return () => {
       controller.abort();
     };
-  }, [runId]);
+  }, [runId, observationKey]);
 
   useEffect(() => {
     if (
       runId
       && state.runId === runId
-      && ["completed", "failed", "aborted", "interrupted"].includes(state.status)
+      && ["completed", "failed", "aborted", "interrupted", "waiting"].includes(state.status)
     ) {
       onTerminalRef.current?.(state);
     }

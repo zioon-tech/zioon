@@ -1,6 +1,7 @@
 import type {
   AssistantToolCall,
   RunStatus,
+  RunWait,
   SessionMessage,
   TranscriptContent,
 } from "./types";
@@ -17,6 +18,7 @@ export type ConversationProjection = {
   status: RunStatus | "connecting";
   error: string;
   finalBlockId?: string;
+  waiting?: RunWait;
 };
 
 export type ConversationItem = {

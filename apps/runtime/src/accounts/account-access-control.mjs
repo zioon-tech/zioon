@@ -9,6 +9,7 @@ const writeMethod = (method) => !["GET", "HEAD", "OPTIONS"].includes(method);
 // Positive routing rules for non-admin writes. New service endpoints require an
 // explicit decision before ordinary members may mutate the control plane.
 export function accountRequestScope(method, pathname) {
+  if (/^\/v1\/webhooks(?:\/|$)/.test(pathname)) return "runtime.manage";
   if (/^\/v1\/workbench-state\/plugin-development(?:\/|$)/.test(pathname)) {
     return writeMethod(method) ? "runtime.write" : "runtime.read";
   }

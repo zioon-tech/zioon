@@ -96,6 +96,7 @@ try {
   assert.equal(skillArtifact.files["references/guide.md"], "Packaged reference");
   assert.equal(skillArtifact.files["scripts/helper.py"], "print('packaged helper')");
   const sdk = await import(pathToFileURL(join(directory, "node_modules/@zioon/cli/dist/sdk.mjs")));
+  assert.equal(typeof sdk.resumeRun, "function");
   const store = createFileCliCredentialStore({ directory: storePath, platform: "linux" });
   const { runtime, extensions } = await sdk.createAccountRuntimeClient({ baseUrl: runtimeUrl, credentialStore: store });
   assert.equal((await runtime.createRun({ prompt: "sdk" })).runId, "fixture-run");
@@ -129,6 +130,12 @@ try {
   assert.equal(skillIndex.skills[0].name, "zioon");
   for (const path of skillIndex.skills[0].files) assert.equal((await fetch(`${siteUrl}/.well-known/skills/zioon/${path}`)).status, 200);
   const release = await (await fetch(`${siteUrl}/downloads/release.json`)).json();
+  assert.equal(release.version, expectedVersion);
+  for (const name of ["install.sh", "install.ps1"]) {
+    const source = await (await fetch(`${siteUrl}/downloads/${name}`)).text();
+    const versions = [...source.matchAll(/zioon-cli-(\d+\.\d+\.\d+)\.tgz/g)].map((match) => match[1]);
+    assert.deepEqual(versions, [expectedVersion], `${name} must install the documented release`);
+  }
   for (const [name, hash] of Object.entries(release.files)) {
     const bytes = Buffer.from(await (await fetch(`${siteUrl}/downloads/${name}`)).arrayBuffer());
     assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);

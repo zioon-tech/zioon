@@ -2161,7 +2161,8 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
       try {
         const targetSessionId = window.zion?.panels?.list?.().find((p) => p.id === panelId)?.activeTabId
           || window.zion?.state?.get?.("sessions.currentId");
-        const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined);
+        const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined)
+          || !!window.zion?.state?.get?.(`chat.runs.${targetSessionId}`)?.waiting;
         btn!.innerHTML = zionIconHtml(streaming ? "square" : "play");
         btn!.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
         try { btn!.classList.toggle("is-stop", streaming); } catch {}
@@ -2174,7 +2175,8 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
       try {
         const targetSessionId = window.zion?.panels?.list?.().find((p) => p.id === panelId)?.activeTabId
           || window.zion?.state?.get?.("sessions.currentId");
-        const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined);
+        const streaming = !!window.zion?.chat?.isStreaming?.(targetSessionId || undefined)
+          || !!window.zion?.state?.get?.(`chat.runs.${targetSessionId}`)?.waiting;
         if (streaming) {
           window.zion.chat?.stop?.(targetSessionId || undefined);
           return;

@@ -957,7 +957,7 @@ describe("standalone agent executor", () => {
       policy: { allowedTools: ["search"] }
     });
     let checkpoint = await store.getLatestCheckpoint(first.runId);
-    while (!checkpoint) {
+    while (!checkpoint || checkpoint.pending) {
       await Promise.resolve();
       checkpoint = await store.getLatestCheckpoint(first.runId);
     }

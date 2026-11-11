@@ -53,6 +53,7 @@ import remarkGfm from "remark-gfm";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   abortRun,
+  resumeRun,
   createSession,
   forkSession,
   getActiveRun,
@@ -1070,6 +1071,11 @@ export function ConversationScreen() {
     clientRequestId: string;
   } | null>(null);
   const [runId, setRunId] = useState("");
+  const [observationKey, setObservationKey] = useState(0);
+  const observedActiveRun = useRef<{ sessionId: string; signature: string }>({
+    sessionId: decodedSessionId, signature: "",
+  });
+  const [waitResponse, setWaitResponse] = useState("");
   const [finishedRuns, setFinishedRuns] = useState<Array<{ sessionId: string; projection: RunProjectionState }>>([]);
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
   const [sessionConfigOpen, setSessionConfigOpen] = useState(false);
@@ -1131,9 +1137,29 @@ export function ConversationScreen() {
   });
 
   useEffect(() => {
-    if (activeRun.data?.runId) setRunId(activeRun.data.runId);
-  }, [activeRun.data?.runId]);
+    if (!activeRun.isSuccess) return;
+    const active = activeRun.data;
+    const signature = active ? `${active.runId}:${active.attemptId || ""}:${active.status}` : "";
+    const previous = observedActiveRun.current;
+    if (previous.sessionId !== decodedSessionId) {
+      setRunId(active?.runId || "");
+    } else {
+      if (active?.runId && previous.signature !== signature) setRunId(active.runId);
+      if (runId && previous.signature !== signature) {
+        // EOF at waiting is expected. Reobserve when another client resumes,
+        // cancels or finishes the same Run, including activeRun becoming null.
+        setObservationKey((value) => value + 1);
+      }
+    }
+    observedActiveRun.current = { sessionId: decodedSessionId, signature };
+  }, [activeRun.dataUpdatedAt, activeRun.isSuccess, activeRun.data?.runId,
+    activeRun.data?.attemptId, activeRun.data?.status, decodedSessionId, runId]);
   const handleTerminal = useCallback((terminal: RunProjectionState) => {
+    if (terminal.status === "waiting") {
+      setPendingUser("");
+      void queryClient.invalidateQueries({ queryKey: ["active-run", decodedSessionId] });
+      return;
+    }
     setFinishedRuns((current) => [
       ...current.filter((entry) => entry.projection.runId !== terminal.runId),
       { sessionId: decodedSessionId, projection: terminal },
@@ -1159,7 +1185,7 @@ export function ConversationScreen() {
       queryClient.invalidateQueries({ queryKey: ["session-summaries"] }),
     ]);
   }, [decodedSessionId, queryClient, session.data?.id, session.data?.metadata, session.data?.title]);
-  const projection = useRunProjection(runId, handleTerminal);
+  const projection = useRunProjection(runId, handleTerminal, observationKey);
   useEffect(() => {
     if (!messages.data) return;
     setFinishedRuns((current) => {
@@ -1205,12 +1231,27 @@ export function ConversationScreen() {
   const stop = useMutation({
     mutationFn: () => abortRun(runId),
     onSuccess() {
+      setObservationKey((value) => value + 1);
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["session", decodedSessionId] }),
         queryClient.invalidateQueries({ queryKey: ["session-messages", decodedSessionId] }),
         queryClient.invalidateQueries({ queryKey: ["active-run", decodedSessionId] }),
         queryClient.invalidateQueries({ queryKey: ["session-summaries"] }),
       ]);
+    },
+  });
+  const resume = useMutation({
+    mutationFn: async () => {
+      const waiting = projection.waiting || activeRun.data?.waiting;
+      if (!waiting?.id) throw new Error("等待请求已变化，请刷新会话。");
+      let input: unknown = waitResponse;
+      try { input = JSON.parse(waitResponse); } catch {}
+      await resumeRun(runId, waiting.id, input);
+    },
+    onSuccess() {
+      setWaitResponse("");
+      setObservationKey((value) => value + 1);
+      void queryClient.invalidateQueries({ queryKey: ["active-run", decodedSessionId] });
     },
   });
   const showToast = useCallback((message: string) => {
@@ -1281,6 +1322,7 @@ export function ConversationScreen() {
       : "只读";
   const running = Boolean(runId) && !["completed", "failed", "aborted", "interrupted"]
     .includes(projection.status);
+  const waiting = projection.status === "waiting" ? projection.waiting : undefined;
   const currentPolicy: CapabilityPolicy = session.data?.policy || {
     preset: "read-only",
     allowedTools: [],
@@ -1544,7 +1586,7 @@ export function ConversationScreen() {
   return (
     <MobilePage
       title={title}
-      subtitle={running ? "正在执行" : "已连接"}
+      subtitle={waiting ? "等待回复" : running ? "正在执行" : "已连接"}
       back="会话"
       hideNav
       action={
@@ -1560,8 +1602,8 @@ export function ConversationScreen() {
       footer={accountCan("run.execute") ?
         <Composer
           value={draft}
-          running={running}
-          disabled={session.data.status !== "active" || send.isPending}
+          running={running && !waiting}
+          disabled={session.data.status !== "active" || send.isPending || Boolean(waiting)}
           model={model}
           toolCount={enabledTools.length}
           skillCount={enabledSkillIds.length}
@@ -1580,6 +1622,21 @@ export function ConversationScreen() {
       }
       className="conversation-page"
     >
+      {waiting ? (
+        <section className="detail-section mobile-form run-wait-response" aria-label="等待回复">
+          <h2>等待回复</h2>
+          <p>{waiting.reason}</p>
+          {accountCan("run.execute") ? <>
+            <textarea aria-label="回复内容" placeholder="回复内容（支持 JSON）"
+              value={waitResponse} onChange={(event) => setWaitResponse(event.target.value)} />
+            <div className="run-wait-actions">
+              <button className="button primary" onClick={() => resume.mutate()} disabled={resume.isPending || stop.isPending}>提交回复</button>
+              <button className="button" onClick={() => stop.mutate()} disabled={stop.isPending || resume.isPending}>停止任务</button>
+            </div>
+            {resume.isError ? <p role="alert">{String(resume.error instanceof Error ? resume.error.message : resume.error)}</p> : null}
+          </> : null}
+        </section>
+      ) : null}
       <div
         className="message-scroll"
         ref={scrollRef}
