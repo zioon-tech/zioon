@@ -17,6 +17,7 @@ const approval = {
   }
 };
 const store = () => new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+const waitForLifecycle = (assertion) => vi.waitFor(assertion, { timeout: 5000 });
 
 describe("persistent hook execution and HTTP resume", () => {
   it("keeps waiting outside terminal postprocessors and resumes through a new HTTP host", async () => {
@@ -38,10 +39,8 @@ describe("persistent hook execution and HTTP resume", () => {
       await expect(resumeRun(address.url, first.runId, { waitId: "stale" })).rejects.toMatchObject({ statusCode: 409 });
       const response = await resumeRun(address.url, first.runId, { waitId: waiting.waiting.id, input: { approved: true } });
       expect(response.status).toBe("accepted");
-      for (let i = 0; i < 100; i++) {
-        if ((await runs.getEvents(first.runId)).some((event) => event.type === "run.finalized")) break;
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      // run.finalized is persisted before afterRun hooks finish.
+      await waitForLifecycle(() => expect(restarted.isIdle()).toBe(true));
       expect(await runs.get(first.runId)).toMatchObject({ status: "completed" });
       expect(afterRun).toHaveBeenCalledOnce();
       expect(projection).toHaveBeenCalledOnce();
@@ -79,7 +78,7 @@ describe("persistent hook execution and HTTP resume", () => {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "cancel-approval" })
       });
       expect(response.status).toBe(202);
-      await vi.waitFor(() => expect(host.isIdle()).toBe(true));
+      await waitForLifecycle(() => expect(host.isIdle()).toBe(true));
       expect(await runs.get(first.runId)).toMatchObject({ status: "aborted", terminalReason: "cancel-approval" });
       expect((await runs.get(first.runId)).waiting).toBeUndefined();
       expect(await runs.getLatestCheckpoint(first.runId)).toBeNull();
@@ -208,14 +207,13 @@ describe("persistent hook execution and HTTP resume", () => {
       });
       expect(response.status).toBe(202);
       const started = await response.json();
-      for (let i = 0; i < 100 && !report.mock.calls.length; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      await waitForLifecycle(() => expect(host.isIdle()).toBe(true));
       expect(report).toHaveBeenCalledOnce();
       expect((await runs.get(started.runId)).status).toBe("completed");
       const events = await runs.getEvents(started.runId);
       expect(events.filter((event) => event.type === "run.finalized")).toHaveLength(1);
       expect(events.some((event) => event.type === "hook.failed")).toBe(true);
       expect(JSON.stringify(events)).not.toContain("private-external-secret");
-      await vi.waitFor(() => expect(host.isIdle()).toBe(true));
       for (const endpoint of ["events", "projection"]) {
         const result = await (await fetch(`${address.url}/v1/runs/${started.runId}/${endpoint}`)).json();
         expect(result.events.map((event) => event.type)).toEqual(expect.arrayContaining(["run.finalized", "hook.failed"]));
@@ -248,7 +246,7 @@ describe("persistent hook execution and HTTP resume", () => {
     let first;
     try {
       first = send();
-      await vi.waitFor(() => expect(lookups).toBe(1));
+      await waitForLifecycle(() => expect(lookups).toBe(1));
       expect((await send()).status).toBe(409);
       unblock();
       expect((await first).status).toBe(202);

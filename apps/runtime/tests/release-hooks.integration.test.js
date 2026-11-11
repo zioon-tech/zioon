@@ -18,6 +18,7 @@ const approval = { id: "approval", stages: ["beforeModel"], async handle(context
   return context.resume ? { action: "pass" } : { action: "pause", reason: "Approve" };
 } };
 const store = () => new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+const waitForLifecycle = (assertion) => vi.waitFor(assertion, { timeout: 5000 });
 const request = async (url, path, body) => fetch(`${url}${path}`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
 });
@@ -114,7 +115,7 @@ describe("integrated release boundaries", () => {
     const { url } = await host.start();
     try {
       expect((await request(url, `/v1/runs/${first.runId}/abort`, {})).status).toBe(202);
-      await vi.waitFor(() => expect(host.isIdle()).toBe(true));
+      await waitForLifecycle(() => expect(host.isIdle()).toBe(true));
       expect((await database.pool.query("SELECT id FROM runtime_run_outbox WHERE space_id=$1 AND run_id=$2",
         [runs.spaceId, first.runId])).rowCount).toBe(1);
       expect(await runs.getLatestCheckpoint(first.runId)).toBeNull();
@@ -143,8 +144,8 @@ describe("integrated release boundaries", () => {
     const { url } = await host.start();
     try {
       expect((await request(url, `/v1/runs/${first.runId}/resume`, { waitId: waiting.waiting.id, input: {} })).status).toBe(202);
-      await vi.waitFor(async () => expect((await runs.get(first.runId)).status).toBe("completed"));
-      await vi.waitFor(() => expect(host.isIdle()).toBe(true));
+      await waitForLifecycle(() => expect(host.isIdle()).toBe(true));
+      expect((await runs.get(first.runId)).status).toBe("completed");
       const messages = await runs.getSessionMessages(sessionId);
       expect(messages.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual(["FINAL"]);
     } finally { await host.close(); }
@@ -176,10 +177,11 @@ describe("integrated release boundaries", () => {
       const { runId } = await (await request(url, "/v1/runs", {
         prompt: "read", policy: { allowedTools: ["read"] }
       })).json();
-      await vi.waitFor(() => expect(keys).toHaveLength(1));
-      await vi.waitFor(() => expect(host.isIdle()).toBe(true));
+      await waitForLifecycle(() => expect(host.isIdle()).toBe(true));
+      expect(keys).toHaveLength(1);
       expect((await request(url, `/v1/runs/${runId}/resume`, {})).status).toBe(202);
-      await vi.waitFor(() => expect(keys).toHaveLength(2));
+      await waitForLifecycle(() => expect(host.isIdle()).toBe(true));
+      expect(keys).toHaveLength(2);
       expect(keys.map((entry) => entry[1])).toEqual(["failed", "completed"]);
       expect(keys[0][0]).not.toBe(keys[1][0]);
     } finally { await host.close(); }

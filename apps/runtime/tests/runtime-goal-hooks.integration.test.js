@@ -70,7 +70,11 @@ describe("real Goal plugin compatibility with unified lifecycle Hooks", () => {
         body: JSON.stringify({ content: "/goal 完成有证据的任务", maxTurns: 1 })
       });
       expect(response.status).toBe(202);
-      for (let i = 0; i < 200 && afterRun.mock.calls.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      // Entering afterRun does not yet mean its Goal state has been settled.
+      await vi.waitFor(() => {
+        expect(afterRun).toHaveBeenCalledTimes(2);
+        expect(runtime.isIdle()).toBe(true);
+      }, { timeout: 5000 });
       const record = [...state.values()].find((entry) => entry.objective);
       expect(record).toMatchObject({ status: "completed", cycles: 2, evidenceSource: "model-report", activeRunId: null });
       expect(record.runIds).toHaveLength(2);
