@@ -5,6 +5,7 @@ import { createPluginDevelopmentClient } from "../../runtime-client/src/plugin-d
 export { createPluginDevelopmentClient, watchDevelopmentSource } from "../../runtime-client/src/plugin-development.mjs";
 export { runtimePluginToolRequest, extensionRunRequest } from "../../runtime-client/src/extensions.mjs";
 export { subscribeRunStream } from "../../runtime-client/src/run-stream.mjs";
+export { resumeRun } from "../../runtime-client/src/runs.mjs";
 
 // Node SDK reuses the CLI's saved account credential without returning the token.
 export async function createAccountRuntimeClient({

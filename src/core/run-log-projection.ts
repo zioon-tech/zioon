@@ -352,6 +352,10 @@ function projectEvent(
     };
   }
 
+  if (type === "run.waiting") {
+    return { ...base, level: "info", kind: "run", type,
+      summary: safeText(data.waiting?.reason, 500) || "Run waiting for input" };
+  }
   if (type === "run.completed") {
     const durationMs = safeNumber(data.durationMs)
       || (run.completedAt && run.startedAt ? Math.max(0, run.completedAt - run.startedAt) : 0);

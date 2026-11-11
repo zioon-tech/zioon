@@ -67,6 +67,7 @@ import {
   interactiveRuntimeEligibility,
   listInteractiveRuntimeSupportedTools,
   observeInteractiveRuntimeRun,
+  respondInteractiveRuntimeRun,
   persistInteractiveRuntimeProfileModel,
   prepareInteractiveRuntimeMessages,
   previewInteractiveRuntimeRequest,
@@ -1850,7 +1851,7 @@ export async function activate(ctx) {
             event,
             projectionOptions
           );
-          if (["run.completed", "run.failed", "run.aborted"].includes(event.type)) {
+          if (["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
             terminalProjected = true;
           }
         }
@@ -1867,6 +1868,8 @@ export async function activate(ctx) {
     if (!terminalProjected) {
       const type = result.status === "completed"
         ? "run.completed"
+        : result.status === "waiting"
+          ? "run.waiting"
         : result.status === "aborted"
           ? "run.aborted"
           : "run.failed";
@@ -1880,6 +1883,7 @@ export async function activate(ctx) {
           usage: result.usage || null,
           error: result.error || null,
           reason: result.reason || null
+          ,waiting: result.waiting || null
         }
       };
       recordRemoteEvent(terminalEvent);
@@ -1891,7 +1895,10 @@ export async function activate(ctx) {
       );
     }
 
-    if (result.status === "completed") {
+    if (result.status === "waiting") {
+      runtime.markWaiting(sid, runId, result.waiting);
+      window.zion?.notification?.show?.(`${result.waiting?.reason || "等待回复"}。在输入区填写回复并发送，可用停止按钮取消。`, { type: "info", duration: 12000 });
+    } else if (result.status === "completed") {
       runtime.markAwaiting(sid, runId);
     } else if (result.status === "aborted") {
       runtime.markAborted(sid, runId);
@@ -1996,7 +2003,7 @@ export async function activate(ctx) {
         signal: observer.signal,
         onRun: async (remoteRun) => {
           if (deferToSubmitter()) return;
-          if (!["queued", "running"].includes(remoteRun.status)) return;
+          if (!["queued", "running", "waiting"].includes(remoteRun.status)) return;
           window.zion?.runs?.start?.({
             ...runRecord,
             status: "running",
@@ -2060,7 +2067,7 @@ export async function activate(ctx) {
             appendAssistantToken: async () => true
           });
           projectedSequences.set(runId, Number(event.sequence) || afterSequence);
-          if (["run.completed", "run.failed", "run.aborted"].includes(event.type)) {
+          if (["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
             terminalProjected = true;
           }
         }
@@ -2070,6 +2077,8 @@ export async function activate(ctx) {
       const remoteRun = observed.run;
       const terminalType = remoteRun.status === "completed"
         ? "run.completed"
+        : remoteRun.status === "waiting"
+          ? "run.waiting"
         : remoteRun.status === "aborted"
           ? "run.aborted"
           : ["failed", "interrupted"].includes(remoteRun.status)
@@ -2086,6 +2095,7 @@ export async function activate(ctx) {
             usage: remoteRun.usage || null,
             error: remoteRun.error || null,
             reason: remoteRun.terminalReason || null
+            ,waiting: remoteRun.waiting || null
           }
         };
         window.zion?.runs?.recordEvent?.(terminalEvent);
@@ -2099,7 +2109,9 @@ export async function activate(ctx) {
         });
       }
 
-      if (remoteRun.status === "completed") {
+      if (remoteRun.status === "waiting") {
+        runtime.markWaiting(sid, runId, remoteRun.waiting);
+      } else if (remoteRun.status === "completed") {
         runtime.markAwaiting(sid, runId);
         window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
         window.zion?.events?.emit?.("chat/runFinished", {
@@ -3145,6 +3157,21 @@ export async function activate(ctx) {
     const panelId = opts?.panelId || ed?.panelId || null;
     const sid = getSessionId({ ...opts, panelId });
     if (!ed || !sid || getRunState(sid)?.streaming || interactivePreparations.has(sid)) return;
+    const current = getRunState(sid);
+    if (current?.waiting?.id && current.runId) {
+      const text = ed.getValue().split("\n").slice(0, ed.getCursor().line + 1).join("\n");
+      const last = parseMessages(text).filter((message) => message.role === "user").at(-1);
+      if (!last?.content?.trim()) throw new Error("请在输入区填写回复。");
+      let input = last.content;
+      try { input = JSON.parse(last.content); } catch {}
+      const record = window.zion?.runs?.get?.(current.runId);
+      const baseUrl = record?.metadata?.runtimeBaseUrl || readInteractiveRuntimeConfig().baseUrl;
+      const remote = await respondInteractiveRuntimeRun({
+        runtimeRunId: current.runId, waitId: current.waiting.id, input, baseUrl
+      });
+      return await recoverInteractiveRuntimeRun({ ...record, id: current.runId, sessionId: sid,
+        metadata: { ...record?.metadata, backend: "runtime", runtimeBaseUrl: baseUrl }, status: remote.status });
+    }
     const id = `preparing-${crypto.randomUUID()}`;
     const controller = new AbortController();
     const submittedAt = Date.now();
@@ -3784,7 +3811,9 @@ export async function activate(ctx) {
         btn.onclick = (e) => {
           try { e.stopPropagation(); } catch {}
           try {
-            const streaming = !!window.zion?.state?.get?.("chat.streaming");
+            const sid = window.zion?.state?.get?.("sessions.currentId");
+            const streaming = !!window.zion?.state?.get?.("chat.streaming")
+              || !!window.zion?.state?.get?.(`chat.runs.${sid}`)?.waiting;
             if (streaming) window.zion.commands.executeCommand("chat.stop");
             else {
               const ed = window.zion?.window?.activeEditor;
@@ -3797,7 +3826,9 @@ export async function activate(ctx) {
       }
 
       const update = () => {
-        const streaming = !!window.zion?.state?.get?.("chat.streaming");
+        const sid = window.zion?.state?.get?.("sessions.currentId");
+        const streaming = !!window.zion?.state?.get?.("chat.streaming")
+          || !!window.zion?.state?.get?.(`chat.runs.${sid}`)?.waiting;
         btn.innerHTML = window.zionIcons?.htmlFromCodicon?.(streaming ? "debug-stop" : "play") || `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
         btn.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
         try { btn.classList.toggle("is-stop", streaming); } catch {}
@@ -3823,7 +3854,9 @@ export async function activate(ctx) {
       streamingSub = window.zion.state.onDidChange("chat.streaming", () => {
         try {
           if (btn && btn.isConnected) {
-            const streaming = !!window.zion?.state?.get?.("chat.streaming");
+            const sid = window.zion?.state?.get?.("sessions.currentId");
+            const streaming = !!window.zion?.state?.get?.("chat.streaming")
+              || !!window.zion?.state?.get?.(`chat.runs.${sid}`)?.waiting;
             btn.innerHTML = window.zionIcons?.htmlFromCodicon?.(streaming ? "debug-stop" : "play") || `<span class="codicon ${streaming ? "codicon-debug-stop" : "codicon-play"}" aria-hidden="true"></span>`;
             btn.title = streaming ? "Stop (Esc)" : "Run (Mod-Enter)";
             try { btn.classList.toggle("is-stop", streaming); } catch {}

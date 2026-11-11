@@ -316,6 +316,13 @@ export async function abortRun(runId: string): Promise<void> {
   });
 }
 
+export async function resumeRun(runId: string, waitId: string, input: unknown): Promise<void> {
+  await requestJson(`/v1/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ waitId, input }),
+  });
+}
+
 export async function getSessionArtifacts(sessionId: string): Promise<{
   artifacts: Artifact[];
   changes: ChangeSet[];

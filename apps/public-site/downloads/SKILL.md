@@ -8,10 +8,10 @@ description: Use Zioon CLI and API to manage conversations, Runs and installed p
 Use `zioon` (`zion` is an alias). Require Node.js 22.5 or newer.
 Read `references/commands.md` for exact commands and API request formats.
 
-1. Run `zioon --version` and `zioon --help`. The matching release is CLI 0.2.1. Install its fixed artifact with `npm install --global https://zioon.tech/downloads/zioon-cli-0.2.1.tgz` when available at the official site; do not guess npm registry package names.
+1. Run `zioon --version` and `zioon --help`. The matching release is CLI 0.3.0. Install its fixed artifact with `npm install --global https://zioon.tech/downloads/zioon-cli-0.3.0.tgz` when available at the official site; do not guess npm registry package names.
 2. Run `zioon profile list` and `zioon auth status zioon-cloud`. Reuse the user's chosen Runtime profile. If login is needed, run `zioon auth login zioon-cloud` and give the displayed verification URL and code to the user. Never complete consent using someone else's credentials.
 3. List sessions before continuing prior work. Use the returned IDs; never invent IDs. Create a new session for unrelated work.
-4. Submit tasks through `run` or session chat. Check the final Run status. HTTP 202 only means accepted. Stop with `abort RUN_ID`; closing a listener does not stop the server.
+4. Submit tasks through `run` or session chat. Check the final Run status. HTTP 202 only means accepted. A waiting Run exits with code 3 and retains its session. Read its reason and requested response before `resume RUN_ID --wait-id WAIT_ID --input-file response.json`; respond only within the user's authorization. Stop with `abort RUN_ID`; closing a listener does not stop the server.
 5. Discover installed account extensions with `extensions list`. Discover full Runtime plugins with `extensions list --host runtime` and inspect `show`. Call only discovered tool names with the matching host.
 6. Use `api` or the Node SDK for exact JSON requests through the same existing account. Never print, export or read stored tokens for ordinary integration.
 7. For authorized plugin development, use `extensions init DIRECTORY --kind plugin` or `--kind model`, then `extensions dev DIRECTORY`. The watch command stages source into the account workspace and atomically installs each successful build for Workbench debugging. The template's single handler is enough; Host setup and MCP dependencies are automatic. Use `dev stop PLUGIN_ID` to unregister.

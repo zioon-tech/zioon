@@ -3,7 +3,7 @@
 Node.js >=22.5.0, npm; macOS, Linux and Windows.
 
 ```sh
-npm install --global https://zioon.tech/downloads/zioon-cli-0.2.1.tgz
+npm install --global https://zioon.tech/downloads/zioon-cli-0.3.0.tgz
 zioon --version
 zioon auth login zioon-cloud
 zioon run "Write a clear release plan."
@@ -67,3 +67,13 @@ zioon extensions restore LISTING_ID
 `files` prepares a persistent editable account workspace. Use the returned source hash when saving or reloading. Saved changes become effective only after validation and a successful reload. Backend execution and Workbench UI use the same immutable private OSS revision; the original installation version and publisher package remain unchanged. Restore switches execution to the publisher version and preserves the edited directory. A source update with `install LISTING_ID@VERSION --switch-source` also archives the existing directory. Skill packages include references and scripts; credentials must remain outside the package.
 
 Docs: https://zioon.tech/docs/cli/
+
+CLI 0.3.0 adds multiline editing, Markdown tables and code rendering, session search,
+`--continue`, recovered drafts, `/model`, file attachments, and image input with
+`--image`, drag-and-drop, Ctrl+V or `/paste`. macOS clipboard screenshots use
+Ctrl+Cmd+Shift+4. The selected model must support images.
+
+Waiting Runs keep their session reserved. `run` and `attach` yield with exit code 3.
+Respond using `zioon resume RUN_ID --wait-id WAIT_ID --input-file response.json`,
+or `/resume RUN_ID {"approved":true}` in interactive chat when the Hook requests
+that response. Stop explicitly with `zioon abort RUN_ID`.

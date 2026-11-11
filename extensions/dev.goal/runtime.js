@@ -29,6 +29,15 @@ export async function activateRuntimePlugin(context) {
   // Startup never replays work that may have completed outside the process.
   for (const [key, record] of state.entries()) {
     if (record?.status === "active") {
+      const run = record.activeRunId && await runs?.get(record.activeRunId);
+      const checkpoint = run?.status === "interrupted" && await runs?.getLatestCheckpoint?.(run.id);
+      const explicitlyResumable = run?.status === "waiting"
+        || (checkpoint?.pending && !checkpoint.pending.inFlight);
+      if (explicitlyResumable && workflowScope({ request: run }).key === key) {
+        // Waiting has no live owner. Preserve policy state for an explicitly
+        // authorized Run resume; Runtime does not automatically replay work.
+        continue;
+      }
       await save(key, { ...record, status: "interrupted", reason: "runtime-restarted", activeRunId: null });
     }
   }

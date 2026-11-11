@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
-import { CancellationController, normalizeModelProviderMetadata } from "../../../packages/runtime/dist/index.js";
+import { CancellationController, normalizeModelProviderMetadata, dispatchRunHook } from "../../../packages/runtime/dist/index.js";
 import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
 import { DEFAULT_INTERACTION_PROFILE_ID, resolveInteractionRequest } from "./interaction-profile-store.mjs";
 import {
@@ -17,7 +17,8 @@ import {
   isPlaceholderSessionTitle
 } from "./session-title.mjs";
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "interrupted"]);
+// A waiting attempt has no live owner/stream but the Run remains resumable.
+const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted", "interrupted", "waiting"]);
 const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024;
 const LIVE_RUN_REPLAY_RETENTION_MS = 30_000;
 const POLICY_PRESETS = new Set(["read-only", "workspace-write", "trusted-automation"]);
@@ -534,6 +535,7 @@ export function createRuntimeServer({
   runtimeHealth = null,
   runPostProcessors = [],
   runControllers = [],
+  waitingTerminalOutbox = () => [],
   pluginCommands = null,
   pluginCommandRequiresSession = () => true,
   onPostProcessorError = () => {},
@@ -610,8 +612,9 @@ export function createRuntimeServer({
   const liveRunRetirements = new Map();
   const sessionHandles = new Map();
   const sessionFinalizations = new Map();
+  const runFinalizations = new Map();
   const sessionAdmissions = new Set();
-  const reserveSessionAdmission = async (sessionId) => {
+  const reserveSessionAdmission = async (sessionId, resumingRunId) => {
     if (!sessionId) return null;
     const previous = sessionHandles.get(sessionId);
     if (previous && !sessionAdmissions.has(sessionId)) {
@@ -626,7 +629,16 @@ export function createRuntimeServer({
       throw error;
     }
     sessionAdmissions.add(sessionId);
-    return () => sessionAdmissions.delete(sessionId);
+    try {
+      const persisted = await runs.getActiveRunForSession?.(sessionId);
+      if (persisted?.status === "waiting" && persisted.id !== resumingRunId) {
+        throw Object.assign(new Error("Session has a waiting Run; resume it with its waitId"), { statusCode: 409 });
+      }
+      return () => sessionAdmissions.delete(sessionId);
+    } catch (error) {
+      sessionAdmissions.delete(sessionId);
+      throw error;
+    }
   };
   const projectionFailures = new Map();
   const presentationForSession = async (sessionId) => {
@@ -908,8 +920,9 @@ export function createRuntimeServer({
     await sessions.reconcileCompletedSessionMessages();
     projectionFailures.clear();
   };
-  const trackHandle = async (handle, sessionId, runRequest = {}) => {
+  const trackHandle = async (handle, sessionId, runRequest = {}, { initialEvents = [], publishStarted = true } = {}) => {
     const live = createRunLiveHub();
+    for (const event of initialEvents) live.publish(event);
     globalThis.clearTimeout(liveRunRetirements.get(handle.runId));
     liveRunRetirements.delete(handle.runId);
     handles.set(handle.runId, handle);
@@ -917,7 +930,7 @@ export function createRuntimeServer({
     if (sessionId) sessionHandles.set(sessionId, handle);
     let completedAssistantContent;
     let terminalSessionEventPublished = false;
-    if (sessionId) {
+    if (sessionId && publishStarted) {
       await publishSessionEvent("run.started", {
         sessionId,
         runId: handle.runId,
@@ -938,7 +951,7 @@ export function createRuntimeServer({
       }
       if (
         sessionId
-        && ["run.completed", "run.failed", "run.aborted"].includes(event.type)
+        && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)
       ) {
         terminalSessionEventPublished = true;
         await publishSessionEvent(event.type, {
@@ -980,13 +993,18 @@ export function createRuntimeServer({
         runId: handle.runId,
         sessionId
       });
-    }).finally(() => live.close());
+    });
     void documentProjection;
     const finalization = handle.completion
       .then(async (result) => {
         await documentProjection;
         let projectedMessages = null;
         if (sessionId && result.status === "completed") {
+          if (completedAssistantContent === undefined) {
+            const transcript = await runs.getTranscript(result.runId);
+            const finalAssistant = transcript.findLast((message) => message.role === "assistant");
+            if (finalAssistant) completedAssistantContent = String(finalAssistant.content || "");
+          }
           await sessions.appendSessionMessages(sessionId, [{
             schemaVersion: 1,
             id: createId("message"),
@@ -1026,13 +1044,46 @@ export function createRuntimeServer({
         });
         // Yield the Session only after transcript/document persistence completes.
         if (sessionId && sessionHandles.get(sessionId) === handle) sessionHandles.delete(sessionId);
+        if (result.status === "waiting") return;
+        const events = await runs.getEvents(handle.runId);
+        const publishHostEvent = async (event) => {
+          await runs.append(event);
+          live.publish(event);
+        };
+        await publishHostEvent({
+          schemaVersion: 1, eventId: createId("event"), runId: handle.runId,
+          attemptId: handle.attemptId, sequence: (events.at(-1)?.sequence || 0) + 1,
+          type: "run.finalized", timestamp: Date.now(),
+          data: { status: result.status, sessionId: sessionId || null }
+        });
         const controllers = typeof runControllers === "function" ? runControllers() : runControllers;
         for (const controller of controllers || []) {
-          if (!controller.afterRun) continue;
-          const next = await controller.afterRun({
-            runId: handle.runId, request: runRequest, result
-          });
-          if (!next) continue;
+          let decision;
+          try {
+            decision = await dispatchRunHook(controller, {
+              schemaVersion: 1, stage: "afterRun", controllerId: controller.id,
+              idempotencyKey: `${handle.runId}:${handle.attemptId}:afterRun:${controller.id}`,
+              runId: handle.runId, attemptId: handle.attemptId, request: runRequest, result,
+              messages: [], signal: new CancellationController().signal
+            }, async (type, data) => {
+              const latest = await runs.getEvents(handle.runId);
+              await publishHostEvent({
+                schemaVersion: 1, eventId: createId("event"), runId: handle.runId,
+                attemptId: handle.attemptId, sequence: (latest.at(-1)?.sequence || 0) + 1,
+                type, timestamp: Date.now(), data
+              });
+            });
+          } catch (error) {
+            // A failed afterRun policy prevents continuation. It cannot undo a
+            // completed Run or turn a persisted transcript into a projection failure.
+            try { await controller.continuationFailed?.({ request: runRequest, error }); }
+            catch {}
+            try { onPostProcessorError(error, { processorId: controller.id, runId: handle.runId, sessionId }); }
+            catch {}
+            break;
+          }
+          if (decision.action !== "continue-run") continue;
+          const next = decision;
           if (closing) {
             await controller.continuationFailed?.({ request: runRequest, error: new Error("Runtime is shutting down") });
             break;
@@ -1106,6 +1157,7 @@ export function createRuntimeServer({
         }
       })
       .finally(() => {
+        live.close();
         if (handles.get(handle.runId) === handle) handles.delete(handle.runId);
         if (liveRuns.get(handle.runId) === live) {
           const retirement = globalThis.setTimeout(() => {
@@ -1123,7 +1175,9 @@ export function createRuntimeServer({
         if (sessionId && sessionFinalizations.get(sessionId) === finalization) {
           sessionFinalizations.delete(sessionId);
         }
+        if (runFinalizations.get(handle.runId) === finalization) runFinalizations.delete(handle.runId);
       });
+    runFinalizations.set(handle.runId, finalization);
     if (sessionId) sessionFinalizations.set(sessionId, finalization);
     void finalization.catch((error) => {
       try {
@@ -2050,22 +2104,23 @@ export function createRuntimeServer({
             statusCode: 409, code: "run_checkpoint_unavailable"
           });
         }
-        releaseAdmission = await reserveSessionAdmission(existingRun?.sessionId);
+        releaseAdmission = await reserveSessionAdmission(existingRun?.sessionId, resumeRunId);
         const handle = await executor.resume(resumeRunId, {
+          waitId: body.waitId,
+          input: body.input,
           model: body.model ? await resolveRequestedModel(body.model, request.zionPrincipal) : undefined,
           maxTurns: body.maxTurns,
           timeoutMs: body.timeoutMs,
           modelOptions: normalizeModelOptions(body.modelOptions)
         });
         await trackHandle(handle, existingRun?.sessionId, {
+          ...existingRun,
           sessionId: existingRun?.sessionId,
           projectId: existingRun?.projectId,
           model: existingRun?.model,
           policy: existingRun?.policy,
           principal: existingRun?.principal,
-          metadata: {
-            resumed: true
-          }
+          metadata: { ...existingRun?.metadata, resumed: true }
         });
         json(response, 202, {
           runId: handle.runId,
@@ -2328,20 +2383,49 @@ export function createRuntimeServer({
 
       const abortRunId = matchRunPath(url.pathname, "/abort");
       if (request.method === "POST" && abortRunId) {
+        const run = await runs.get(abortRunId);
         await authorizeExistingRun(
           request.zionPrincipal,
-          await runs.get(abortRunId),
+          run,
           { allowRevoked: true }
         );
+        const body = await readRequestJson(request);
+        if (run?.status === "waiting") {
+          // Drain the completed waiting attempt before replacing its live hub.
+          await runFinalizations.get(run.id);
+          const events = await runs.getEvents(abortRunId);
+          const event = {
+            schemaVersion: 1, eventId: createId("event"), runId: abortRunId,
+            attemptId: run.attemptId, sequence: (events.at(-1)?.sequence || 0) + 1,
+            type: "run.aborted", timestamp: Date.now(),
+            data: { reason: String(body.reason || "user"), output: run.output || "", usage: run.usage }
+          };
+          const result = {
+            runId: run.id, attemptId: run.attemptId, status: "aborted",
+            output: run.output || "", usage: run.usage, reason: event.data.reason
+          };
+          const outbox = await waitingTerminalOutbox(run, result);
+          if (!await runs.cancelWait(event, run.waiting?.id, outbox)) {
+            throw Object.assign(new Error("Waiting Run was already resumed or cancelled"), { statusCode: 409 });
+          }
+          // Existing terminal observers and session projections see the same
+          // cancellation as an active Run, without executing any paused work.
+          await trackHandle({
+            runId: run.id, attemptId: run.attemptId,
+            events: (async function* () { yield event; })(),
+            completion: Promise.resolve(result),
+            abort: async () => {}
+          }, run.sessionId, { ...run, prompt: undefined }, { initialEvents: events, publishStarted: false });
+          json(response, 202, { ok: true, runId: abortRunId });
+          return;
+        }
         const handle = handles.get(abortRunId);
         if (!handle) {
-          const run = await runs.get(abortRunId);
           json(response, run ? 409 : 404, {
             error: run ? `Run is not active: ${run.status}` : "Run not found"
           });
           return;
         }
-        const body = await readRequestJson(request);
         await handle.abort(String(body.reason || "user"));
         json(response, 202, { ok: true, runId: abortRunId });
         return;
@@ -2424,7 +2508,7 @@ export function createRuntimeServer({
         await handle.abort("runtime-shutdown");
       }
       await Promise.allSettled(activeHandles.map((handle) => handle.completion));
-      await Promise.allSettled([...sessionFinalizations.values()]);
+      await Promise.allSettled([...runFinalizations.values()]);
       for (const retirement of liveRunRetirements.values()) {
         globalThis.clearTimeout(retirement);
       }

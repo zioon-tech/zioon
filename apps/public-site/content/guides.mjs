@@ -6,8 +6,8 @@ const table = (headers, rows) => ({ type: "table", headers, rows });
 const s = (id, title, ...blocks) => ({ id, title, blocks });
 const staged = process.env.ZIOON_SITE_RELEASE_STATE !== "published";
 const releaseNote = () => note(staged
-  ? "本页对应 CLI 0.2.1 与安装文件编辑更新。发行包已准备；正式服务完成部署核验后会更新本提示。"
-  : "CLI 0.2.1 与本文对应的接口已发布。实际可用插件、模型和工具以当前账号的安装记录与权限为准。", "发行状态");
+  ? "本页对应 CLI 0.3.0 与 Runtime Hook 更新。发行包已准备；正式服务完成部署核验后会更新本提示。"
+  : "CLI 0.3.0 与本文对应的接口已发布。实际可用插件、模型和工具以当前账号的安装记录与权限为准。", "发行状态");
 
 export const guides = [
   {
@@ -50,6 +50,9 @@ export const guides = [
         p("Workbench 的一次提交、CLI 的 `run` 和 API 的 `POST /v1/runs` 都产生可跟踪的 Run。保留返回的 ID，查看输出、错误与最终状态。"),
         code('zioon run "分析这个项目的发布准备情况。" --session SESSION_ID --jsonl\nzioon attach RUN_ID --jsonl\nzioon abort RUN_ID --reason "停止本次工作"'),
         note("退出终端监听或关闭网页不等于停止服务端任务。写入结果不确定时先检查实际文件，再继续。")),
+      s("waiting", "等待外部回复",
+        p("Run 的 waiting 状态表示正在等待输入或审批，尚未完成。查看等待原因后填写回复，或明确停止该任务。会话保留给这个 Run，恢复使用原运行 ID。"),
+        p("接入与回复方式见 [Runtime Hook 与 Webhook](/docs/runtime-hooks/)。")),
       s("scheduled", "管理已配置的定时任务",
         p("通过 Scheduler 插件配置自动化任务后，可以在 CLI 查看、触发一次或取消某次任务 Run。任务 ID 与 Run ID 是不同对象。"),
         code("zioon task list\nzioon task get TASK_ID\nzioon task run TASK_ID\nzioon task runs TASK_ID\nzioon task cancel RUN_ID --reason \"取消本次执行\""),
@@ -68,14 +71,14 @@ export const guides = [
       s("install", "安装独立发行包",
         releaseNote(),
         p("需要 Node.js 22.5 或更新版本与 npm，支持 macOS、Linux 和 Windows。安装包包含 CLI、Node SDK 与官方 Skill，不依赖 Zioon 源码目录。"),
-        code("npm install --global https://zioon.tech/downloads/zioon-cli-0.2.1.tgz\nzioon --version\nzioon --help"),
-        p("版本输出为 `zioon 0.2.1`。`zion` 是相同命令的别名。`@zioon/cli` 是包内模块名，当前通过官网固定制品安装。"),
-        p("也可以下载 [CLI 安装包](/downloads/zioon-cli-0.2.1.tgz)、[SHA-256 清单](/downloads/SHA256SUMS)、[Unix 安装脚本](/downloads/install.sh) 或 [Windows 安装脚本](/downloads/install.ps1)。脚本使用用户目录安装，并打印需加入 PATH 的路径。")),
+        code("npm install --global https://zioon.tech/downloads/zioon-cli-0.3.0.tgz\nzioon --version\nzioon --help"),
+        p("版本输出为 `zioon 0.3.0`。`zion` 是相同命令的别名。`@zioon/cli` 是包内模块名，当前通过官网固定制品安装。"),
+        p("也可以下载 [CLI 安装包](/downloads/zioon-cli-0.3.0.tgz)、[SHA-256 清单](/downloads/SHA256SUMS)、[Unix 安装脚本](/downloads/install.sh) 或 [Windows 安装脚本](/downloads/install.ps1)。脚本使用用户目录安装，并打印需加入 PATH 的路径。")),
       s("user-install", "没有全局安装权限时",
         p("macOS / Linux 可安装到自己的目录："),
-        code('npm install --global --prefix "$HOME/.local" https://zioon.tech/downloads/zioon-cli-0.2.1.tgz\nexport PATH="$HOME/.local/bin:$PATH"\nzioon --version'),
+        code('npm install --global --prefix "$HOME/.local" https://zioon.tech/downloads/zioon-cli-0.3.0.tgz\nexport PATH="$HOME/.local/bin:$PATH"\nzioon --version'),
         p("Windows PowerShell 可使用："),
-        code('$zioonPrefix = Join-Path $env:LOCALAPPDATA "Zioon\\cli"\nnpm install --global --prefix $zioonPrefix https://zioon.tech/downloads/zioon-cli-0.2.1.tgz\n$env:Path = "$zioonPrefix;$env:Path"\nzioon --version', "powershell", "Windows PowerShell"),
+        code('$zioonPrefix = Join-Path $env:LOCALAPPDATA "Zioon\\cli"\nnpm install --global --prefix $zioonPrefix https://zioon.tech/downloads/zioon-cli-0.3.0.tgz\n$env:Path = "$zioonPrefix;$env:Path"\nzioon --version', "powershell", "Windows PowerShell"),
         p("这些 PATH 设置对当前终端有效。后续可将打印的目录加入用户 PATH。")),
       s("login", "登录一次",
         code("zioon auth login zioon-cloud\nzioon auth status zioon-cloud"),
@@ -84,6 +87,10 @@ export const guides = [
       s("chat", "开始对话与接回会话",
         code('zioon chat --no-tools --no-terminal-context --title "第一次 CLI 对话"\nzioon session list --limit 10\nzioon chat --session SESSION_ID\nzioon run "把前面的计划整理成三项行动。" --session SESSION_ID --jsonl'),
         p("输入 `/session` 查看当前会话 ID，输入 `/exit` 退出聊天。把示例 ID 替换为实际返回值。需要已授权工具时启动 `zioon chat`。")),
+      s("editing", "编辑、模型和图片",
+        code("zioon chat --continue\nzioon chat --image screenshot.png"),
+        p("使用多行输入、Tab 命令补全和历史搜索。`/model` 选择模型，`/settings` 查看配置。回复会渲染 Markdown、代码块和表格；工具活动单独展示。"),
+        p("图片可拖入终端，或使用 Ctrl+V、`/paste` 从剪贴板添加。macOS 用 Ctrl+Cmd+Shift+4 将截图放入剪贴板，成功后会显示 `[Image 1]`。图片可与文字混发；发送失败时草稿与附件会保留。选择支持图片的模型。")),
       s("plugins", "查看和调用已安装插件",
         code("zioon extensions list\nzioon extensions list --host runtime\nzioon extensions show dev.agent-device-cloud --host runtime\nzioon extensions call dev.agent-device-cloud --host runtime \\\n  --tool adc_status --args '{}'"),
         p("账户扩展与完整 Runtime 插件使用不同宿主。ADC 插件需先安装，并在其界面完成自己的授权；`adc_status` 返回未连接也是有效状态。详见 [跨入口使用插件](/docs/plugin-invocation/)。"),
@@ -98,7 +105,7 @@ export const guides = [
       s("commands", "日常命令",
         table(["命令", "用途"], [
           ["zioon chat", "交互式聊天。"], ["zioon run PROMPT", "提交任务并跟踪到终态。"],
-          ["zioon attach RUN_ID", "接回某次 Run 的输出。"], ["zioon resume RUN_ID", "恢复可恢复的中断 Run。"],
+          ["zioon attach RUN_ID", "接回某次 Run 的输出。"], ["zioon resume RUN_ID", "恢复中断 Run，或携带 wait-id 回复等待请求。"],
           ["zioon abort RUN_ID", "显式停止 Run。"], ["zioon session list / get / transcript", "查看会话与记录。"],
           ["zioon session fork / attach / watch", "分叉会话或跟踪其运行与事件。"],
           ["zioon task list / get / run / runs / cancel", "管理已有自动化任务的执行。"],
@@ -121,7 +128,7 @@ export const guides = [
         code("zioon auth login dev\nzioon extensions list --runtime-profile dev"),
         p("配置文件只保存地址和认证方式。自动化工作负载可使用部署已注册的 bearer 环境变量或 token-file profile；账号登录与执行资源授权仍独立。")),
       s("exit", "脚本如何判断结果",
-        table(["退出码", "含义"], [["0", "命令成功；run / attach 的 Run 已完成。"], ["1", "命令或 Run 失败。"], ["2", "Run 中断。"], ["130", "Run 已停止。"]]),
+        table(["退出码", "含义"], [["0", "命令成功；run / attach 的 Run 已完成。"], ["1", "命令或 Run 失败。"], ["2", "Run 中断。"], ["3", "Run 等待回复，尚未完成。"], ["130", "Run 已停止。"]]),
         p("检查最终 `run.snapshot` 的 `run.status` 与输出。交互式聊天内某轮失败会显示错误，可继续输入。`api` 的 HTTP 成功不代表返回的 Run 已完成。"))
     ]
   },
@@ -132,7 +139,7 @@ export const guides = [
     sections: [
       s("download", "安装官方 Skill",
         releaseNote(),
-        p("下载 [完整 Skill 包](/downloads/zioon-skill-0.2.1.tar.gz)，解压后保留 `zioon/SKILL.md` 和 `references/commands.md`。将整个 `zioon` 文件夹放入当前 Agent 支持的 Skill 目录。"),
+        p("下载 [完整 Skill 包](/downloads/zioon-skill-0.3.0.tar.gz)，解压后保留 `zioon/SKILL.md` 和 `references/commands.md`。将整个 `zioon` 文件夹放入当前 Agent 支持的 Skill 目录。"),
         p("支持官网发现协议的 skills 安装器也可以直接从本站安装；它需要 Node.js 22.20 或更新版本："),
         code("npx skills@latest add https://zioon.tech --skill zioon"),
         p("TRAE 项目级目录为 `.trae/skills/zioon/`；其他宿主使用自己的 Skill 导入或目录约定。完整安装包含 references，不要只复制正文。"),
@@ -335,7 +342,7 @@ export const guides = [
     sections: [
       s("install", "在项目中安装",
         releaseNote(),
-        code("npm install https://zioon.tech/downloads/zioon-cli-0.2.1.tgz\nnpx zioon auth login zioon-cloud"),
+        code("npm install https://zioon.tech/downloads/zioon-cli-0.3.0.tgz\nnpx zioon auth login zioon-cloud"),
         p("包的模块名为 `@zioon/cli`，可在 Node.js 22.5 或更新版本中使用。SDK 复用当前系统用户已经保存的账号登录，不返回令牌。")),
       s("run", "提交和读取任务",
         code('import { createAccountRuntimeClient } from "@zioon/cli";\n\nconst { runtime } = await createAccountRuntimeClient();\nconst { runId } = await runtime.createRun({\n  prompt: "整理这次发布需要准备的材料。"\n});\nconst run = await runtime.followRun(runId, (event) => {\n  console.log(event.type);\n});\nconsole.log(run.status, run.output);\nif (run.status !== "completed") process.exitCode = 1;', "javascript", "run.mjs"),
@@ -375,8 +382,14 @@ export const guides = [
   {
     slug: "changelog", title: "更新与版本说明", group: "参考", minutes: 3,
     description: "本次 CLI、官网文档和插件跨入口能力的交付范围。",
-    keywords: "版本 release 更新 0.2.1 官网 CLI 插件",
+    keywords: "版本 release 更新 0.3.0 官网 CLI 插件 Hook Webhook",
     sections: [
+      s("cli-hooks", "2026.11 · CLI 0.3.0 与执行扩展",
+        list("终端支持 Markdown 排版、多行与中文输入、会话续接、草稿恢复、模型选择、工具状态和历史搜索。",
+          "图片可粘贴、拖入或按路径添加，多图与文字一起发送；上传失败保留草稿。",
+          "统一 Hook 支持执行边界控制和持久等待，CLI、工作台与移动端可回复并恢复任务。",
+          "Webhook 事件与投递事务入库，支持签名、有限重试、租约恢复与人工重放。"),
+        p("完整配置见 [Runtime Hook 与 Webhook](/docs/runtime-hooks/)。macOS 截图粘贴使用 Ctrl+V，或输入 /paste；截图需先保存到剪贴板。")),
       s("installed-files", "2026.10 · 已安装扩展的个人文件",
         releaseNote(),
         list("CLI 0.2.1 和插件市场支持查看、编辑、保存、重新加载与恢复已安装文件。",
@@ -404,3 +417,37 @@ export const guides = [
     ]
   }
 ];
+
+guides.push({
+  slug: "runtime-hooks", title: "Runtime Hook 与 Webhook", group: "插件与 API",
+  minutes: 7, description: "在执行边界接入控制逻辑，等待外部输入，并可靠接收运行事件。",
+  keywords: "Hook Webhook 暂停 恢复 审批 HTTP 脚本 afterRun waitId",
+  sections: [
+    s("lifecycle", "执行边界",
+      p("Hook 支持 beforeStart、beforeTurn、beforeModel、beforeTool、afterTool、beforeStop 和 afterRun。控制逻辑按顺序执行，各自有超时和失败策略。旧插件回调仍然兼容。"),
+      table(["阶段", "可返回的决定"], [
+        ["启动、每轮、模型前", "pass、deny、pause"],
+        ["工具前", "pass、deny、pause、replace-tool-result"],
+        ["工具后", "pass，记录执行事实"],
+        ["停止前", "pass、deny、pause、continue、accept-stop"],
+        ["Run 收尾", "pass、continue-run"]
+      ]),
+      note("单次 Run 完成、插件收尾完成与整个持续目标完成是不同事实。afterRun 不会在等待状态触发。")),
+    s("waiting", "等待、回复和取消",
+      p("pause 会持久保存等待原因和执行边界，状态为 waiting，会话仍由该 Run 占用。CLI、工作台与移动端显示等待回复，不将其当作成功或失败。"),
+      code("zioon api GET /v1/runs/RUN_ID\nzioon resume RUN_ID --wait-id WAIT_ID --input-file response.json\nzioon abort RUN_ID --reason \"停止本次任务\""),
+      p("从快照读取当前等待 ID，根据该 Hook 要求填写 response.json。POST /v1/runs/RUN_ID/resume 接收 waitId 和 input；过期或重复等待会被拒绝。工作台可在输入区填写回复后发送，移动端使用等待回复区域。"),
+      note("在外部副作用执行中发生崩溃时，需要先核对已有执行结果，再恢复；Runtime 不会盲目重放该工具。")),
+    s("adapters", "HTTP 与脚本 Hook",
+      p("部署管理员使用 ZION_RUNTIME_HOOKS_FILE 指定适配器配置。HTTP 请求与响应均签名，签名帮助接收方验证原始消息与时效。脚本在独立进程中执行，需要 ZION_RUNTIME_ALLOW_SCRIPT_HOOKS 明确启用和绝对模块路径。"),
+      p("接口契约位于 Runtime 的 protocol.ts；签名辅助函数由 plugin-sdk/runtime-extension-signature 提供。配置超时为 1—60000 毫秒，默认 fail-closed。密钥由服务器凭据引用提供，不写入公开配置。"),
+      code('[{"id":"approval","type":"http","stages":["beforeTool"],"endpoint":"https://hooks.example.com/approval","secretRef":"ZION_HOOK_SECRET_APPROVAL","timeoutMs":10000,"failurePolicy":"fail-closed"}]', "json")),
+    s("webhooks", "可靠接收事件",
+      p("Webhook 订阅与每次投递持久保存在 PostgreSQL；运行事件和待投递记录在同一事务中提交。后台 worker 签名、重试并租约领取任务。接收方按事件 ID 去重。"),
+      code("zioon api GET /v1/webhooks\nzioon api GET /v1/webhooks/deliveries"),
+      p("管理权限限定在所属账户。POST /v1/webhooks 创建订阅，PATCH /v1/webhooks/ID 开关订阅；POST /v1/webhooks/deliveries/ID/replay 以明确理由重放，GET 同路径的 replays 查看审计。支持的事件以 GET /v1/webhooks 返回的 eventTypes 为准。"),
+      p("部署管理员先设置至少 32 字节的 ZION_WEBHOOK_SECRET_* 密钥，并通过 ZION_WEBHOOK_SECRET_BINDINGS 配置 Space ID 到可用密钥引用的 JSON 映射。创建、启用、重放和投递均校验此绑定，Webhook 不接受 ZION_HOOK_SECRET_*。"),
+      code('ZION_WEBHOOK_SECRET_BINDINGS=\'{"SPACE_ID":["ZION_WEBHOOK_SECRET_EVENTS"]}\'\n\nzioon api POST /v1/webhooks --data \'{"endpoint":"https://events.example.com/zioon","secretRef":"ZION_WEBHOOK_SECRET_EVENTS","eventTypes":["run.waiting","run.resumed","run.finalized"]}\''),
+      note("订阅用于记录通知事实。需要暂停或控制工具执行时使用 Hook；第三方机器人平台仍需单独的渠道适配器。"))
+  ]
+});

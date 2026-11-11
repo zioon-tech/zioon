@@ -78,6 +78,7 @@ function runStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     queued: "排队中",
     running: "运行中",
+    waiting: "等待回复",
     retrying: "重试中",
     completed: "已完成",
     success: "成功",

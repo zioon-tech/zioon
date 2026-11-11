@@ -114,6 +114,7 @@ export class PostgresRunStore {
 
   constructor(pool, {
     spaceId,
+    webhooks = null,
     modelRequestDetailMaxBytes = DEFAULT_MODEL_REQUEST_DETAIL_MAX_BYTES,
     modelRequestDetailMaxRows = DEFAULT_MODEL_REQUEST_DETAIL_MAX_ROWS,
     modelRequestDetailMaxStoredBytes =
@@ -125,6 +126,8 @@ export class PostgresRunStore {
     if (!spaceId) throw new Error("PostgreSQL Run Store requires a Space ID");
     this.pool = pool;
     this.spaceId = String(spaceId);
+    if (webhooks && webhooks.spaceId !== this.spaceId) throw new Error("Webhook Space mismatch");
+    this.webhooks = webhooks;
     this.modelRequestDetailMaxBytes = Math.max(
       0,
       Number(modelRequestDetailMaxBytes) || 0
@@ -182,7 +185,7 @@ export class PostgresRunStore {
     }
   }
 
-  async append(inputEvent, patch, detailEvent = null, outbox = []) {
+  async append(inputEvent, patch, detailEvent = null, outbox = [], checkpoint = null, waitId = null) {
     if (!Array.isArray(outbox) || outbox.length > 100) throw new Error("invalid_run_outbox");
     const rawDetailEvent = detailEvent || inputEvent;
     const rawEvent = rawDetailEvent?.type === "model.request"
@@ -203,14 +206,19 @@ export class PostgresRunStore {
     const event = summarizeModelRequestEvent(inputEvent, {
       detailAvailable: !!retainedDetail
     });
-    await this.transaction(async (client) => {
+    const written = await this.transaction(async (client) => {
       const currentResult = await client.query(
         `SELECT payload_json FROM runtime_runs
          WHERE space_id = $1 AND id = $2 FOR UPDATE`,
         [this.spaceId, event.runId]
       );
       const current = payload(currentResult.rows[0]);
+      if (waitId !== null && (!current || current.status !== "waiting"
+        || current.attemptId !== event.attemptId || current.waiting?.id !== waitId)) return false;
       if (!current) throw new Error(`Run not found: ${event.runId}`);
+      if (event.attemptId !== current.attemptId && patch?.attemptId !== event.attemptId) {
+        throw new Error("Run attempt no longer owns execution");
+      }
       const previous = await client.query(
         `SELECT sequence FROM runtime_run_events
          WHERE space_id = $1 AND run_id = $2
@@ -307,18 +315,23 @@ export class PostgresRunStore {
             || prior.kind !== entry.kind || hashJson(prior.payload_json) !== hashJson(entry.payload)) throw new Error("outbox_conflict");
         }
       }
-      if (event.type === "run.completed") {
+      if (event.type === "run.completed" || waitId !== null) {
         await client.query(
           "DELETE FROM runtime_run_checkpoints WHERE space_id = $1 AND run_id = $2",
           [this.spaceId, event.runId]
         );
       }
+      if (checkpoint) await this.writeCheckpoint(client, checkpoint);
+      await this.webhooks?.enqueue(client, event, next);
+      return true;
     });
+    if (!written) return false;
     for (const listener of this.eventListeners) {
       try {
         Promise.resolve(listener(event)).catch(() => {});
       } catch {}
     }
+    return true;
   }
 
   subscribeEvents(listener) {
@@ -569,6 +582,11 @@ export class PostgresRunStore {
       if (run.rows[0].status === "completed") {
         throw new Error(`Cannot save a checkpoint for completed Run: ${checkpoint.runId}`);
       }
+      await this.writeCheckpoint(client, checkpoint);
+    });
+  }
+
+  async writeCheckpoint(client, checkpoint) {
       const current = await client.query(
         `SELECT sequence FROM runtime_run_checkpoints
          WHERE space_id = $1 AND run_id = $2
@@ -598,6 +616,51 @@ export class PostgresRunStore {
          WHERE space_id = $1 AND run_id = $2 AND sequence <> $3`,
         [this.spaceId, checkpoint.runId, checkpoint.sequence]
       );
+  }
+
+  async suspend(event, checkpoint, waiting) {
+    await this.append(event, {
+      status: "waiting", updatedAt: event.timestamp, waiting,
+      output: checkpoint.output, usage: checkpoint.usage
+    }, null, [], checkpoint);
+  }
+
+  async cancelWait(event, waitId, outbox = []) {
+    if (event.type !== "run.aborted" || !waitId) throw new Error("Invalid wait cancellation");
+    return this.append(event, {
+      status: "aborted", updatedAt: event.timestamp, completedAt: event.timestamp,
+      terminalReason: String(event.data.reason || "user"), waiting: undefined
+    }, null, outbox, null, waitId);
+  }
+
+  async claimResume({ runId, previousAttemptId, attemptId, checkpointSequence, waitId, input }) {
+    return this.transaction(async (client) => {
+      const current = await client.query(
+        `SELECT payload_json FROM runtime_runs WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+        [this.spaceId, runId]
+      );
+      const run = payload(current.rows[0]);
+      if (!run || run.attemptId !== previousAttemptId
+        || !["waiting", "interrupted", "failed", "aborted"].includes(run.status)
+        || (run.status === "waiting" ? run.waiting?.id !== waitId : waitId !== undefined)) return false;
+      const checkpoint = await client.query(
+        `SELECT sequence, payload_json FROM runtime_run_checkpoints WHERE space_id = $1 AND run_id = $2
+         ORDER BY sequence DESC LIMIT 1`, [this.spaceId, runId]
+      );
+      if (Number(checkpoint.rows[0]?.sequence) !== checkpointSequence) return false;
+      if (waitId) {
+        const saved = payload(checkpoint.rows[0]);
+        if (!saved.pending) return false;
+        saved.pending.resume = { waitId, input };
+        await this.writeCheckpoint(client, saved);
+      }
+      const next = { ...run, status: "queued", attemptId, waiting: undefined };
+      await client.query(
+        `UPDATE runtime_runs SET payload_json = $1::jsonb, status = $2
+         WHERE space_id = $3 AND id = $4`,
+        [JSON.stringify(next), next.status, this.spaceId, runId]
+      );
+      return true;
     });
   }
 
@@ -638,7 +701,7 @@ export class PostgresRunStore {
        WHERE space_id = $1 AND status = ANY($2::text[])
          AND payload_json->>'sessionId' = $3
        ORDER BY updated_at DESC LIMIT 1`,
-      [this.spaceId, ["queued", "running"], String(sessionId)]
+      [this.spaceId, ["queued", "running", "waiting"], String(sessionId)]
     );
     return payload(result.rows[0]);
   }
@@ -999,12 +1062,14 @@ export class PostgresRunStore {
       const messages = await this.getSessionMessages(run.sessionId);
       if (!messages.some((message) => message.runId === run.id && message.role === "user")) continue;
       if (messages.some((message) => message.runId === run.id && message.role === "assistant")) continue;
+      const transcript = await this.getTranscript(run.id);
+      const finalAssistant = transcript.findLast((message) => message.role === "assistant");
       const [message] = await this.appendSessionMessages(run.sessionId, [{
         schemaVersion: 1,
         id: createId("message"),
         sessionId: run.sessionId,
         role: "assistant",
-        content: run.output,
+        content: finalAssistant ? String(finalAssistant.content || "") : run.output,
         runId: run.id,
         createdAt: run.completedAt || now()
       }]);
@@ -1067,6 +1132,7 @@ export class PostgresRunStore {
           [JSON.stringify(next), next.status, timestamp, this.spaceId, run.id]
         );
         interrupted.push(next);
+        await this.webhooks?.enqueue(client, event, next);
       }
     });
     return interrupted;

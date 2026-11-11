@@ -7,6 +7,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_INTERACTION_PROFILE_ID } from "./interaction-profile-store.mjs";
 import { runChatCli } from "./chat-cli.mjs";
+import { boundedFetch, followCliRun } from "./cli-run-follow.mjs";
+import { createActivity, createAnswerRenderer, printAuthStatus, printList, safeText, terminalTheme } from "./cli-terminal.mjs";
+import { friendlyCliError } from "./cli-chat-shell.mjs";
 import { EXTENSIONS_USAGE, LOCAL_EXTENSION_ACTIONS, parseExtensionsArgs, runExtensionsCli } from "./extensions-cli.mjs";
 import {
   LOCAL_TOOLS_TOOL_DEFINITIONS,
@@ -42,14 +45,28 @@ import {
   getRunProjectionEvents as fetchRunProjectionEvents,
   subscribeRunStream
 } from "../../../packages/runtime-client/src/run-stream.mjs";
+import { createActivityFeed } from "./cli-activity-feed.mjs";
 
-const USAGE = `Usage: zion <command> [options] (alias: zioon)
+const USAGE = `zioon — conversations in your terminal
+
+Usage: zioon [command] [options] (alias: zion)
+
+Quick start:
+  zioon                         Open chat
+  zioon --continue              Reopen your last conversation and draft
+  zioon chat --session <id>      Continue a conversation
+  zioon run "summarize this"     Run a single prompt
+  zioon session list            Find recent conversations
+  zioon auth login              Sign in
+
+In chat: /help · /sessions · /new · /history · /exit
+         Enter send · Alt+Enter newline · Tab complete · Esc stop
 
 Commands:
   chat                         Start the interactive Runtime chat shell
   run <prompt>                 Start a Run and follow it to completion
   attach <run-id>              Follow an existing Run
-  resume <run-id>              Resume an interrupted Run and follow it
+  resume <run-id>              Resume a waiting or interrupted Run and follow it
   abort <run-id>               Abort an active Run
   session list                 List Runtime Sessions
   session get <session-id>     Show Session metadata
@@ -76,6 +93,7 @@ Options:
   --account                   Use account login for --url without a profile
   --jsonl                      Emit stable JSON Lines records
   --raw-events                 Consume uncoalesced diagnostic Run events
+  --plain                     Basic chat prompt, no terminal UI
   --session <id>              Attach a new Run to a Session
   --profile <id>              Runtime interaction profile
   --model-profile <id>        Runtime model profile
@@ -87,6 +105,8 @@ Options:
   --max-tool-calls <count>    Per-Run tool-call limit
   --title <text>              Run, Session, or fork title
   --reason <text>             Abort/cancel reason
+  --wait-id <id>              Observed wait to resume
+  --input-file <path>         JSON response for the waiting Hook
   --limit <count>             List result limit
   --after <sequence>          Resume an event stream after a sequence
   --local-tools-url <url>     local-tools endpoint for device connect
@@ -115,6 +135,8 @@ const VALUE_OPTIONS = new Set([
   "--max-tool-calls",
   "--title",
   "--reason",
+  "--wait-id",
+  "--input-file",
   "--limit",
   "--after",
   "--local-tools-url",
@@ -131,7 +153,8 @@ const TERMINAL_RUN_STATUSES = new Set([
   "completed",
   "failed",
   "aborted",
-  "interrupted"
+  "interrupted",
+  "waiting"
 ]);
 
 function readArg(argv, name, fallback = "") {
@@ -464,16 +487,19 @@ export async function createCliDeviceHost({
 export function createRuntimeControlClient({
   baseUrl,
   fetchImpl = globalThis.fetch,
-  pollIntervalMs = 100,
-  headers = {}
+  pollIntervalMs = 750,
+  headers = {},
+  signal: defaultSignal
 } = {}) {
   const url = String(baseUrl || "").replace(/\/+$/, "");
   if (!url) throw new Error("Runtime URL is required");
   if (!fetchImpl) throw new Error("fetch implementation is required");
 
-  const request = async (path, { method = "GET", body } = {}) =>
-    responseJson(await fetchImpl(`${url}${path}`, {
+  const fetchRequest = boundedFetch(fetchImpl, headers);
+  const request = async (path, { method = "GET", body, signal = defaultSignal } = {}) =>
+    responseJson(await fetchRequest(`${url}${path}`, {
       method,
+      signal,
       headers: {
         ...headers,
         ...(body === undefined ? {} : { "content-type": "application/json" })
@@ -614,49 +640,14 @@ export function createRuntimeControlClient({
     async followRun(runId, onEvent = () => {}, {
       signal,
       mode = "projection",
-      reasoningMode = "stream"
+      reasoningMode = "stream",
+      afterSequence = 0,
+      onConnection
     } = {}) {
-      let cursor = 0;
-      try {
-        for await (const event of this.streamRunEvents(runId, {
-          afterSequence: 0,
-          signal,
-          mode,
-          reasoningMode
-        })) {
-          cursor = Math.max(cursor, Number(event.sequence) || 0);
-          onEvent(event);
-        }
-        const catchUpEvents = mode === "raw"
-          ? await this.getRunEvents(runId, cursor)
-          : await this.getRunProjectionEvents(runId, {
-              afterSequence: cursor,
-              reasoningMode
-            });
-        for (const event of catchUpEvents) {
-          cursor = Math.max(cursor, Number(event.sequence) || 0);
-          onEvent(event);
-        }
-        const streamedRun = await this.getRun(runId);
-        if (TERMINAL_RUN_STATUSES.has(streamedRun.status)) return streamedRun;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-      }
-      while (true) {
-        const events = mode === "raw"
-          ? await this.getRunEvents(runId, cursor)
-          : await this.getRunProjectionEvents(runId, {
-              afterSequence: cursor,
-              reasoningMode
-            });
-        for (const event of events) {
-          cursor = Math.max(cursor, Number(event.sequence) || 0);
-          onEvent(event);
-        }
-        const run = await this.getRun(runId);
-        if (TERMINAL_RUN_STATUSES.has(run.status)) return run;
-        await delay(pollIntervalMs, undefined, { signal });
-      }
+      return followCliRun({
+        baseUrl: url, runId, fetchImpl, headers, signal, mode, reasoningMode,
+        afterSequence, onEvent, pollIntervalMs, onConnection
+      });
     }
   });
 }
@@ -693,29 +684,47 @@ async function followAndPrint(client, runId, {
   jsonl,
   output,
   signal,
-  rawEvents = false
+  rawEvents = false,
+  environment = process.env
 }) {
+  const theme = terminalTheme(output, environment);
+  const activity = createActivity(output, theme);
+  const renderer = !jsonl && theme.interactive ? createAnswerRenderer(output, theme) : null;
+  const feed = !jsonl && theme.interactive ? createActivityFeed(output, theme, {
+    activity, boundary: () => renderer?.end(), inspectHint: "--jsonl for details"
+  }) : null;
   if (jsonl) writeRecord(output, { type: "run.attached", runId });
-  else output.write(`Run: ${runId}\n`);
+  else { output.write(`Run: ${safeText(runId)}\n`); activity.start(); }
+  try {
   const run = await client.followRun(runId, (event) => {
     if (jsonl) {
       writeRecord(output, { type: "run.event", event });
     } else if (event.type === "message.delta") {
-      output.write(String(event.data?.delta || ""));
-    }
+      feed?.beforeAnswer(event); activity.stop();
+      if (renderer) renderer.write(event.data?.delta || "");
+      else output.write(safeText(event.data?.delta || ""));
+    } else feed?.event(event);
   }, {
     signal,
     mode: rawEvents ? "raw" : "projection",
-    reasoningMode: jsonl ? "stream" : "none"
+    reasoningMode: jsonl ? "stream" : "summary"
   });
   if (jsonl) writeRecord(output, { type: "run.snapshot", run });
   else {
-    output.write("\n");
+    activity.stop(); renderer?.end(); feed?.finish(run.status); output.write("\n");
     if (run.status !== "completed") {
-      output.write(`[${run.status}] ${run.terminalReason || run.error || "unknown"}\n`);
+      output.write(`[${run.status}] ${safeText(run.waiting?.reason || run.terminalReason || run.error || "unknown")}\n`);
+      if (run.status === "waiting") {
+        output.write(`Resume: zioon resume ${safeText(runId)} --wait-id ${safeText(run.waiting?.id || "")} --input-file response.json\n`);
+      }
     }
   }
   return run;
+  } catch (error) {
+    renderer?.end(); feed?.finish();
+    error.runId ||= runId;
+    throw error;
+  } finally { activity.stop(); renderer?.end(); }
 }
 
 export async function runRuntimeCli({
@@ -725,19 +734,20 @@ export async function runRuntimeCli({
   input = process.stdin,
   fetchImpl = globalThis.fetch,
   environment = process.env,
-  pollIntervalMs = 100,
+  pollIntervalMs = 750,
   credentialStore = null,
   sleep,
   signal
 } = {}) {
-  if (!argv.length || argv[0] === "chat") {
+  if (!argv.length || argv[0] === "chat" || (argv[0].startsWith("--") || argv[0] === "-i") && !argv.includes("--help")) {
     return runChatCli({
       argv: argv[0] === "chat" ? argv.slice(1) : argv,
       input,
       output,
       fetchImpl,
       environment,
-      credentialStore
+      credentialStore,
+      signal
     });
   }
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -781,7 +791,8 @@ export async function runRuntimeCli({
       const values = Array.isArray(result) ? result : [result];
       for (const value of values) writeRecord(output, { type: `profile.${action}`, value });
     } else {
-      printHumanValue(output, result);
+      if (Array.isArray(result)) printList(output, result, "profiles", environment);
+      else printHumanValue(output, result);
     }
     return result;
   }
@@ -803,6 +814,7 @@ export async function runRuntimeCli({
       });
       if (action !== "login") {
         if (jsonl) writeRecord(output, { type: `auth.${action}`, ...result });
+        else if (action === "status") printAuthStatus(output, result, environment);
         else printHumanValue(output, result);
       }
       return result;
@@ -848,7 +860,7 @@ export async function runRuntimeCli({
           : null
       };
       if (jsonl) writeRecord(output, { type: "auth.status", ...result });
-      else printHumanValue(output, result);
+      else printAuthStatus(output, result, environment);
       return result;
     }
     if (action === "logout") {
@@ -903,7 +915,8 @@ export async function runRuntimeCli({
     baseUrl,
     fetchImpl,
     pollIntervalMs,
-    headers: requestHeaders
+    headers: requestHeaders,
+    signal
   });
   if (extensions) return runExtensionsCli({
     parsed: extensions, output, baseUrl, fetchImpl, headers: requestHeaders, signal,
@@ -961,7 +974,12 @@ export async function runRuntimeCli({
   if (command === "resume") {
     const runId = positionals[0];
     if (!runId) throw new Error("resume requires a Run id");
-    const accepted = await client.resumeRun(runId);
+    const inputFile = readArg(args, "--input-file");
+    const resumeInput = inputFile ? JSON.parse(readFileSync(inputFile, "utf8")) : undefined;
+    const accepted = await client.resumeRun(runId, {
+      ...(readArg(args, "--wait-id") ? { waitId: readArg(args, "--wait-id") } : {}),
+      ...(inputFile ? { input: resumeInput } : {})
+    });
     if (jsonl) writeRecord(output, { type: "run.resumed", ...accepted });
     return followAndPrint(client, accepted.runId || runId, {
       jsonl,
@@ -1059,7 +1077,8 @@ export async function runRuntimeCli({
         writeRecord(output, { type: `session.${action}`, value });
       }
     } else {
-      printHumanValue(output, result);
+      if (action === "list") printList(output, result, "conversations", environment);
+      else printHumanValue(output, result);
     }
     return result;
   }
@@ -1084,6 +1103,7 @@ export async function runRuntimeCli({
       throw new Error(`Unknown task action: ${action}`);
     }
     if (jsonl) writeRecord(output, { type: `task.${action}`, value: result });
+    else if (action === "list") printList(output, result, "tasks", environment);
     else printHumanValue(output, result);
     return result;
   }
@@ -1100,6 +1120,7 @@ if (process.env.ZIOON_CLI_DISTRIBUTION !== "1" && import.meta.url === entryPath)
 export function runtimeCliExitCode(result) {
   if (result?.status === "failed") return 1;
   if (result?.status === "interrupted") return 2;
+  if (result?.status === "waiting") return 3;
   if (result?.status === "aborted") return 130;
   return 0;
 }
@@ -1108,17 +1129,27 @@ export async function runRuntimeCliEntry({
   argv = process.argv.slice(2), output = process.stdout, errorOutput = process.stderr,
   ...options
 } = {}) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort(new DOMException("Cancelled", "AbortError"));
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
   try {
-    const result = await runRuntimeCli({ argv, output, errorOutput, ...options });
-    process.exitCode = runtimeCliExitCode(result);
+    const result = await runRuntimeCli({
+      argv, output, errorOutput, ...options,
+      signal: options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
+    });
+    process.exitCode = controller.signal.aborted ? 130 : runtimeCliExitCode(result);
     return result;
   } catch (error) {
     errorOutput.write(argv.includes("--jsonl")
       ? `${JSON.stringify({ schemaVersion: 1, type: "cli.error", code: error.code || "cli_error",
           ...(error.statusCode ? { statusCode: error.statusCode } : {}),
           ...(error.runId ? { runId: error.runId } : {}), error: error.message || String(error) })}\n`
-      : `zion: ${error.message || String(error)}\n`);
-    process.exitCode = 1;
+      : `zioon: ${friendlyCliError(error)}\n`);
+    process.exitCode = error.name === "AbortError" ? 130 : 1;
     return null;
+  } finally {
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
   }
 }

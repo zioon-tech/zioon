@@ -9,6 +9,7 @@ export {
   RunCancelledError
 } from "./cancellation.js";
 export { MemoryRunStore } from "./memory-run-store.js";
+export { dispatchRunHook, validateRunHookDecision } from "./run-hooks.js";
 export { OpenAICompatibleEngine, normalizeModelProviderMetadata } from "./openai-compatible-engine.js";
 export type {
   AgentEngine,
@@ -36,6 +37,11 @@ export type {
   RunRecord,
   RunController,
   RunControllerContext,
+  RunHookStage,
+  RunHookContext,
+  RunHookDecision,
+  RunWait,
+  PendingRunStep,
   RunRequest,
   RunResult,
   RunPolicyPreset,

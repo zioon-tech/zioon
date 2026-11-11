@@ -165,7 +165,7 @@ export async function projectRunEventToSession(
     ...(options.backend ? { backend: String(options.backend) } : {}),
     ...(options.runtimeRunId ? { runtimeRunId: String(options.runtimeRunId) } : {})
   };
-  if (event.type === "run.started") {
+  if (event.type === "run.started" || event.type === "attempt.started" || event.type === "run.resumed") {
     if (options.resetProjection === true) {
       const state = getProjectionState(zion);
       const prefix = `${sessionId}:${event.runId}:`;
@@ -187,7 +187,8 @@ export async function projectRunEventToSession(
       streaming: true,
       aborted: false,
       awaiting: false,
-      error: false
+      error: false,
+      waiting: null
     });
     emit("chat/runStarted", payload);
     return;
@@ -382,6 +383,15 @@ export async function projectRunEventToSession(
         ? event.data.artifactIds
         : []
     });
+    return;
+  }
+  if (event.type === "run.waiting") {
+    finishRunReasoningProjections(zion, sessionId, event.runId, emit);
+    zion.state?.set?.(`chat.runs.${sessionId}`, {
+      runId: event.runId, streaming: false, aborted: false,
+      awaiting: true, error: false, waiting: event.data?.waiting || null
+    });
+    emit("chat/runWaiting", { ...payload, waiting: event.data?.waiting });
     return;
   }
   if (event.type === "run.completed") {

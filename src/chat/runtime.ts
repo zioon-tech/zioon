@@ -31,6 +31,7 @@ export type ChatRunState = {
   aborted?: boolean;
   awaiting?: boolean;
   error?: boolean;
+  waiting?: { id: string; reason: string; [key: string]: unknown } | null;
   model?: {
     providerId: string;
     modelId: string;
@@ -116,15 +117,21 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     opts.state.set("chat.runId", runId);
     opts.state.set("chat.error", null);
     clearController(sid);
-    setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false, error: false });
+    setRunState(sid, { runId, streaming: true, aborted: false, awaiting: false, error: false, waiting: null });
   };
 
   const markAwaiting = (sid: string | undefined, runId?: string | null) => {
     if (!sid) return false;
     const expectedRunId = runId || getRunState(sid)?.runId || null;
     if (!expectedRunId || !isCurrentRun(sid, expectedRunId)) return false;
-    setRunState(sid, { streaming: false, awaiting: true, error: false }, expectedRunId);
+    setRunState(sid, { streaming: false, awaiting: true, error: false, waiting: null }, expectedRunId);
     clearController(sid, expectedRunId);
+    return true;
+  };
+
+  const markWaiting = (sid: string, runId: string, waiting: ChatRunState["waiting"]) => {
+    if (!isCurrentRun(sid, runId)) return false;
+    setRunState(sid, { streaming: false, awaiting: true, error: false, waiting }, runId);
     return true;
   };
 
@@ -139,7 +146,7 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     }
     setRunState(
       sid,
-      { aborted: true, streaming: false, awaiting: true, error: false },
+      { aborted: true, streaming: false, awaiting: true, error: false, waiting: null },
       expectedRunId
     );
     clearController(sid, expectedRunId);
@@ -192,6 +199,7 @@ export function createChatRuntime(opts: CreateChatRuntimeOptions) {
     setRunState,
     beginRun,
     markAwaiting,
+    markWaiting,
     markAborted,
     markError,
     getController,

@@ -1,6 +1,7 @@
 import { AsyncQueue } from "./async-queue.js";
 import { CancellationController, RunCancelledError } from "./cancellation.js";
 import { normalizeCapabilityPolicy } from "./capability-policy.js";
+import { dispatchRunHook } from "./run-hooks.js";
 import { context, trace } from "@opentelemetry/api";
 import {
   attemptMetadata,
@@ -18,6 +19,10 @@ import type {
   ContextProvider,
   EngineOutputEvent,
   ModelRef,
+  PendingRunStep,
+  RunHookStage,
+  RunHookDecision,
+  RunWait,
   ResumeRunRequest,
   RunAuthorizer,
   RunAuthorizationPhase,
@@ -104,6 +109,7 @@ type RunPatch = Pick<RunRecord, "status" | "updatedAt"> &
     | "output"
     | "usage"
     | "metadata"
+    | "waiting"
   >>;
 
 type StartState = {
@@ -119,7 +125,13 @@ type StartState = {
   authorizeAdmission?: boolean;
   previousAttemptId?: string;
   resumedFromSequence?: number;
+  pending?: PendingRunStep;
+  resumeInput?: { waitId: string; input?: unknown };
 };
+
+class RunSuspended extends Error {
+  constructor(readonly waiting: RunWait) { super(waiting.reason); }
+}
 
 const EMPTY_USAGE: Usage = {
   inputTokens: 0,
@@ -561,6 +573,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       let bindings: Awaited<ReturnType<NonNullable<AgentExecutorDependencies["bindRun"]>>> | undefined;
       let runContexts = contexts;
       let runControllers = controllers;
+      let pending = state.pending;
+      const needsPreContext = !existingRun || pending?.stage === "beforeStart";
 
       const publish = async (
         type: string,
@@ -620,7 +634,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       const settle = (
         status: RunResult["status"],
         terminalReason: string,
-        error?: string
+        error?: string,
+        waiting?: RunWait
       ) => {
         terminal = true;
         attemptSpan.setAttribute("zion.run.status", status);
@@ -638,7 +653,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           output,
           usage,
           ...(terminalReason !== "completed" ? { reason: terminalReason } : {}),
-          ...(error ? { error } : {})
+          ...(error ? { error } : {}),
+          ...(waiting ? { waiting } : {})
         });
       };
 
@@ -701,7 +717,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             updatedAt: startedAt,
             completedAt: undefined,
             terminalReason: undefined,
-            error: undefined
+            error: undefined,
+            waiting: undefined
           });
         }
 
@@ -717,6 +734,12 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             status: existingRun ? "running" : "queued", updatedAt: now(), metadata
           });
         }
+        if (new Set(runControllers.map((item) => item.id)).size !== runControllers.length) {
+          throw new Error("Duplicate Runtime Hook controller id");
+        }
+        if (pending && JSON.stringify(pending.controllerIds) !== JSON.stringify(runControllers.map((item) => item.id))) {
+          throw new Error("Run controller chain changed; restore the checkpoint controller configuration");
+        }
         const availableTools = await tools.listTools(effectiveRequest);
         const exposedTools = availableTools.filter((tool) =>
           policy.allowedTools.includes(tool.name)
@@ -726,10 +749,96 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           signal: cancellation.signal, messages: cloneMessages(messages),
           usage: { ...usage }, tools: exposedTools, output
         });
-        for (const controller of runControllers) {
-          await reauthorize("context");
-          await controller.beforeStart?.(controllerContext());
-        }
+        const checkpointFor = (step: PendingRunStep, checkpointSequence = sequence): AgentCheckpoint => ({
+          schemaVersion: 1, runId, attemptId, sequence: checkpointSequence,
+          nextTurn: step.turn, messages: cloneMessages(messages),
+          output, usage: { ...usage }, counters: { ...counters }, maxTurns,
+          createdAt: now(), pending: JSON.parse(JSON.stringify(step))
+        });
+        const hooks = async (
+          stage: Exclude<RunHookStage, "afterRun">,
+          turn: number,
+          extras: { invocation?: import("./protocol.js").ToolInvocation; result?: ToolResult } = {},
+          stepExtras: Partial<PendingRunStep> = {}
+        ): Promise<RunHookDecision[]> => {
+          const resumingStage = pending?.stage === stage && pending.turn === turn
+            && pending.callIndex === stepExtras.callIndex;
+          const startIndex = resumingStage ? pending!.controllerIndex : 0;
+          const decisions: RunHookDecision[] = resumingStage ? [...(pending!.completedDecisions || [])] : [];
+          for (let index = startIndex; index < runControllers.length; index += 1) {
+            const controller = runControllers[index];
+            if (stage === "afterTool" && (controller.handle
+              ? !controller.stages?.includes(stage)
+              : typeof controller.afterTool !== "function")) continue;
+            await reauthorize(stage === "beforeTool" || stage === "afterTool" ? "tool" : "context");
+            const resumed = pending?.stage === stage && pending.turn === turn
+              && pending.callIndex === stepExtras.callIndex && pending.controllerIndex === index;
+            if (stage === "afterTool") {
+              await runs.saveCheckpoint(checkpointFor({
+                ...stepExtras, stage, turn, controllerIndex: index,
+                controllerIds: runControllers.map((item) => item.id), completedDecisions: decisions
+              }));
+            }
+            const decision = await dispatchRunHook(controller, {
+              ...controllerContext(turn), ...extras,
+              schemaVersion: 1, stage, controllerId: controller.id,
+              idempotencyKey: `${runId}:${stage}:${turn}:${stepExtras.callIndex ?? ""}:${controller.id}${resumed && state.resumeInput ? `:resume:${state.resumeInput.waitId}` : ""}`,
+              ...(resumed && state.resumeInput ? { resume: state.resumeInput } : {})
+            }, async (type, data) => { await publish(type, data); });
+            if (resumed) pending = undefined;
+            if (decision.action === "deny") {
+              cancellation.cancel(decision.reason);
+              throw new RunCancelledError(decision.reason);
+            }
+            if (decision.action === "pause") {
+              if (stage === "afterTool") throw new Error("Observers cannot suspend a Run");
+              cancellation.signal.throwIfCancelled();
+              const waiting: RunWait = {
+                id: createId("wait"), controllerId: controller.id, stage,
+                reason: decision.reason, createdAt: now(), ...(decision.data ? { data: decision.data } : {})
+              };
+              const step: PendingRunStep = {
+                ...stepExtras, stage, turn, controllerIndex: index,
+                controllerIds: runControllers.map((item) => item.id), completedDecisions: decisions
+              };
+              const event: RunEvent = {
+                schemaVersion: 1, eventId: createId("event"), runId, attemptId,
+                sequence: sequence + 1, type: "run.waiting", timestamp: now(), data: { waiting, output, usage }
+              };
+              await runs.suspend(event, checkpointFor(step, event.sequence), waiting);
+              sequence = event.sequence;
+              queue.push(event);
+              throw new RunSuspended(waiting);
+            }
+            decisions.push(decision);
+            if (stage === "afterTool") {
+              await runs.saveCheckpoint(checkpointFor({
+                ...stepExtras, stage, turn, controllerIndex: index + 1,
+                controllerIds: runControllers.map((item) => item.id), completedDecisions: decisions
+              }));
+            }
+            if (decision.action === "replace-tool-result") break;
+          }
+          return decisions;
+        };
+        const finishToolHooks = async (
+          invocation: import("./protocol.js").ToolInvocation,
+          result: ToolResult, step: PendingRunStep
+        ) => {
+          const afterStep: PendingRunStep = {
+            ...step, stage: "afterTool", afterToolResult: result, inFlight: false,
+            controllerIndex: pending?.stage === "afterTool" ? pending.controllerIndex : 0,
+            completedDecisions: pending?.stage === "afterTool" ? pending.completedDecisions : []
+          };
+          await runs.saveCheckpoint(checkpointFor(afterStep));
+          await hooks("afterTool", step.turn, { invocation, result }, afterStep);
+          pending = undefined;
+          await runs.saveCheckpoint(checkpointFor({
+            ...step, stage: "beforeTool", callIndex: (step.callIndex || 0) + 1,
+            controllerIndex: 0, completedDecisions: [], afterToolResult: undefined, inFlight: false
+          }));
+        };
+        if (!existingRun || pending?.stage === "beforeStart") await hooks("beforeStart", startTurn);
 
         const applyContexts = async (stage: "pre" | "post", turn?: number) => {
           messages = await applyContextStage({
@@ -769,107 +878,106 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             maxTurns,
             maxToolCalls: policy.maxToolCalls
           });
-          await applyContexts("pre");
         }
+        if (needsPreContext) await applyContexts("pre");
 
         for (let turn = startTurn; turn <= maxTurns; turn += 1) {
           cancellation.signal.throwIfCancelled();
-          for (const controller of runControllers) {
-            await reauthorize("context");
-            const reason = await controller.beforeTurn?.(controllerContext(turn));
-            if (reason) {
-              cancellation.cancel(reason);
-              cancellation.signal.throwIfCancelled();
-            }
-          }
-          await publish("turn.started", { turn, model: request.model || null });
-          await applyContexts("post", turn);
-          for (const controller of runControllers) {
-            await reauthorize("context");
-            const reason = await controller.beforeModel?.(controllerContext(turn));
-            if (reason) {
-              cancellation.cancel(reason);
-              cancellation.signal.throwIfCancelled();
-            }
-          }
-
-          const calls: ToolCall[] = [];
-          let turnOutput = "";
-          let turnReasoning = "";
-          let turnMetadata: Record<string, unknown> | undefined;
+          const resumedStep = pending?.turn === turn ? pending : undefined;
+          const skipModel = resumedStep?.stage === "beforeTool" || resumedStep?.stage === "afterTool"
+            || resumedStep?.stage === "beforeStop";
+          const calls: ToolCall[] = resumedStep?.calls || [];
+          let turnOutput = resumedStep?.turnOutput || "";
+          let turnReasoning = resumedStep?.turnReasoning || "";
+          let turnMetadata: Record<string, unknown> | undefined = resumedStep?.turnMetadata;
           let reasoningStarted = false;
-          await reauthorize("model");
-          for await (const engineEvent of engine.streamTurn({
-            runId,
-            attemptId,
-            principal: effectiveRequest.principal,
-            turn,
-            messages,
-            tools: exposedTools.filter((tool) => policy.allowedTools.includes(tool.name)),
-            model: request.model,
-            modelOptions: request.modelOptions,
-            signal: cancellation.signal
-          })) {
-            cancellation.signal.throwIfCancelled();
-            if (engineEvent.type === "message.metadata") {
-              turnMetadata = { ...turnMetadata, ...engineEvent.metadata };
-              continue;
+          if (!skipModel) {
+            if (resumedStep?.stage !== "beforeModel") {
+              await hooks("beforeTurn", turn);
+              await publish("turn.started", { turn, model: request.model || null });
+              await applyContexts("post", turn);
             }
-            if (
-              engineEvent.type === "reasoning.delta"
-              && String(engineEvent.delta || "")
-              && !reasoningStarted
-            ) {
-              reasoningStarted = true;
-              await publish("reasoning.started", { turn });
-            }
-            await consumeEngineEvent(engineEvent, {
+            await hooks("beforeModel", turn);
+            await reauthorize("model");
+            for await (const engineEvent of engine.streamTurn({
+              runId,
+              attemptId,
+              principal: effectiveRequest.principal,
               turn,
+              messages,
+              tools: exposedTools.filter((tool) => policy.allowedTools.includes(tool.name)),
               model: request.model,
-              calls,
-              appendText(delta) {
-                turnOutput += delta;
-                output += delta;
-              },
-              addUsage(patch) {
-                usage = addUsage(usage, patch);
-              },
-              appendReasoning(delta) {
-                turnReasoning += delta;
-              },
-              publish
-            });
-          }
-          if (reasoningStarted) {
-            await publish("reasoning.completed", { turn });
+              modelOptions: request.modelOptions,
+              signal: cancellation.signal
+            })) {
+              cancellation.signal.throwIfCancelled();
+              if (engineEvent.type === "message.metadata") {
+                turnMetadata = { ...turnMetadata, ...engineEvent.metadata };
+                continue;
+              }
+              if (
+                engineEvent.type === "reasoning.delta"
+                && String(engineEvent.delta || "")
+                && !reasoningStarted
+              ) {
+                reasoningStarted = true;
+                await publish("reasoning.started", { turn });
+              }
+              await consumeEngineEvent(engineEvent, {
+                turn,
+                model: request.model,
+                calls,
+                appendText(delta) {
+                  turnOutput += delta;
+                  output += delta;
+                },
+                addUsage(patch) {
+                  usage = addUsage(usage, patch);
+                },
+                appendReasoning(delta) {
+                  turnReasoning += delta;
+                },
+                publish
+              });
+            }
+            if (reasoningStarted) {
+              await publish("reasoning.completed", { turn });
+            }
           }
 
           cancellation.signal.throwIfCancelled();
           if (calls.length === 0) {
-            const assistantMessage: TranscriptMessage = {
-              role: "assistant",
-              content: turnOutput,
-              ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
-              ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
-            };
-            messages = [...messages, assistantMessage];
-            await appendTranscript(turn, 0, assistantMessage);
-            await publish("message.completed", { turn, content: turnOutput });
-            await publish("turn.completed", {
-              turn,
-              model: request.model || null,
-              usage
-            });
+            if (resumedStep?.stage !== "beforeStop") {
+              const assistantMessage: TranscriptMessage = {
+                role: "assistant",
+                content: turnOutput,
+                ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
+                ...(turnReasoning ? { reasoningContent: turnReasoning } : {})
+              };
+              messages = [...messages, assistantMessage];
+              await appendTranscript(turn, 0, assistantMessage);
+              await publish("message.completed", { turn, content: turnOutput });
+              await publish("turn.completed", {
+                turn,
+                model: request.model || null,
+                usage
+              });
+            }
             let continuation = "";
-            for (const controller of runControllers) {
-              await reauthorize("context");
-              const instruction = await controller.beforeStop?.(controllerContext(turn));
-              if (instruction) {
+            let acceptedStop = false;
+            for (const decision of await hooks("beforeStop", turn, {}, { turnOutput, turnReasoning, turnMetadata,
+              ...(resumedStep?.stopBoundary ? { stopBoundary: resumedStep.stopBoundary } : {})
+            })) {
+              if (decision.action === "accept-stop") acceptedStop = true;
+              if (decision.action === "continue") {
                 if (continuation) throw new Error("Multiple Run controllers requested continuation");
-                continuation = instruction;
+                continuation = decision.instruction;
               }
             }
             cancellation.signal.throwIfCancelled();
+            if (resumedStep?.stopBoundary === "max-turns" && !continuation && !acceptedStop) {
+              throw new Error(`Maximum agent turn count exceeded: ${maxTurns}`);
+            }
             if (continuation && turn < maxTurns) {
               // A controller instruction is distinct from a trusted user message.
               messages = [...messages, { role: "assistant", content: continuation }];
@@ -896,18 +1004,29 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             return;
           }
 
-          const toolMessages: TranscriptMessage[] = [];
-          await appendTranscript(turn, 0, {
-            role: "assistant",
-            content: turnOutput,
-            ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
-            ...(turnReasoning ? { reasoningContent: turnReasoning } : {}),
-            toolCalls: assistantToolCalls(calls)
-          });
-          for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+          const toolMessages: TranscriptMessage[] = resumedStep?.toolMessages || [];
+          if (!skipModel) {
+            await appendTranscript(turn, 0, {
+              role: "assistant",
+              content: turnOutput,
+              ...(turnMetadata ? { providerMetadata: turnMetadata } : {}),
+              ...(turnReasoning ? { reasoningContent: turnReasoning } : {}),
+              toolCalls: assistantToolCalls(calls)
+            });
+          }
+          for (let callIndex = resumedStep?.callIndex || 0; callIndex < calls.length; callIndex += 1) {
             const call = calls[callIndex];
             cancellation.signal.throwIfCancelled();
             await reauthorize("tool");
+            if (resumedStep?.stage === "afterTool" && resumedStep.callIndex === callIndex) {
+              if (!resumedStep.afterToolResult) throw new Error("Missing checkpointed tool result");
+              await finishToolHooks({
+                invocationId: `${runId}:turn:${turn}:tool:${callIndex}`, runId, attemptId,
+                sessionId: request.sessionId, projectId: request.projectId,
+                principal: effectiveRequest.principal, target: request.target, policy, toolCall: call
+              }, resumedStep.afterToolResult, resumedStep);
+              continue;
+            }
             if (call.validationError) {
               attemptSpan.addEvent("tool.denied", { "zion.tool.denial": "invalid_arguments" });
               const message = toolMessage(call, invalidToolResult(call));
@@ -933,7 +1052,6 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               continue;
             }
 
-            counters.toolCalls += 1;
             const invocationId = `${runId}:turn:${turn}:tool:${callIndex}`;
             const invocation = {
               invocationId, runId, attemptId, sessionId: request.sessionId,
@@ -942,15 +1060,22 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             };
             let result: ToolResult;
             let intercepted = false;
-            for (const controller of runControllers) {
-              await reauthorize("context");
-              const retained = await controller.beforeTool?.(invocation, controllerContext(turn));
-              if (typeof retained === "string") {
-                cancellation.cancel(retained);
-                throw new RunCancelledError(retained);
-              }
-              if (retained) { result = retained; intercepted = true; break; }
+            const step: PendingRunStep = {
+              stage: "beforeTool", turn, controllerIndex: 0,
+              controllerIds: runControllers.map((item) => item.id),
+              calls, callIndex, turnOutput, turnReasoning, turnMetadata, toolMessages
+            };
+            for (const decision of await hooks("beforeTool", turn, { invocation }, step)) {
+              if (decision.action === "replace-tool-result") { result = decision.result; intercepted = true; break; }
             }
+            await reauthorize("tool");
+            if (!(await authorizeTool(call, policy, counters)).allowed) {
+              cancellation.cancel("tool-authorization-changed");
+              throw new RunCancelledError("tool-authorization-changed");
+            }
+            counters.toolCalls += 1;
+            // A restart during the side effect must reconcile its stable invocation ID.
+            await runs.saveCheckpoint(checkpointFor({ ...step, inFlight: !intercepted }));
             try {
               if (!intercepted) result = await tools.invoke(invocation, cancellation.signal);
             } catch (error) {
@@ -962,10 +1087,6 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               };
             }
             result = result!;
-            if (!intercepted) for (const controller of runControllers) {
-              await reauthorize("context");
-              await controller.afterTool?.(invocation, result, controllerContext(turn));
-            }
             const failureCode = toolFailureCode(result);
             await publish("tool.completed", {
               turn,
@@ -983,6 +1104,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             const message = toolMessage(call, result);
             toolMessages.push(message);
             await appendTranscript(turn, callIndex + 1, message);
+            await finishToolHooks(invocation, result, step);
           }
 
           messages = [
@@ -1025,13 +1147,11 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         if (runControllers.length) {
           let continuation = "";
           let acceptedStop = false;
-          for (const controller of runControllers) {
-            await reauthorize("context");
-            const decision = await controller.beforeStop?.(controllerContext(maxTurns));
-            if (decision === null) acceptedStop = true;
-            else if (decision) {
+          for (const decision of await hooks("beforeStop", maxTurns, {}, { stopBoundary: "max-turns" })) {
+            if (decision.action === "accept-stop") acceptedStop = true;
+            else if (decision.action === "continue") {
               if (continuation) throw new Error("Multiple Run controllers requested continuation");
-              continuation = decision;
+              continuation = decision.instruction;
             }
           }
           if (continuation || acceptedStop) {
@@ -1050,6 +1170,34 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           + `(tool calls executed: ${counters.toolCalls}/${policy.maxToolCalls})`
         );
       } catch (error) {
+        if (error instanceof RunSuspended) {
+          if (cancellation.signal.cancelled) {
+            const reason = cancellation.signal.reason || "user";
+            const event: RunEvent = {
+              schemaVersion: 1, eventId: createId("event"), runId, attemptId,
+              sequence: sequence + 1, type: "run.aborted", timestamp: now(),
+              data: { reason, output, usage }
+            };
+            try {
+              const outbox = bindings?.terminalOutbox?.({
+                runId, attemptId, status: "aborted", reason, output, usage: { ...usage }
+              });
+              if (await runs.cancelWait(event, error.waiting.id, outbox)) {
+                sequence = event.sequence;
+                queue.push(event);
+                settle("aborted", reason);
+                return;
+              }
+              // A competing resume owns the new attempt. Never overwrite it.
+            } catch (persistenceError) {
+              settle("failed", "persistence-failed",
+                `Failed to persist waiting cancellation: ${errorMessage(persistenceError)}`);
+              return;
+            }
+          }
+          settle("waiting", error.waiting.reason, undefined, error.waiting);
+          return;
+        }
         const cancelled = error instanceof RunCancelledError || cancellation.signal.cancelled;
         if (persisted) {
           if (cancelled) {
@@ -1230,15 +1378,31 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       const policy = authorizeRun
         ? await authorizeRun(existingRun, "resume")
         : existingRun.policy;
-      if (!["interrupted", "aborted", "failed"].includes(existingRun.status)) {
+      if (!["waiting", "interrupted", "aborted", "failed"].includes(existingRun.status)) {
         throw new Error(`Run cannot be resumed from status: ${existingRun.status}`);
       }
       const checkpoint = await runs.getLatestCheckpoint(runId);
       if (!checkpoint) throw new Error(`Run has no checkpoint: ${runId}`);
       validateCheckpoint(checkpoint, runId);
+      if (existingRun.status === "waiting" && (!request.waitId || request.waitId !== existingRun.waiting?.id)) {
+        throw Object.assign(new Error("A matching waitId is required"), { statusCode: 409 });
+      }
+      if (checkpoint.pending?.inFlight) {
+        throw Object.assign(new Error("Tool execution outcome is unknown; reconcile the existing invocation before resuming"), { statusCode: 409 });
+      }
+      if (!bindRun && checkpoint.pending && JSON.stringify(checkpoint.pending.controllerIds) !== JSON.stringify(controllers.map((item) => item.id))) {
+        throw Object.assign(new Error("Run controller chain changed; restore the checkpoint controller configuration"), { statusCode: 409 });
+      }
       const events = await runs.getEvents(runId);
+      if (utf8Bytes(request.input) > 64 * 1024) throw Object.assign(new Error("Resume input exceeds 64 KiB"), { statusCode: 400 });
       const model = request.model || existingRun.model;
       const modelOptions = request.modelOptions || existingRun.modelOptions;
+      const attemptId = createId("attempt");
+      const claimed = await runs.claimResume({
+        runId, previousAttemptId: existingRun.attemptId, attemptId,
+        checkpointSequence: checkpoint.sequence, waitId: request.waitId, input: request.input
+      });
+      if (!claimed) throw Object.assign(new Error("Run was already resumed or its checkpoint changed"), { statusCode: 409 });
       return startExecution({
         messages: cloneMessages(checkpoint.messages),
         title: existingRun.title,
@@ -1254,7 +1418,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         timeoutMs: request.timeoutMs
       }, {
         runId,
-        attemptId: createId("attempt"),
+        attemptId,
         initialSequence: events.at(-1)?.sequence || 0,
         initialMessages: checkpoint.messages,
         initialOutput: checkpoint.output,
@@ -1263,7 +1427,9 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         startTurn: checkpoint.nextTurn,
         existingRun,
         previousAttemptId: checkpoint.attemptId,
-        resumedFromSequence: checkpoint.sequence
+        resumedFromSequence: checkpoint.sequence,
+        pending: checkpoint.pending,
+        resumeInput: request.waitId ? { waitId: request.waitId, input: request.input } : checkpoint.pending?.resume
       });
     }
   };

@@ -1,9 +1,12 @@
 import process from "node:process";
-import { createInterface } from "node:readline/promises";
-import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_INTERACTION_PROFILE_ID } from "./interaction-profile-store.mjs";
 import { resolveRuntimeCliHeaders } from "./accounts/cli-account-auth.mjs";
+import { ChatInput } from "./cli-input.mjs";
+import { boundedFetch, cliJson, followCliRun } from "./cli-run-follow.mjs";
+import { runChatShell } from "./cli-chat-shell.mjs";
+import { createActivity, terminalTheme } from "./cli-terminal.mjs";
+import { createChatState } from "./cli-chat-state.mjs";
 
 const CHAT_USAGE = `Usage: zioon chat [options]
 
@@ -12,6 +15,8 @@ Options:
   --runtime-profile <name>       Configured Runtime endpoint and authentication
   --account                     Use account login for --url
   --session <id>                Reconnect to an existing Session
+  --continue                    Reopen this account's last local conversation
+  --image, -i <path>             Attach an image to the first draft; repeatable
   --profile <id>                Runtime interaction profile for a new Session
   --title <text>                New Session title
   --model-profile <id>          Runtime model profile for a new Session
@@ -23,7 +28,12 @@ Options:
   --file-root <absolute-path>    Allowed root; repeatable
   --terminal-session <id>        Allowed local-tools Session; repeatable
   --max-tool-calls <count>       Per-Run tool-call limit
+  --plain                       Use a basic line prompt (no terminal UI)
   --help                         Show this help
+
+In chat: /help · /sessions · /new · /open <id> · /history · /exit
+Keys: Enter send · Alt+Enter or Ctrl+J newline · Tab complete
+      ↑↓ history · Esc stop Run · Ctrl+C clear draft / stop / exit
 `;
 
 function readArg(argv, name, fallback) {
@@ -54,27 +64,44 @@ function readListArgs(argv, name, fallback = "") {
 }
 
 async function responseJson(response) {
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(body?.error || `Runtime HTTP ${response.status}`);
-  }
-  return body;
+  return cliJson(response);
 }
 
 export function createRuntimeChatClient({
   baseUrl,
   fetchImpl = globalThis.fetch,
   headers = {},
-  pollIntervalMs = 50
+  pollIntervalMs = 750
 }) {
   const url = String(baseUrl || "").replace(/\/+$/, "");
   if (!url) throw new Error("Runtime URL is required");
   if (!fetchImpl) throw new Error("fetch implementation is required");
-  const authenticatedFetch = (path, options = {}) => fetchImpl(path, {
-    ...options, headers: { ...headers, ...options.headers }
-  });
+  const authenticatedFetch = boundedFetch(fetchImpl, headers);
+  const request = async (path, options) => responseJson(await authenticatedFetch(`${url}${path}`, options));
 
   return {
+    models: () => request("/v1/models"),
+    uploadImage: async (image, bytes, signal) => (await responseJson(await boundedFetch(fetchImpl, headers, 120_000)(
+      `${url}/v1/assets`, { method: "POST", signal, headers: {
+        "content-type": image.mediaType, "x-zion-file-name": encodeURIComponent(image.name)
+      }, body: bytes }
+    ))).asset,
+    identity: () => request("/v1/account/me"),
+    updateSession: async (id, patch) => (await request(`/v1/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch)
+    })).session,
+    compression: async (sessionId, action, signal) => responseJson(await boundedFetch(fetchImpl, headers, action === "compact" ? 180_000 : 30_000)(
+      `${url}/v1/plugins/dev.context-compression/commands`, {
+        method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId, action })
+      })),
+    forkSession: (id) => request(`/v1/sessions/${encodeURIComponent(id)}/fork`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}"
+    }),
+    startBranch: (sessionId, history, content, options) => request("/v1/runs", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...options, sessionId, sessionHistory: [...history, { role: "user", content }],
+        messages: [...history, { role: "user", content }] })
+    }),
     async createSession({
       title = "CLI conversation",
       interactionProfileId,
@@ -104,6 +131,26 @@ export function createRuntimeChatClient({
       );
       return (await responseJson(response)).session;
     },
+    async listSessions(limit = 30) {
+      return (await request(`/v1/sessions?limit=${limit}`)).sessions;
+    },
+    async getActiveRun(sessionId) {
+      return (await request(`/v1/sessions/${encodeURIComponent(sessionId)}/active-run`)).activeRun;
+    },
+    async getRun(runId) {
+      return (await request(`/v1/runs/${encodeURIComponent(runId)}`)).run;
+    },
+    async abortRun(runId) {
+      return request(`/v1/runs/${encodeURIComponent(runId)}/abort`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "CLI user stopped the Run" })
+      });
+    },
+    async resumeRun(runId, body = {}) {
+      return request(`/v1/runs/${encodeURIComponent(runId)}/resume`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+      });
+    },
 
     async getTranscript(sessionId, afterSequence = 0) {
       const response = await authenticatedFetch(
@@ -113,50 +160,40 @@ export function createRuntimeChatClient({
       return (await responseJson(response)).messages;
     },
 
-    async sendMessage(sessionId, content) {
+    async sendMessage(sessionId, content, clientRequestId) {
       const response = await authenticatedFetch(
         `${url}/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content })
+          body: JSON.stringify({ content, ...(clientRequestId ? { clientRequestId } : {}) })
         }
       );
       return responseJson(response);
     },
 
-    async followRun(runId, onText = () => {}) {
-      let cursor = 0;
-      while (true) {
-        const runResponse = await authenticatedFetch(`${url}/v1/runs/${encodeURIComponent(runId)}`);
-        const { run } = await responseJson(runResponse);
-        const eventResponse = await authenticatedFetch(
-          `${url}/v1/runs/${encodeURIComponent(runId)}/events?after=${cursor}`
-        );
-        const { events } = await responseJson(eventResponse);
-        for (const event of events) {
-          cursor = event.sequence;
-          if (event.type === "message.delta") {
-            onText(String(event.data?.delta || ""));
-          }
+    async followRun(runId, onText = () => {}, options = {}) {
+      return followCliRun({
+        baseUrl: url, runId, fetchImpl, headers, pollIntervalMs, ...options,
+        onEvent(event) {
+          if (event.type === "message.delta") onText(String(event.data?.delta || ""), event);
+          options.onEvent?.(event);
         }
-
-        if (["completed", "failed", "aborted", "interrupted"].includes(run.status)) {
-          return run;
-        }
-        await delay(pollIntervalMs);
-      }
+      });
     }
   };
 }
 
-export async function runChatCli({
+async function startChatCli({
   argv = process.argv.slice(2),
   input = process.stdin,
   output = process.stdout,
   fetchImpl = globalThis.fetch,
   environment = process.env,
-  credentialStore
+  credentialStore,
+  composer,
+  signal,
+  onReady = () => {}
 } = {}) {
   if (argv.includes("--help") || argv.includes("-h")) {
     output.write(CHAT_USAGE);
@@ -166,7 +203,15 @@ export async function runChatCli({
   const target = resolveRuntimeCliTarget({ argv, environment });
   const baseUrl = target.baseUrl;
   const headers = await resolveRuntimeCliHeaders(target, { credentialStore, fetchImpl });
-  const requestedSessionId = readArg(argv, "--session", "");
+  let requestedSessionId = readArg(argv, "--session", "");
+  const client = createRuntimeChatClient({ baseUrl, fetchImpl, headers });
+  const identity = target.auth?.type === "account" ? await client.identity() : null;
+  const state = createChatState({ baseUrl, environment,
+    identity: identity?.user?.id ? `${identity.user.id}:${identity.space?.id || ""}` : JSON.stringify(headers),
+    onError: (error) => { composer.notice = error.message; }
+  });
+  const defaults = await state.read("settings");
+  if (argv.includes("--continue") && !requestedSessionId) requestedSessionId = (await state.read("last")).sessionId || "";
   const profileArg = readArg(
     argv,
     "--profile",
@@ -182,12 +227,13 @@ export async function runChatCli({
   )
     ? ""
     : String(profileArg || "").trim();
-  const title = readArg(argv, "--title", "CLI conversation");
+  const title = readArg(argv, "--title", "");
   const modelProfileId = readArg(
     argv,
     "--model-profile",
     environment.ZION_RUNTIME_CHAT_MODEL_PROFILE
       || environment.ZION_RUNTIME_MODEL_PROFILE
+      || defaults.modelProfileId
       || ""
   );
   const policyPreset = readArg(
@@ -237,59 +283,66 @@ export async function runChatCli({
       : {}),
     ...(maxToolCalls ? { maxToolCalls } : {})
   };
-  const client = createRuntimeChatClient({ baseUrl, fetchImpl, headers });
+  const sessionOptions = {
+    title,
+    interactionProfileId,
+    model: modelProfileId ? { profileId: modelProfileId } : undefined,
+    projectId,
+    metadata: includeTerminalContext ? undefined : { includeTerminalContext: false },
+    policy: Object.keys(policy).length ? policy : undefined
+  };
+  const saved = requestedSessionId ? await state.read(`session:${requestedSessionId}`) : {};
   const session = requestedSessionId
-    ? await client.getSession(requestedSessionId)
-    : await client.createSession({
-        title,
-        interactionProfileId,
-        model: modelProfileId ? { profileId: modelProfileId } : undefined,
-        projectId,
-        metadata: includeTerminalContext ? undefined : { includeTerminalContext: false },
-        policy: Object.keys(policy).length ? policy : undefined
-      });
+    ? saved.branchHistory ? saved.branchSession : await client.getSession(requestedSessionId)
+    : { title, model: sessionOptions.model };
 
-  output.write(`Connected to ${baseUrl}\n`);
-  output.write(`Session: ${session.id}\n`);
-  output.write("Commands: /session, /exit\n\n");
+  onReady();
+  return runChatShell({ client, session, sessionOptions, baseUrl, composer, output, environment, signal, requestedSessionId, state, defaults,
+    initialImages: argv.flatMap((value, index) => value === "--image" || value === "-i" ? [argv[index + 1]] : []),
+    modelSource: requestedSessionId ? "saved conversation" : argv.includes("--model-profile") ? "--model-profile" :
+      environment.ZION_RUNTIME_CHAT_MODEL_PROFILE || environment.ZION_RUNTIME_MODEL_PROFILE ? "environment" :
+      defaults.modelProfileId ? "local default" : "Runtime interaction profile" });
+}
 
-  const readline = createInterface({
-    input,
-    output,
-    terminal: Boolean(input.isTTY && output.isTTY)
-  });
-  readline.setPrompt("you> ");
-  readline.prompt();
-
-  for await (const line of readline) {
-    const content = line.trim();
-    if (!content) {
-      readline.prompt();
-      continue;
-    }
-    if (content === "/exit" || content === "/quit") break;
-    if (content === "/session") {
-      output.write(`${session.id}\n`);
-      readline.prompt();
-      continue;
-    }
-
-    try {
-      const accepted = await client.sendMessage(session.id, content);
-      output.write("zion> ");
-      const run = await client.followRun(accepted.runId, (delta) => output.write(delta));
-      if (run.status !== "completed") {
-        output.write(`\n[Run ${run.status}: ${run.terminalReason || run.error || "unknown"}]`);
-      }
-      output.write("\n");
-    } catch (error) {
-      output.write(`[error] ${error?.message || String(error)}\n`);
-    }
-    readline.prompt();
+export async function runChatCli(options = {}) {
+  const argv = options.argv || process.argv.slice(2);
+  if (argv.includes("--help") || argv.includes("-h")) {
+    (options.output || process.stdout).write(CHAT_USAGE);
+    return null;
   }
-
-  readline.close();
-  return session;
+  if (argv.includes("--jsonl")) throw new Error("For JSONL output, use: zioon run <prompt> --jsonl");
+  const valueOptions = new Set(["--url", "--runtime-profile", "--session", "--profile", "--interaction-profile",
+    "--title", "--model-profile", "--preset", "--project", "--tool", "--file-root", "--terminal-session", "--max-tool-calls", "--image", "-i"]);
+  const flags = new Set(["--account", "--no-tools", "--no-terminal-context", "--plain", "--continue"]);
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (valueOptions.has(arg)) {
+      if (!argv[index + 1] || argv[index + 1].startsWith("--")) throw new Error(`${arg} requires a value. See: zioon chat --help`);
+      if (arg === "--max-tool-calls" && !/^[1-9]\d*$/.test(argv[index + 1])) throw new Error("--max-tool-calls must be a positive integer");
+      index++;
+    } else if (!flags.has(arg)) throw new Error(`Unknown chat option: ${arg}. See: zioon chat --help`);
+  }
+  const composer = new ChatInput(options.input || process.stdin, options.output || process.stdout, {
+    environment: options.environment || process.env, plain: argv.includes("--plain")
+  });
+  const startup = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, startup.signal]) : startup.signal;
+  const theme = terminalTheme(options.output || process.stdout, options.environment || process.env);
+  theme.interactive = composer.rich;
+  const activity = createActivity(options.output || process.stdout, theme);
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  composer.onCancel = () => startup.abort(new DOMException("Cancelled", "AbortError"));
+  activity.start("Connecting");
+  try {
+    return await startChatCli({
+      ...options, argv, composer, signal, onReady: () => activity.stop(),
+      fetchImpl: (url, init = {}) => fetchImpl(url, {
+        ...init, signal: init.signal ? AbortSignal.any([signal, init.signal]) : signal
+      })
+    });
+  } finally {
+    activity.stop(); composer.close();
+  }
 }
 
 const entryPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";

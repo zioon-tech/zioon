@@ -8,7 +8,7 @@ const all = !base || /^0+$/.test(base) || process.env.GITHUB_EVENT_NAME === "wor
 const paths = all ? [] : execFileSync("git", ["diff", "--name-only", base, head], { encoding: "utf8" }).trim().split("\n");
 const shared = paths.some((path) => /^(package(-lock)?\.json|\.github\/workflows\/|scripts\/ci\/)/.test(path));
 const rules = {
-  runtime: /^(apps\/runtime\/|apps\/device-connector\/|packages\/|extensions\/.*\/runtime|scripts\/.*runtime|tests\/runtime)/,
+  runtime: /^(apps\/runtime\/|apps\/device-connector\/|packages\/|extensions\/.*\/runtime|scripts\/.*runtime|scripts\/(?:verify-zioon|cli-ux-fixture)|tests\/runtime)/,
   workbench: /^(src\/|public\/|index\.html|vite\.config|vitest\.config|tests\/|extensions\/|packages\/)/,
   portals: /^(apps\/(?:mobile-client|admin|client-portal)\/|packages\/account-ui\/|apps\/runtime\/src\/(?:accounts|platform-admin)\/)/,
   marketplace: /^(apps\/marketplace\/|apps\/runtime\/src\/marketplace\/|packages\/runtime-client\/)/,

@@ -37,8 +37,9 @@ export function reduceRunProjection(state: RunProjectionState, action: Projectio
     const previous = existing && existing.kind !== "tool" ? existing.content : "";
     upsert({ id, turn, kind, content: replace ? content : previous + content, ...(kind === "reasoning" ? { running: true } : {}) });
   };
-  if (event.type === "run.started" || event.type === "run.resumed" || event.type === "turn.started") {
+  if (event.type === "run.started" || event.type === "run.resumed" || event.type === "attempt.started" || event.type === "turn.started") {
     next.status = "running";
+    next.waiting = undefined;
     next.finalBlockId = undefined;
   } else if (event.type === "message.delta") {
     settleReasoning(turn);
@@ -81,8 +82,14 @@ export function reduceRunProjection(state: RunProjectionState, action: Projectio
           : resultText(data.resultPreview ?? data.result ?? data.content ?? ""),
       },
     });
+  } else if (event.type === "run.waiting") {
+    next.status = "waiting";
+    next.waiting = data.waiting as RunProjectionState["waiting"];
+    next.finalBlockId = undefined;
+    settleReasoning();
   } else if (["run.completed", "run.failed", "run.aborted", "run.interrupted"].includes(event.type)) {
     next.status = event.type.slice(4) as RunProjectionState["status"];
+    next.waiting = undefined;
     settleReasoning();
     next.blocks = next.blocks.map((block) => block.kind === "tool" && block.status === "running"
       ? { ...block, status: "interrupted" } : block);
