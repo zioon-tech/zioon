@@ -1069,6 +1069,8 @@ startupCleanup.push(() => nodeBroker?.close());
 const sandboxProvider = toolMode === "sandbox"
   ? new ManagedSandboxProvider(sandboxConfig(), { persistentHome: true })
   : null;
+// Fail before serving health checks if the configured tool provider cannot load.
+await sandboxProvider?.sdk();
 const sandboxStore = toolMode === "sandbox"
   ? await new PostgresSandboxStore(postgresPool, {
       spaceId: runtimeSpaceId
