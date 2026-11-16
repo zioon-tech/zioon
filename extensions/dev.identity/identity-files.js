@@ -47,15 +47,21 @@ export function identityInitialFiles() {
   };
 }
 
-export async function ensureIdentityFiles(fileService, fileRoot, runContext = {}) {
+export async function ensureIdentityFiles(fileService, fileRoot, runContext = {}, {
+  extraFiles = {}, contextOnly = false
+} = {}) {
   const initial = identityInitialFiles();
+  if (contextOnly) delete initial.template;
   const loaded = await fileService.readTextFiles({
     fileRoot,
-    files: Object.fromEntries(Object.entries(initial).map(([key, spec]) => [key, spec.relativePath])),
+    files: {
+      ...extraFiles,
+      ...Object.fromEntries(Object.entries(initial).map(([key, spec]) => [key, spec.relativePath]))
+    },
     runContext
   });
   // Only explicit ENOENT may create a file. An empty document is still user data.
-  const files = Object.fromEntries((loaded.missing || []).map((key) => [
+  const files = Object.fromEntries((loaded.missing || []).filter((key) => initial[key]).map((key) => [
     key, { ...initial[key], create_only: true }
   ]));
   if (!Object.keys(files).length || (runContext.principal && runContext.policy?.preset === "read-only")) return loaded;

@@ -64,6 +64,25 @@ afterEach(async () => {
 });
 
 describe("HttpRuntimeClient", () => {
+  it("records dispatch, receipt and first SSE event at their actual transport boundaries", async () => {
+    const server = createHarness({ id: "timing", async *streamTurn() {
+      yield { type: "message.delta", delta: "answer" };
+    } });
+    const address = await server.start();
+    const timings = [];
+    const client = createHttpRuntimeClient({
+      baseUrl: address.url, onTiming: timing => timings.push(timing)
+    });
+    const handle = await createRemoteRunHandle(client, { prompt: "timing" }, { stopAtTerminal: true });
+    for await (const event of handle.events) {}
+    expect((await handle.completion).status).toBe("completed");
+    expect(timings.map(timing => timing.phase)).toEqual([
+      "fetchStarted", "httpAccepted", "sseConnectStarted", "sseHeadersReceived", "sseFirstEventReceived"
+    ]);
+    expect(timings.every((timing, index) => !index || timing.timestamp >= timings[index - 1].timestamp)).toBe(true);
+    expect(timings.slice(1).every(timing => timing.runId === handle.runId)).toBe(true);
+  });
+
   it("creates, observes, and catches up a Run through the Runtime Host API", async () => {
     const server = createHarness({
       id: "echo",

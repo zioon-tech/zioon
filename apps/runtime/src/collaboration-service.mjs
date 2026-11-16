@@ -279,6 +279,7 @@ export function createRuntimeCollaborationService({
     const projectedSequence = Math.max(
       ...projectedEvents.map((event) => Number(event.sequence) || 0)
     );
+    let failed = false;
     pending.flushing = (async () => {
       const connection = await hocuspocus.openDirectConnection(
         pending.sessionId,
@@ -322,13 +323,14 @@ export function createRuntimeCollaborationService({
         await connection.disconnect({ unloadImmediately: false });
       }
     })().catch((error) => {
+      failed = true;
       pending.events.unshift(...projectedEvents);
       throw error;
     }).finally(() => {
       pending.flushing = null;
-      if (pending.events.length) {
+      if (pending.events.length && !failed) {
         return flushRunProjection(key);
-      } else if (pending.terminal) {
+      } else if (!pending.events.length && pending.terminal) {
         pendingRunProjections.delete(key);
       }
     });
@@ -496,7 +498,7 @@ export function createRuntimeCollaborationService({
       } finally {
         await connection.disconnect({ unloadImmediately: false });
       }
-      return await store.readCollaborationDocument(name);
+      return input.returnSnapshot === false ? null : await store.readCollaborationDocument(name);
     },
     async projectAssistantOutput(sessionId, input = {}) {
       if (!activeDocumentProjector?.projectRun) return null;
@@ -620,7 +622,12 @@ export function createRuntimeCollaborationService({
         }
         return null;
       }
-      return flushRunProjection(pending.key);
+      const flushing = flushRunProjection(pending.key);
+      if (options.deferFlush === true && !terminal) {
+        void flushing.catch(() => {});
+        return null;
+      }
+      return flushing;
     },
     async close() {
       closing = true;

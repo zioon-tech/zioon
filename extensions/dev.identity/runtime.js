@@ -457,21 +457,20 @@ export class RuntimeIdentityContextProvider {
       }
     };
     const loaded = location
-      ? await ensureIdentityFiles(this.fileService, sourceRoot, fileContext)
+      ? await ensureIdentityFiles(this.fileService, sourceRoot, fileContext, {
+          contextOnly: true,
+          extraFiles: { events: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH }
+        })
       : await this.fileService.readTextFiles({
         fileRoot: sourceRoot,
         files: IDENTITY_PROFILE_FILE_PATHS,
         runContext: fileContext
       });
     if (location) {
-      const history = await this.fileService.readTextFiles({
-        fileRoot: sourceRoot,
-        files: { events: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH },
-        runContext: fileContext
-      });
       loaded.files.biography = buildBiographyDigest(
-        parseBiographyEventsJsonl(history.files.events)
+        parseBiographyEventsJsonl(loaded.files.events)
       );
+      delete loaded.files.events;
     }
     snapshot = createIdentitySnapshot({
       sourceRoot: loaded.fileRoot,

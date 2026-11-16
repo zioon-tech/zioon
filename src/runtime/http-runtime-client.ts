@@ -147,6 +147,7 @@ export type HttpRuntimeClientOptions = {
   fetchImpl?: typeof fetch;
   headers?: HeadersInit;
   credentials?: RequestCredentials;
+  onTiming?: (timing: { phase: string; timestamp: number; runId?: string }) => void;
 };
 
 export type RemoteRunHandle = RunHandle & {
@@ -158,6 +159,7 @@ export type RemoteRunHandleOptions = {
   subscription?: RuntimeEventSubscription;
   reconnectDelayMs?: number;
   maxQueuedEvents?: number;
+  stopAtTerminal?: boolean;
 };
 
 export class RuntimeHttpError extends Error {
@@ -533,6 +535,10 @@ export function createHttpRuntimeClient(
     return result;
   };
   const defaultHeaders = headerRecord(options.headers);
+  const recordTiming = (phase: string, runId?: string) => {
+    try { options.onTiming?.({ phase, timestamp: Date.now(), ...(runId ? { runId } : {}) }); }
+    catch { /* Optional diagnostics cannot affect transport. */ }
+  };
   const fetchRequest = (
     input: RequestInfo | URL,
     init: RequestInit = {}
@@ -595,6 +601,7 @@ export function createHttpRuntimeClient(
     },
 
     async createRun(request) {
+      recordTiming("fetchStarted");
       const response = await fetchRequest(`${baseUrl}/v1/runs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -602,6 +609,7 @@ export function createHttpRuntimeClient(
         ...(request.conversationInput ? { signal: AbortSignal.timeout(15_000) } : {})
       });
       const body = await readJson(response);
+      recordTiming("httpAccepted", String(body.runId || ""));
       return {
         runId: requireString(body.runId, "runId", response.status),
         attemptId: requireString(body.attemptId, "attemptId", response.status),
@@ -819,6 +827,7 @@ export function createHttpRuntimeClient(
       const suffix = mode === "raw"
         ? "/events/stream"
         : "/projection/stream";
+      recordTiming("sseConnectStarted", runId);
       const response = fetchRequest(
         `${runUrl(runId, suffix)}?${projectionQuery(after, subscription)}`,
         {
@@ -830,10 +839,15 @@ export function createHttpRuntimeClient(
         }
       );
       return (async function* subscribeToRun() {
-        yield* readEventStream(
-          await response,
-          Math.max(64 * 1024, Number(options.maxBufferSize) || 1024 * 1024)
-        );
+        const streamResponse = await response;
+        recordTiming("sseHeadersReceived", runId);
+        let first = true;
+        for await (const event of readEventStream(
+          streamResponse, Math.max(64 * 1024, Number(options.maxBufferSize) || 1024 * 1024)
+        )) {
+          if (first) { recordTiming("sseFirstEventReceived", runId); first = false; }
+          yield event;
+        }
       })();
     },
 
@@ -885,7 +899,13 @@ export async function createRemoteRunHandle(
           cursor = Math.max(cursor, sequenceValue(event.sequence));
           await queue.push(event);
           const result = resultFromTerminalEvent(event);
-          if (result) settle(result);
+          if (result) {
+            settle(result);
+            if (options.stopAtTerminal) {
+              observer.abort();
+              break;
+            }
+          }
         }
         if (settled || observer.signal.aborted) break;
         const run = await client.getRun(accepted.runId);

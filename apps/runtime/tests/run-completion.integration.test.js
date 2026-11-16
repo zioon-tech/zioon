@@ -6,6 +6,7 @@ import { createRunCompletionWorker } from "../src/run-completion-worker.mjs";
 import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 import * as Y from "yjs";
 import { createSessionDocumentProjector } from "../../../extensions/dev.session-manager/session-document-projector.js";
+import { createHttpRuntimeClient, createRemoteRunHandle } from "../../../src/runtime/http-runtime-client.ts";
 
 let database;
 beforeAll(async () => { database = await createPostgresTestDatabase("completion"); });
@@ -41,6 +42,164 @@ async function fixture(options = {}) {
 }
 
 describe("durable nonblocking completion", () => {
+  it("retries failed snapshot preparation without reporting completed execution as failed", async () => {
+    let prepared = false;
+    const prepareRun = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary document failure"))
+      .mockImplementation(async () => { prepared = true; });
+    const replay = vi.fn(async () => { expect(prepared).toBe(true); });
+    const f = await fixture({
+      sessionDocumentService: { prepareRun, applyRunEvent() {}, applyRunEvents: replay }
+    });
+    try {
+      const submitted = await f.submit("preparation retry", { mode: "live" });
+      expect(submitted.status).toBe(202);
+      await vi.waitFor(() => expect(replay).toHaveBeenCalled());
+      await vi.waitFor(() => expect(f.server.isIdle()).toBe(true));
+      expect((await f.runs.get(submitted.runId)).status).toBe("completed");
+      expect(f.errors.some(({ meta }) => meta.processorId === "runtime.collaboration-preparation")).toBe(true);
+      expect((await f.runs.getEvents(submitted.runId)).some(event => event.type === "run.failed")).toBe(false);
+    } finally { await f.server.close(); }
+  });
+
+  it("stores ordered context timing on the model request without changing selected context", async () => {
+    const f = await fixture({
+      executorFactory: runs => createAgentExecutor({
+        runs, tools: { listTools: async () => [], invoke() {} },
+        contexts: [
+          { id: "disabled", contribute: vi.fn(() => { throw new Error("disabled provider ran"); }) },
+          { id: "pre", order: 1, prepare: async () => [{ role: "system", content: "profile" }] },
+          { id: "post", stage: "post", contribute: async messages => [...messages, { role: "system", content: "selected skills" }] }
+        ],
+        engine: { id: "context-timing", async *streamTurn({ messages }) {
+          expect(messages.map(message => message.content)).toEqual(["profile", "context timing", "selected skills"]);
+          yield { type: "model.request", request: {
+            url: "https://model.test", modelId: "fixture", stream: true, payload: { messages }
+          } };
+          yield { type: "message.delta", delta: "answer" };
+        } }
+      })
+    });
+    try {
+      const client = createHttpRuntimeClient({ baseUrl: f.url });
+      const handle = await createRemoteRunHandle(client, {
+        prompt: "context timing", metadata: { contextProviders: { disabled: ["disabled"] } }
+      }, { stopAtTerminal: true });
+      for await (const event of handle.events) {}
+      expect((await handle.completion).status).toBe("completed");
+      const request = (await f.runs.getEvents(handle.runId)).find(event => event.type === "model.request");
+      expect(request.data.contextTimings.map(({ providerId, stage }) => [providerId, stage])).toEqual([
+        ["pre", "pre"], ["post", "post"]
+      ]);
+      expect(request.data.contextTimings.every(timing => timing.authorizationMs >= 0
+        && timing.contributionMs >= 0 && timing.status === "completed")).toBe(true);
+    } finally { await f.server.close(); }
+  });
+
+  it.each(["preparation", "projection"])("delivers receipt and live text while document %s is blocked", async stage => {
+    const blocked = deferred();
+    const entered = vi.fn();
+    let prepared = false;
+    const projected = [];
+    const f = await fixture({
+      sessionDocumentService: {
+        async prepareRun() {
+          if (stage === "preparation") { entered(); await blocked.promise; }
+          prepared = true;
+        },
+        async applyRunEvent(_sessionId, event) {
+          expect(prepared).toBe(true);
+          if (stage === "projection" && event.type === "run.started") {
+            entered(); await blocked.promise;
+          }
+          projected.push(event.sequence);
+        }
+      }
+    });
+    const abort = new AbortController();
+    try {
+      const first = await f.submit(`blocked-${stage}`, { mode: "live" });
+      expect(first.status).toBe(202);
+      await vi.waitFor(() => expect(entered).toHaveBeenCalled());
+      expect((await f.runs.getRunConversationInput(first.runId)).messages[0].content).toBe(`blocked-${stage}`);
+      const events = [];
+      const client = createHttpRuntimeClient({ baseUrl: f.url });
+      for await (const event of client.subscribe(first.runId, { signal: abort.signal })) {
+        events.push(event);
+        if (event.type === "run.completed") break;
+      }
+      expect(events.find(event => event.type === "message.delta")?.data.delta).toBe("answer");
+      if (stage === "preparation") expect(projected).toEqual([]);
+      blocked.resolve();
+      await vi.waitFor(() => expect(f.server.isIdle()).toBe(true));
+      expect(projected).toEqual([...projected].sort((a, b) => a - b));
+      expect(projected.length).toBeGreaterThan(0);
+    } finally { abort.abort(); blocked.resolve(); await f.server.close(); }
+  }, 10_000);
+
+  it("delivers first text before slow timing persistence and joins the writes before completion", async () => {
+    const blocked = deferred();
+    const entered = vi.fn();
+    const f = await fixture({
+      executorFactory: runs => {
+        const append = runs.append.bind(runs);
+        runs.append = async (...args) => {
+          if (args[0].type === "model.timing") { entered(); await blocked.promise; }
+          return append(...args);
+        };
+        return createAgentExecutor({
+          runs, tools: { listTools: async () => [], invoke() {} },
+          engine: { id: "timing", async *streamTurn() {
+            yield { type: "model.timing", timing: {
+              phase: "first-answer", requestStartedAt: Date.now(), elapsedMs: 1
+            } };
+            yield { type: "message.delta", delta: "immediate" };
+          } }
+        });
+      }
+    });
+    let handle;
+    try {
+      handle = await createRemoteRunHandle(createHttpRuntimeClient({ baseUrl: f.url }), {
+        prompt: "timing persistence", sessionId: "doc"
+      }, { stopAtTerminal: true });
+      const iterator = handle.events[Symbol.asyncIterator]();
+      let first;
+      while ((first = await iterator.next()).value?.type !== "message.delta") {
+        expect(first.done).toBe(false);
+      }
+      expect(entered).toHaveBeenCalled();
+      expect(first.value.data.delta).toBe("immediate");
+      expect((await f.runs.get(handle.runId)).status).toBe("running");
+      blocked.resolve();
+      while (!(await iterator.next()).done) {}
+      expect((await handle.completion).status).toBe("completed");
+      expect((await f.runs.getEvents(handle.runId)).some(event => event.type === "model.timing")).toBe(true);
+    } finally { blocked.resolve(); handle?.detach(); await f.server.close(); }
+  }, 10_000);
+
+  it("closes interactive observation at execution completion while projection remains blocked", async () => {
+    const blocked = deferred();
+    const f = await fixture({
+      sessionDocumentService: {
+        prepareRun() {}, async applyRunEvent() { await blocked.promise; }
+      }
+    });
+    let handle;
+    try {
+      handle = await createRemoteRunHandle(createHttpRuntimeClient({ baseUrl: f.url }), {
+        prompt: "close observation", sessionId: "doc"
+      }, { stopAtTerminal: true });
+      const events = [];
+      for await (const event of handle.events) events.push(event);
+      expect(events.at(-1).type).toBe("run.completed");
+      expect((await handle.completion).status).toBe("completed");
+      expect(f.server.isIdle()).toBe(false);
+      blocked.resolve();
+      await vi.waitFor(() => expect(f.server.isIdle()).toBe(true));
+    } finally { blocked.resolve(); handle?.detach(); await f.server.close(); }
+  }, 10_000);
+
   it("recovers completion work without an HTTP listener and starts it only once", async () => {
     const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
     const handle = executor(runs).execute({ prompt: "gateway restart recovery" });

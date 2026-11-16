@@ -47,6 +47,14 @@ const TRANSIENT_STREAM_EVENT_TYPES = new Set([
   "message.delta",
   "reasoning.delta"
 ]);
+const DEFERRED_OBSERVATION_EVENT_TYPES = new Set(["model.timing", "reasoning.started"]);
+type ContextTiming = {
+  providerId: string;
+  stage: "pre" | "post";
+  authorizationMs: number;
+  contributionMs: number;
+  status: "completed" | "failed";
+};
 const MODEL_REQUEST_CONFIG_KEYS = [
   "frequency_penalty",
   "max_completion_tokens",
@@ -284,6 +292,7 @@ async function applyContextStage({
   turn,
   signal,
   contextExtras = {},
+  onTiming,
   reauthorize,
   onFailure
 }: {
@@ -296,6 +305,7 @@ async function applyContextStage({
   turn?: number;
   signal: CancellationSignal;
   contextExtras?: Partial<import("./protocol.js").ContextProviderContext>;
+  onTiming?: (timing: ContextTiming) => void;
   reauthorize: (phase: RunAuthorizationPhase) => void | Promise<void>;
   onFailure: (
     provider: ContextProvider,
@@ -312,13 +322,34 @@ async function applyContextStage({
     )
     .map(({ provider }) => provider);
   let output = messages;
+  const measure = async (provider: ContextProvider, apply: () => Promise<void>) => {
+    signal.throwIfCancelled();
+    const startedAt = performance.now();
+    await reauthorize("context");
+    const authorizedAt = performance.now();
+    let status: ContextTiming["status"] = "completed";
+    let contributedAt = authorizedAt;
+    try {
+      await apply();
+      contributedAt = performance.now();
+    } catch (error) {
+      contributedAt = performance.now();
+      status = "failed";
+      await onFailure(provider, error);
+      if (provider.required) throw error;
+    } finally {
+      onTiming?.({
+        providerId: provider.id, stage, status,
+        authorizationMs: Math.max(0, authorizedAt - startedAt),
+        contributionMs: Math.max(0, contributedAt - authorizedAt)
+      });
+    }
+  };
 
   if (stage === "pre") {
     const preparedMessages: TranscriptMessage[] = [];
     for (const provider of selected.filter((item) => !item.contribute)) {
-      signal.throwIfCancelled();
-      await reauthorize("context");
-      try {
+      await measure(provider, async () => {
         if (!provider.prepare) {
           throw new Error("provider has no prepare or contribute implementation");
         }
@@ -327,18 +358,13 @@ async function applyContextStage({
           throw new Error("provider returned an invalid result");
         }
         preparedMessages.push(...prepared);
-      } catch (error) {
-        await onFailure(provider, error);
-        if (provider.required) throw error;
-      }
+      });
     }
     output = [...preparedMessages, ...output];
   }
 
   for (const provider of selected.filter((item) => !!item.contribute)) {
-    signal.throwIfCancelled();
-    await reauthorize("context");
-    try {
+    await measure(provider, async () => {
       const contributed = await provider.contribute?.(
         cloneMessages(output),
         {
@@ -354,10 +380,7 @@ async function applyContextStage({
         throw new Error("provider returned an invalid result");
       }
       output = cloneMessages(contributed);
-    } catch (error) {
-      await onFailure(provider, error);
-      if (provider.required) throw error;
-    }
+    });
   }
   return output;
 }
@@ -583,6 +606,8 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
       let runControllers = controllers;
       let pending = state.pending;
       const needsPreContext = !existingRun || pending?.stage === "beforeStart";
+      let observationWrites = Promise.resolve();
+      const contextTimings: ContextTiming[] = [];
 
       const publish = async (
         type: string,
@@ -607,6 +632,18 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
           queue.push(event);
           return event;
         }
+        if (DEFERRED_OBSERVATION_EVENT_TYPES.has(type)) {
+          // These facts do not authorize execution. Deliver them in order and
+          // persist in the background; the next durable boundary joins the writes.
+          observationWrites = observationWrites.then(() => runs.append(event));
+          void observationWrites.catch(() => {});
+          sequence = nextSequence;
+          queue.push(event);
+          return event;
+        }
+        const observations = observationWrites;
+        observationWrites = Promise.resolve();
+        await observations;
         const detailEvent = detailData
           ? { ...event, data: detailData }
           : undefined;
@@ -866,6 +903,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               usage: { ...usage },
               recordUsage: (patch) => { usage = addUsage(usage, patch); }
             },
+            onTiming: (timing) => contextTimings.push(timing),
             reauthorize,
             onFailure: async (provider, error) => {
               await publish("context.failed", {
@@ -937,6 +975,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               await consumeEngineEvent(engineEvent, {
                 turn,
                 model: request.model,
+                contextTimings: engineEvent.type === "model.request" ? contextTimings.splice(0) : [],
                 calls,
                 appendText(delta) {
                   turnOutput += delta;
@@ -1451,6 +1490,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
 type EngineEventConsumer = {
   turn: number;
   model?: ModelRef;
+  contextTimings?: ContextTiming[];
   calls: ToolCall[];
   appendText(delta: string): void;
   appendReasoning(delta: string): void;
@@ -1477,10 +1517,12 @@ async function consumeEngineEvent(
     await consumer.publish("model.request", {
       turn: consumer.turn,
       model: consumer.model || null,
+      contextTimings: consumer.contextTimings || [],
       ...summary
     }, undefined, {
       turn: consumer.turn,
       model: consumer.model || null,
+      contextTimings: consumer.contextTimings || [],
       ...summary,
       payload: event.request.payload
     });

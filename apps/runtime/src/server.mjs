@@ -986,7 +986,8 @@ export function createRuntimeServer({
                 userContent: messageContentText(transcript.findLast(message => message.role === "user")?.content),
                 mode: projection.mode,
                 appendUserPrompt: projection.appendUserPrompt === true,
-                documentAnchor: projection.anchor
+                documentAnchor: projection.anchor,
+                returnSnapshot: false
               });
             }
             if (sessionDocumentService?.applyRunEvents) {
@@ -1016,7 +1017,9 @@ export function createRuntimeServer({
       return steps;
     }
   }) : null;
-  const trackHandle = async (handle, sessionId, runRequest = {}, { initialEvents = [], publishStarted = true } = {}) => {
+  const trackHandle = async (handle, sessionId, runRequest = {}, {
+    initialEvents = [], publishStarted = true, preparation = Promise.resolve()
+  } = {}) => {
     const admissionVersion = sessionAdmissionVersions.get(sessionId);
     const live = createRunLiveHub();
     for (const event of initialEvents) live.publish(event);
@@ -1026,8 +1029,11 @@ export function createRuntimeServer({
     liveRuns.set(handle.runId, live);
     if (sessionId) sessionHandles.set(sessionId, handle);
     let terminalSessionEventPublished = false;
+    // Register observation immediately. Document preparation and session events
+    // remain ordered, but neither can hold up the HTTP receipt or the live pump.
+    let sessionEvents = Promise.resolve();
     if (sessionId && publishStarted) {
-      await publishSessionEvent("run.started", {
+      sessionEvents = publishSessionEvent("run.started", {
         sessionId,
         runId: handle.runId,
         attemptId: handle.attemptId,
@@ -1040,14 +1046,26 @@ export function createRuntimeServer({
         }
       });
     }
-    const documentProjection = drainEvents(handle.events, async (event) => {
+    void sessionEvents.catch(() => {});
+    const documentReady = Promise.resolve(preparation).then(() => true, (error) => {
+      try {
+        onPostProcessorError(error, {
+          processorId: "runtime.collaboration-preparation",
+          runId: handle.runId, sessionId
+        });
+      } catch {}
+      // Durable completion work retries preparation before replaying events.
+      return false;
+    });
+    let documentProjection = Promise.resolve();
+    const liveObservation = drainEvents(handle.events, (event) => {
       live.publish(event);
       if (
         sessionId
         && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)
       ) {
         terminalSessionEventPublished = true;
-        await publishSessionEvent(event.type, {
+        sessionEvents = sessionEvents.catch(() => {}).then(() => publishSessionEvent(event.type, {
           sessionId,
           runId: event.runId || handle.runId,
           attemptId: event.attemptId || handle.attemptId,
@@ -1059,37 +1077,45 @@ export function createRuntimeServer({
             reason: event.data?.reason || "",
             error: event.data?.error || ""
           }
-        });
+        }));
+        void sessionEvents.catch(() => {});
       }
       if (!sessionId || !sessionDocumentService?.applyRunEvent) return;
-      try {
-        if (runRequest?.metadata?.documentProjection?.mode === "final"
-          && sessionDocumentService.applyRunEvents) {
-          if (!completionWorker && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
-            await sessionDocumentService.applyRunEvents(sessionId, {
-              runId: handle.runId, events: await runs.getEvents(handle.runId),
-              includeReasoning: runRequest.metadata.documentProjection.includeReasoning !== false
+      documentProjection = documentProjection.then(async () => {
+        if (!await documentReady) return;
+        try {
+          if (runRequest?.metadata?.documentProjection?.mode === "final"
+            && sessionDocumentService.applyRunEvents) {
+            if (!completionWorker && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
+              await sessionDocumentService.applyRunEvents(sessionId, {
+                runId: handle.runId, events: await runs.getEvents(handle.runId),
+                includeReasoning: runRequest.metadata.documentProjection.includeReasoning !== false
+              });
+            }
+            return;
+          }
+          await sessionDocumentService.applyRunEvent(
+            sessionId,
+            event,
+            {
+              appendUserPrompt:
+                runRequest?.metadata?.documentProjection?.appendUserPrompt === true,
+              includeReasoning:
+                runRequest?.metadata?.documentProjection?.includeReasoning !== false,
+              deferFlush: true
+            }
+          );
+        } catch (error) {
+          try {
+            onPostProcessorError(error, {
+              processorId: "runtime.collaboration-projection",
+              runId: handle.runId,
+              sessionId
             });
-          }
-          return;
+          } catch {}
         }
-        await sessionDocumentService.applyRunEvent(
-          sessionId,
-          event,
-          {
-            appendUserPrompt:
-              runRequest?.metadata?.documentProjection?.appendUserPrompt === true,
-            includeReasoning:
-              runRequest?.metadata?.documentProjection?.includeReasoning !== false
-          }
-        );
-      } catch (error) {
-        onPostProcessorError(error, {
-          processorId: "runtime.collaboration-projection",
-          runId: handle.runId,
-          sessionId
-        });
-      }
+      });
+      void documentProjection.catch(() => {});
     }).catch((error) => {
       onPostProcessorError(error, {
         processorId: "runtime.live-events",
@@ -1097,7 +1123,7 @@ export function createRuntimeServer({
         sessionId
       });
     });
-    void documentProjection;
+    void liveObservation;
     const persisted = handle.completion
       .then(async (result) => {
         if (sessionId && result.status === "completed") {
@@ -1121,6 +1147,8 @@ export function createRuntimeServer({
         // Execution has yielded. Document projection and plugin work cannot block
         // the next user command; terminal events already hold a durable retry task.
         void completionWorker?.kick();
+        await liveObservation;
+        await sessionEvents;
         await documentProjection;
         if (sessionId && !terminalSessionEventPublished) {
           await publishSessionEvent(`run.${result.status}`, {
@@ -1818,6 +1846,7 @@ export function createRuntimeServer({
           if (inputSnapshot) await sessions.rejectConversationInput(inputSnapshot.id);
           throw error;
         }
+        let preparation = Promise.resolve();
         if (attachedSessionId) {
           try {
             if (sessionUserContent.trim()) await sessions.appendSessionMessages(attachedSessionId, [{
@@ -1830,23 +1859,32 @@ export function createRuntimeServer({
               runId: handle.runId,
               createdAt: Date.now()
             }]);
-            await sessionDocumentService?.prepareRun?.(
+            const prepareDocument = () => sessionDocumentService?.prepareRun?.(
               attachedSessionId,
               {
                 runId: handle.runId,
                 userContent: sessionUserContent,
                 mode: runRequest.metadata?.documentProjection?.mode,
                 appendUserPrompt: runRequest.metadata?.documentProjection?.appendUserPrompt === true,
-                documentAnchor: runRequest.metadata?.documentProjection?.anchor
+                documentAnchor: runRequest.metadata?.documentProjection?.anchor,
+                returnSnapshot: false
               }
             );
+            // Snapshot input and its anchor are already durable at handle.ready.
+            // Only projection waits for the anchor; receipt/live observation do not.
+            if (inputSnapshot) {
+              preparation = Promise.resolve().then(prepareDocument);
+              void preparation.catch(() => {});
+            } else {
+              await prepareDocument();
+            }
           } catch (error) {
             await handle.abort("session-persistence-failed");
             await handle.completion;
             throw error;
           }
         }
-        await trackHandle(handle, attachedSessionId, runRequest);
+        await trackHandle(handle, attachedSessionId, runRequest, { preparation });
         response.setHeader("Server-Timing", `admission;dur=${runRequest.metadata.chatAdmission.admissionMs},prepare;dur=${Date.now() - receivedAt}`);
         json(response, 202, {
           runId: handle.runId,

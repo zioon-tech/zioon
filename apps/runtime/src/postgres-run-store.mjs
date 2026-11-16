@@ -222,7 +222,7 @@ export class PostgresRunStore {
       && this.modelRequestDetailMaxRows > 0
       && this.modelRequestDetailMaxStoredBytes > 0
       && this.modelRequestDetailRetentionMs > 0
-      ? await gzipAsync(Buffer.from(rawEvent, "utf8"), { level: 9 })
+      ? await gzipAsync(Buffer.from(rawEvent, "utf8"), { level: 1 })
       : null;
     const retainedDetail = detail?.length <= this.modelRequestDetailMaxStoredBytes
       ? detail
