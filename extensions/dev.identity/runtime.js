@@ -35,6 +35,7 @@ import {
   parseDistillationResult
 } from "./identity-core.js";
 import { ensureIdentityFiles } from "./identity-files.js";
+import { loadIdentityProjection, stampBiographyDigest } from "./identity-context-loader.js";
 import { dataLocationContext } from "../../packages/plugin-sdk/src/data-location.mjs";
 import {
   createProjectAutomationRuntimeService
@@ -262,6 +263,7 @@ async function appendBiographyEventsToFiles({
     sessionId: terminalSessionId,
     runContext
   });
+  let sourceEventsText = loadedEvents.files.biographyEvents;
   const update = buildBiographyEventsUpdate({
     existingJsonl: loadedEvents.files.biographyEvents,
     events,
@@ -284,6 +286,7 @@ async function appendBiographyEventsToFiles({
       sessionId: terminalSessionId, runContext
     });
     update.events = parseBiographyEventsJsonl(refreshed.files.biographyEvents);
+    sourceEventsText = refreshed.files.biographyEvents;
     update.digest = buildBiographyDigest(update.events);
     update.appended = update.appended.filter((event) => result.appended.includes(event.id));
     update.skipped.push(...(result.skipped || []));
@@ -295,7 +298,7 @@ async function appendBiographyEventsToFiles({
     files: {
       biography: {
         relativePath: IDENTITY_PROFILE_FILE_PATHS.biography,
-        content: update.digest
+        content: stampBiographyDigest(update.digest, sourceEventsText)
       }
     },
     sessionId: terminalSessionId,
@@ -330,6 +333,8 @@ export class RuntimeIdentityContextProvider {
     memoryRoot = "",
     dataLocation = null,
     resolveDataLocation = null,
+    contextStore = null,
+    bindingKey = "",
     scopeMode = "legacy"
   }) {
     this.id = "dev.identity.context";
@@ -341,9 +346,12 @@ export class RuntimeIdentityContextProvider {
     this.dataLocation = dataLocation;
     this.resolveDataLocation = resolveDataLocation;
     this.accountScoped = scopeMode === "account";
+    this.contextStore = contextStore;
+    this.bindingKey = bindingKey;
     this.runSnapshots = new Map();
     this.scopedSessionSnapshots = new Map();
     this.scopedLatestSnapshots = new Map();
+    this.projectionLoads = new Map();
   }
 
   async locationFor(runContext = {}, access = "read") {
@@ -359,14 +367,28 @@ export class RuntimeIdentityContextProvider {
     const userId = principal?.userId || principal?.user?.id;
     const spaceId = principal?.spaceId || principal?.space?.id;
     if (!userId || !spaceId) throw new Error("Identity cache requires an authenticated account");
-    return JSON.stringify([spaceId, userId, sourceRoot]);
+    return JSON.stringify([spaceId, userId, sourceRoot, this.bindingKey]);
   }
 
-  storedSessionSnapshot(sessionId, sourceRoot = this.memoryRoot, runContext = {}) {
+  async storedSessionSnapshot(sessionId, sourceRoot = this.memoryRoot, runContext = {}) {
     const id = normalizeRuntimeSessionId(sessionId);
     if (!id) return null;
     if (this.accountScoped) {
-      return this.scopedSessionSnapshots.get(`${this.cacheScope(sourceRoot, runContext)}\0${id}`)?.snapshot || null;
+      const scope = this.cacheScope(sourceRoot, runContext);
+      const key = `${scope}\0${id}`;
+      const cached = this.scopedSessionSnapshots.get(key)?.snapshot;
+      // The selected pointer can change on another worker. Recheck that small
+      // durable pointer, transferring the body only when its revision changes.
+      const selected = this.contextStore
+        ? await this.contextStore.read(scope, id, cached) : cached || null;
+      const entry = selected && normalizeSessionSnapshotEntry({ snapshot: selected });
+      if (entry) {
+        this.scopedSessionSnapshots.set(key, entry);
+        if (this.scopedSessionSnapshots.size > MAX_IDENTITY_RUNTIME_SESSION_SNAPSHOTS) {
+          this.scopedSessionSnapshots.delete(this.scopedSessionSnapshots.keys().next().value);
+        }
+      }
+      return selected;
     }
     const entry = normalizeSessionSnapshotEntry(
       objectValue(this.state.get(IDENTITY_RUNTIME_SESSION_SNAPSHOTS_KEY))[id]
@@ -377,8 +399,11 @@ export class RuntimeIdentityContextProvider {
     return snapshot;
   }
 
-  saveSessionSnapshot(sessionId, snapshot, sourceRoot = this.memoryRoot, runContext = {}) {
+  async saveSessionSnapshot(sessionId, snapshot, sourceRoot = this.memoryRoot, runContext = {}, { force = false, refreshEpoch } = {}) {
     const id = normalizeRuntimeSessionId(sessionId);
+    if (id && this.accountScoped && this.contextStore) {
+      snapshot = await this.contextStore.publish(this.cacheScope(sourceRoot, runContext), id, snapshot, { force, refreshEpoch });
+    }
     const entry = normalizeSessionSnapshotEntry({ snapshot });
     if (!id || !entry) return snapshot;
     if (this.accountScoped) {
@@ -408,9 +433,13 @@ export class RuntimeIdentityContextProvider {
     return snapshot;
   }
 
-  saveLatestSnapshot(sourceRoot, snapshot, runContext = {}) {
+  async saveLatestSnapshot(sourceRoot, snapshot, runContext = {}) {
     if (this.accountScoped) {
+      if (this.contextStore) snapshot = await this.contextStore.publish(this.cacheScope(sourceRoot, runContext), "", snapshot);
       this.scopedLatestSnapshots.set(this.cacheScope(sourceRoot, runContext), normalizeIdentitySnapshot(snapshot));
+      if (this.scopedLatestSnapshots.size > MAX_IDENTITY_RUNTIME_SESSION_SNAPSHOTS) {
+        this.scopedLatestSnapshots.delete(this.scopedLatestSnapshots.keys().next().value);
+      }
       return snapshot;
     }
     this.state.set(IDENTITY_RUNTIME_SNAPSHOT_KEY, snapshot);
@@ -428,16 +457,17 @@ export class RuntimeIdentityContextProvider {
       options.sessionId || resolveRuntimeContextSessionId(runContext)
     );
     if (sessionId && !options.force) {
-      const stored = this.storedSessionSnapshot(sessionId, sourceRoot, runContext);
+      const stored = await this.storedSessionSnapshot(sessionId, sourceRoot, runContext);
       if (stored) return stored;
     }
     let snapshot = normalizeIdentitySnapshot(
       this.accountScoped
-        ? this.scopedLatestSnapshots.get(this.cacheScope(sourceRoot, runContext)) || {}
+        ? this.scopedLatestSnapshots.get(this.cacheScope(sourceRoot, runContext))
+          || await this.contextStore?.read(this.cacheScope(sourceRoot, runContext)) || {}
         : this.state.get(IDENTITY_RUNTIME_SNAPSHOT_KEY) || {}
     );
     if (!this.fileService?.readTextFiles || !sourceRoot) {
-      if (sessionId) this.saveSessionSnapshot(sessionId, snapshot, sourceRoot, runContext);
+      if (sessionId) snapshot = await this.saveSessionSnapshot(sessionId, snapshot, sourceRoot, runContext, options);
       return snapshot;
     }
     const request = runContext.request || {};
@@ -449,6 +479,7 @@ export class RuntimeIdentityContextProvider {
       projectId: request.projectId || runContext.projectId,
       target: request.target || runContext.target,
       signal: runContext.signal,
+      interactionProfileId: request.interactionProfileId || runContext.interactionProfileId,
       policy: {
         ...(request.policy || runContext.policy || {}),
         fileRoots: (request.policy || runContext.policy)?.fileRoots?.length
@@ -456,35 +487,52 @@ export class RuntimeIdentityContextProvider {
           : [sourceRoot]
       }
     };
-    const loaded = location
-      ? await ensureIdentityFiles(this.fileService, sourceRoot, fileContext, {
-          contextOnly: true,
-          extraFiles: { events: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH }
-        })
-      : await this.fileService.readTextFiles({
-        fileRoot: sourceRoot,
-        files: IDENTITY_PROFILE_FILE_PATHS,
-        runContext: fileContext
+    // One fresh source check serves simultaneous new sessions in the same
+    // scope. The result is never reused by time alone.
+    const scope = this.cacheScope(sourceRoot, runContext);
+    const projectionKey = JSON.stringify([scope, fileContext.principal?.grantId,
+      fileContext.policy, fileContext.target, fileContext.interactionProfileId]);
+    let pending = !options.force && this.projectionLoads.get(projectionKey);
+    if (!pending) {
+      pending = loadIdentityProjection({
+        fileService: this.fileService, sourceRoot, runContext: fileContext, location, previous: snapshot
       });
-    if (location) {
-      loaded.files.biography = buildBiographyDigest(
-        parseBiographyEventsJsonl(loaded.files.events)
-      );
-      delete loaded.files.events;
+      if (!options.force) {
+        this.projectionLoads.set(projectionKey, pending);
+        const release = () => { if (this.projectionLoads.get(projectionKey) === pending) this.projectionLoads.delete(projectionKey); };
+        pending.then(release, release);
+      }
     }
-    snapshot = createIdentitySnapshot({
-      sourceRoot: loaded.fileRoot,
-      files: loaded.files,
-      content: buildIdentityContext(loaded.files, {
-        sourceRoot: loaded.fileRoot,
-        accessMode: location?.backend === "agent-fs"
-          ? location.accessMode === "cli" ? "cli" : "runtime-tools"
-          : "file-service"
-      })
-    });
-    this.saveLatestSnapshot(sourceRoot, snapshot, runContext);
-    if (sessionId) this.saveSessionSnapshot(sessionId, snapshot, sourceRoot, runContext);
+    snapshot = await pending;
+    if (sessionId) snapshot = await this.saveSessionSnapshot(sessionId, snapshot, sourceRoot, runContext, options);
+    else await this.saveLatestSnapshot(sourceRoot, snapshot, runContext);
+    if (this.accountScoped) {
+      this.scopedLatestSnapshots.set(scope, snapshot);
+      if (this.scopedLatestSnapshots.size > MAX_IDENTITY_RUNTIME_SESSION_SNAPSHOTS) {
+        this.scopedLatestSnapshots.delete(this.scopedLatestSnapshots.keys().next().value);
+      }
+    } else if (sessionId) await this.saveLatestSnapshot(sourceRoot, snapshot, runContext);
     return snapshot;
+  }
+
+  async refreshSession(runContext = {}) {
+    const sessionId = resolveRuntimeContextSessionId(runContext);
+    if (!sessionId) throw Object.assign(new Error("sessionId is required"), { statusCode: 400 });
+    const location = await this.locationFor(runContext, "read");
+    const sourceRoot = String(location?.root || this.memoryRoot).trim();
+    const key = `${this.cacheScope(sourceRoot, runContext)}\0session:${sessionId}`;
+    // Enqueue before awaiting: simultaneous callers cannot both pass the same
+    // empty/previous slot. A failed prior load does not poison a new refresh.
+    const previous = this.runSnapshots.get(key);
+    const pending = Promise.resolve(previous).catch(() => {}).then(async () => {
+      const refreshEpoch = this.accountScoped && this.contextStore
+        ? await this.contextStore.reserveRefresh(this.cacheScope(sourceRoot, runContext), sessionId)
+        : undefined;
+      return this.loadSnapshot(runContext, { location, sourceRoot, sessionId, force: true, refreshEpoch });
+    });
+    this.runSnapshots.set(key, pending);
+    try { return await pending; }
+    finally { if (this.runSnapshots.get(key) === pending) this.runSnapshots.delete(key); }
   }
 
   async contribute(messages, runContext = {}) {
@@ -528,7 +576,9 @@ export class RuntimeIdentityContextProvider {
               this.runSnapshots.delete(key);
             }
           },
-          () => this.runSnapshots.delete(key)
+          () => {
+            if (this.runSnapshots.get(key) === pending) this.runSnapshots.delete(key);
+          }
         );
         if (!sessionId && this.runSnapshots.size > 32) {
           this.runSnapshots.delete(this.runSnapshots.keys().next().value);
@@ -607,6 +657,8 @@ export function activateRuntimePlugin(context) {
     memoryRoot,
     dataLocation,
     resolveDataLocation,
+    contextStore: context.config?.contextStore,
+    bindingKey: context.config?.contextBindingKey || "",
     scopeMode
   });
   const postProcessorDisposables = [];
@@ -745,6 +797,14 @@ export function activateRuntimePlugin(context) {
     }));
   }
   const providerRegistration = context.context.registerProvider(provider);
+  const commandRegistration = context.runs?.registerCommands?.(async (args = {}, meta = {}) => {
+    if (args.action !== "refresh_context") throw Object.assign(new Error("Unsupported Identity command"), { statusCode: 400 });
+    if (meta.activeRunId) throw Object.assign(new Error("Wait for the current answer before refreshing Identity context"), { statusCode: 409 });
+    const current = await provider.refreshSession({ ...meta, request: {
+      ...meta, policy: { preset: "read-only", fileRoots: [] }
+    } });
+    return { ok: true, snapshot: current };
+  });
   const initialization = dataLocation
     ? ensureIdentityFiles(context.config.fileService, memoryRoot, {
       policy: { preset: "workspace-write", fileRoots: [memoryRoot] }
@@ -855,7 +915,7 @@ export function activateRuntimePlugin(context) {
       }
       if (action === "update_snapshot") {
         const next = updateIdentitySnapshot(current, args);
-        persistSnapshot(next);
+        await persistSnapshot(next);
         return {
           ok: true,
           content: JSON.stringify({
@@ -865,7 +925,7 @@ export function activateRuntimePlugin(context) {
       }
       if (action === "patch_files") {
         const next = patchIdentityFiles(current, args);
-        persistSnapshot(next);
+        await persistSnapshot(next);
         return {
           ok: true,
           content: JSON.stringify({
@@ -923,7 +983,7 @@ export function activateRuntimePlugin(context) {
           sourceRoot: loaded.fileRoot,
           files: loaded.files
         });
-        persistSnapshot(next);
+        await persistSnapshot(next);
         return {
           ok: true,
           content: JSON.stringify({
@@ -957,7 +1017,7 @@ export function activateRuntimePlugin(context) {
           sourceRoot: loaded.fileRoot,
           files: loaded.files
         });
-        persistSnapshot(next);
+        await persistSnapshot(next);
         return {
           ok: true,
           content: JSON.stringify({
@@ -968,7 +1028,7 @@ export function activateRuntimePlugin(context) {
       }
       if (action === "clear") {
         const next = clearIdentitySnapshot(current);
-        persistSnapshot(next);
+        await persistSnapshot(next);
         return {
           ok: true,
           content: JSON.stringify({
@@ -1110,6 +1170,7 @@ export function activateRuntimePlugin(context) {
       }
       projectAutomationConfig?.registerService?.(null);
       providerRegistration.dispose();
+      commandRegistration?.dispose();
       contextToolRegistration.dispose();
       for (const registration of mcpRegistrations) registration.dispose();
       manageToolRegistration.dispose();

@@ -16,13 +16,13 @@ export function createMemoryAccountAuthorization({
   directory, baseUrl, accessControl, fetchImpl = fetch, now = Date.now
 }) {
   const apiUrl = new URL(baseUrl).href.replace(/\/+$/, "");
-  return async ({ runContext, filePath, write }) => {
+  return async ({ runContext, filePath, filePaths, write }) => {
     const local = await authorizeMemoryContext(accessControl, {
       context: { ...runContext,
         principal: runContext.principal || runContext.request?.principal,
         policy: runContext.policy || runContext.request?.policy,
         interactionProfileId: runContext.interactionProfileId || runContext.request?.interactionProfileId },
-      filePath, write
+      filePath, filePaths, write
     });
     if (!local.scopes?.includes(write ? "runtime.write" : "runtime.read")) {
       throw error("memory_permission_denied", "Local account grant does not permit this memory operation", 403);

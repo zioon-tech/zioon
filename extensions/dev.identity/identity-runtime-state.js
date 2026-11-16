@@ -42,6 +42,27 @@ export function canSyncIdentitySnapshotToRuntime({
   return !!runtimeConfigForIdentity(state, storage);
 }
 
+export async function refreshIdentityContextInRuntime({
+  sessionId,
+  state = globalThis.window?.zion?.state,
+  storage = globalThis.localStorage,
+  fetchImpl = globalThis.fetch
+} = {}) {
+  const config = runtimeConfigForIdentity(state, storage);
+  if (!config) return null;
+  const response = await fetchImpl(`${config.baseUrl}/v1/plugins/dev.identity/commands`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "refresh_context", sessionId })
+  });
+  const body = await response.json().catch(() => null);
+  const result = body?.result;
+  if (!response.ok || !result?.ok || !result.snapshot) {
+    throw new Error(body?.error || body?.message || `Runtime identity refresh failed: ${response.status}`);
+  }
+  return normalizeIdentitySnapshot(result.snapshot);
+}
+
 export async function loadIdentitySnapshotFromRuntime({
   state = globalThis.window?.zion?.state,
   storage = globalThis.localStorage,

@@ -27,6 +27,24 @@ export async function verifyMemoryDelegation(accessControl, secret, token, reque
   } catch { throw accountError(401, "invalid_memory_delegation"); }
   if (payload.method !== requestBinding.method || payload.path !== requestBinding.path
     || payload.bodyHash !== requestBinding.bodyHash) throw accountError(403, "memory_request_binding_mismatch");
+  if (payload.path?.split("?")[0] === "/zion/files/read-batch") {
+    let paths;
+    try {
+      // Older gateways forward the signed request path but no separate paths
+      // field. Derive the actual paths from that request in both generations.
+      const params = new URL(requestBinding.path, "https://memory.invalid").searchParams;
+      if (params.getAll("files").length === 1) {
+        paths = JSON.parse(params.get("files"))?.map(spec => spec.path);
+      }
+    } catch {}
+    if (!Array.isArray(paths) || !paths.length || paths.length > 32
+      || paths.some(path => typeof path !== "string")
+      || payload.write || JSON.stringify(payload.filePaths) !== JSON.stringify(paths)
+      || requestBinding.filePaths !== undefined
+        && JSON.stringify(paths) !== JSON.stringify(requestBinding.filePaths)) {
+      throw accountError(403, "memory_file_binding_mismatch");
+    }
+  }
   if (payload.path === "/mcp" && (
     !payload.toolName || payload.toolName !== requestBinding.toolName
     || payload.write !== requestBinding.write

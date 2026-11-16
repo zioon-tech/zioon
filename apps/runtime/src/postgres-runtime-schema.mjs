@@ -10,6 +10,7 @@ const migration005 = join(moduleDirectory, "postgres/migrations/005_run_outbox.s
 const migration006 = join(moduleDirectory, "postgres/migrations/006_runtime_webhooks.sql");
 const migration007 = join(moduleDirectory, "postgres/migrations/007_conversation_inputs.sql");
 const migration008 = join(moduleDirectory, "postgres/migrations/008_run_completion_tasks.sql");
+const migration009 = join(moduleDirectory, "postgres/migrations/009_identity_contexts.sql");
 
 const migrations = [
   [2, migration002],
@@ -18,7 +19,8 @@ const migrations = [
   [5, migration005],
   [6, migration006],
   [7, migration007],
-  [8, migration008]
+  [8, migration008],
+  [9, migration009]
 ];
 
 export async function initializePostgresRuntimeSchema(pool, {

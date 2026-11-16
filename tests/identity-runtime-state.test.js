@@ -7,6 +7,7 @@ import {
   controlRuntimeProjectAutomation,
   createIdentitySnapshot,
   loadProjectAutomationFromRuntime,
+  refreshIdentityContextInRuntime,
   projectAutomationSyncDirection,
   syncProjectAutomationToRuntime,
   syncIdentitySnapshotToRuntime
@@ -45,6 +46,20 @@ function appendToDisk(disk) {
 }
 
 describe("Runtime-backed Identity state", () => {
+  it("refreshes through the Runtime command endpoint and fails explicitly on an unsupported server", async () => {
+    const state = createState({ "runtime.mode": "runtime", "runtime.baseUrl": "http://runtime.test" });
+    const fetchImpl = vi.fn(async (url, init) => {
+      expect(url).toBe("http://runtime.test/v1/plugins/dev.identity/commands");
+      expect(JSON.parse(init.body)).toEqual({ action: "refresh_context", sessionId: "session" });
+      return Response.json({ result: { ok: true, snapshot: {
+        version: 1, revision: "source-version", content: "<identity_context>Runtime version</identity_context>"
+      } } });
+    });
+    expect((await refreshIdentityContextInRuntime({ sessionId: "session", state, fetchImpl })).revision).toBe("source-version");
+    fetchImpl.mockResolvedValueOnce(Response.json({ error: "unsupported" }, { status: 404 }));
+    await expect(refreshIdentityContextInRuntime({ sessionId: "session", state, fetchImpl })).rejects.toThrow("unsupported");
+  });
+
   it("builds identity_context from snapshot files", () => {
     const snapshot = createIdentitySnapshot({
       sourceRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
@@ -497,6 +512,9 @@ describe("Runtime-backed Identity state", () => {
     expect(fileService.readTextFiles).toHaveBeenCalledWith({
       fileRoot: "/Users/test/.zion-next/data/plugins/dev.identity",
       files: IDENTITY_PROFILE_FILE_PATHS,
+      knownHashes: {},
+      metadataOnly: [],
+      includeHashes: true,
       runContext: expect.objectContaining({
         runId: "run-1",
         attemptId: "attempt-1",

@@ -7,6 +7,7 @@ import { createAgentFsMemoryClient } from "../src/agentfs-memory-client.mjs";
 import { createMemoryAccountAuthorization, memoryConnectionDirectory } from "../src/accounts/memory-account-connection.mjs";
 import { importMemoryFiles } from "../../../scripts/connect-local-identity-memory.mjs";
 import { contentHash } from "../../../packages/local-tools-client/src/plugin-data-files.mjs";
+import { createMemoryDelegation, verifyMemoryDelegation } from "../src/accounts/memory-delegation.mjs";
 
 const cleanup = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0)) await dispose(); });
@@ -54,6 +55,76 @@ async function fixture() {
 }
 
 describe("explicit online Memory account connection", () => {
+  it("authorizes every batch path with one linked identity check and rechecks revocation on the next batch", async () => {
+    const f = await fixture();
+    const files = { user: filePath, identity: "/memory/dev.identity/identity.md" };
+    const fileFetch = vi.fn(async (url) => Response.json({
+      ok: true, plugin_data_version: 1, batch_version: 1,
+      files: JSON.parse(new URL(url).searchParams.get("files")).map(spec => ({
+        path: spec.path, missing: false, content: "fixture", content_hash: contentHash("fixture")
+      }))
+    }));
+    const client = createAgentFsMemoryClient({ baseUrl, authorizationProvider: f.authorize, fetchImpl: fileFetch });
+    const first = await client.readTextFiles({ files, runContext: context });
+    expect(first.files).toEqual({ user: "fixture", identity: "fixture" });
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1);
+    expect(f.accessControl.reauthorize).toHaveBeenCalledTimes(1);
+    await expect(client.readTextFiles({ files: { ...files, outside: "/memory/dev.identity-escape/file" }, runContext: context }))
+      .rejects.toThrow("Invalid memory file path");
+    await expect(client.readTextFiles({ files, runContext: {
+      ...context, policy: { ...context.policy, fileRoots: [filePath] }
+    } })).rejects.toThrow("grant");
+    f.accessControl.reauthorize.mockRejectedValueOnce(new Error("session revoked"));
+    await expect(client.readTextFiles({ files, runContext: context })).rejects.toThrow("revoked");
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fileFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds delegated batch paths to the exact request and rejects substituted source files", async () => {
+    const secret = "a".repeat(32);
+    const filePaths = [filePath];
+    const path = `/zion/files/read-batch?${new URLSearchParams({ files: JSON.stringify([{ path: filePath }]) })}`;
+    const token = await createMemoryDelegation(secret, { context, method: "GET", path, filePaths, write: false });
+    await expect(verifyMemoryDelegation({}, secret, token, {
+      method: "GET", path, bodyHash: contentHash(""), filePaths: ["/memory/dev.identity/identity.md"]
+    })).rejects.toThrow("memory_file_binding_mismatch");
+  });
+
+  it("validates signed batch paths when an older gateway omits the separate binding field", async () => {
+    const f = await fixture();
+    const secret = "a".repeat(32);
+    const path = `/zion/files/read-batch?${new URLSearchParams({ files: JSON.stringify([{ path: filePath }]) })}`;
+    const token = await createMemoryDelegation(secret, { context, method: "GET", path, filePaths: [filePath], write: false });
+    const request = { method: "GET", path, bodyHash: contentHash("") };
+    expect((await verifyMemoryDelegation(f.accessControl, secret, token, request)).user.id).toBe("local-user");
+    const wrong = await createMemoryDelegation(secret, { context, method: "GET", path,
+      filePaths: ["/memory/dev.identity/identity.md"], write: false });
+    await expect(verifyMemoryDelegation(f.accessControl, secret, wrong, request)).rejects.toThrow("memory_file_binding_mismatch");
+  });
+
+  it("falls back only for an absent batch protocol and rejects malformed or failed batch results", async () => {
+    const fetchImpl = vi.fn();
+    const client = createAgentFsMemoryClient({ baseUrl, secret: "a".repeat(32), fetchImpl });
+    const args = { files: { user: filePath }, runContext: context };
+    fetchImpl.mockResolvedValueOnce(Response.json({ error: "account_management_disabled" }, { status: 403 }));
+    expect(await client.readTextFiles(args)).toBe(null);
+    fetchImpl.mockResolvedValueOnce(Response.json({ error: "permission_denied" }, { status: 403 }));
+    await expect(client.readTextFiles(args)).rejects.toMatchObject({ statusCode: 403 });
+    fetchImpl.mockResolvedValueOnce(Response.json({
+      ok: true, plugin_data_version: 1, batch_version: 1,
+      files: [{ path: filePath, missing: false, content: "corrupted", content_hash: contentHash("expected") }]
+    }));
+    await expect(client.readTextFiles(args)).rejects.toThrow("Invalid Memory batch file");
+    const valid = { ok: true, plugin_data_version: 1, batch_version: 1,
+      files: [{ path: filePath, missing: false, content: "valid", content_hash: contentHash("valid") }] };
+    for (const flag of [{ ok: false }, { error: "read failed" }, { truncated: true }, { has_more: true }]) {
+      fetchImpl.mockResolvedValueOnce(Response.json({ ...valid, ...flag }));
+      await expect(client.readTextFiles(args)).rejects.toThrow("Invalid Memory batch response");
+      fetchImpl.mockResolvedValueOnce(Response.json({ ...valid, files: [{ ...valid.files[0], ...flag }] }));
+      await expect(client.readTextFiles(args)).rejects.toThrow("Invalid Memory batch file");
+    }
+  });
+
   it("keeps the public prefix while binding a bridge token to the service-relative request", async () => {
     const secret = "a".repeat(32);
     const fetchImpl = vi.fn(async () => Response.json({ ok: true }));

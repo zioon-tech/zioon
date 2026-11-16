@@ -93,6 +93,9 @@ export function normalizeIdentitySnapshot(value = {}) {
     || Date.now();
   return {
     version: 1,
+    ...(source.revision ? { revision: String(source.revision) } : {}),
+    ...(source.sourceHashes && typeof source.sourceHashes === "object" ? { sourceHashes: { ...source.sourceHashes } } : {}),
+    ...(source.digestSource ? { digestSource: String(source.digestSource) } : {}),
     savedAt,
     lastChangedAt: Math.max(
       timestampMs(source.lastChangedAt),
@@ -109,14 +112,18 @@ export function createIdentitySnapshot({
   files = {},
   sourceRoot = DEFAULT_IDENTITY_ROOT,
   savedAt = Date.now(),
-  lastChangedAt = savedAt
+  lastChangedAt = savedAt,
+  sourceHashes,
+  digestSource
 } = {}) {
   return normalizeIdentitySnapshot({
     savedAt,
     lastChangedAt,
     sourceRoot,
     content,
-    files
+    files,
+    sourceHashes,
+    digestSource
   });
 }
 
