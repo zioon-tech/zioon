@@ -73,6 +73,7 @@ describe("Workbench startup catalog", () => {
         id: `s${index}`, text: "history ".repeat(1800),
         meta: {
           title: `Session ${index}`,
+          titleAuto: false,
           tags: ["project/test"],
           annotations: { tools: [{ result: "x".repeat(50000) }] },
           identitySnapshot: { payload: "y".repeat(25000) },
