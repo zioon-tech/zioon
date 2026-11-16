@@ -548,7 +548,7 @@ function replaceProjectedBody(ytext, from, to, next) {
 function prepareSnapshotRun(document, { runId, documentAnchor, mode = "final", appendUserPrompt = false } = {}) {
   const projections = document.getMap(SESSION_DOCUMENT_RUN_PROJECTION_KEY);
   const previous = projections.get(runId);
-  if (previous && !previous.pendingAnchor) return false;
+  if (previous && (previous.detached || !previous.pendingAnchor)) return false;
   const ytext = document.getText(SESSION_DOCUMENT_TEXT_KEY);
   const offset = resolveRunAnchor(document, ytext, documentAnchor);
   const base = { schemaVersion: 1, runId, lastSequence: 0,
