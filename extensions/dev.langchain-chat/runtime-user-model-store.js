@@ -1,4 +1,5 @@
 import { createHttpRuntimeClient } from "../../src/runtime/http-runtime-client.ts";
+import { currentAccountSession } from "../../packages/account-ui/src/client.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -250,8 +251,18 @@ async function loadRuntimeModelCatalog({
 } = {}) {
   const config = shouldUseRuntimeModelStore({ state, storage });
   if (!config) return null;
-  const cacheKey = String(config.baseUrl || "");
+  if (state?.get?.("workbench.accessChanged")) {
+    invalidateRuntimeDynamicModelCache();
+    throw new Error("账户或访问权限已变化，请重新进入工作台");
+  }
+  const account = currentAccountSession();
+  const cacheKey = JSON.stringify([
+    config.baseUrl, account?.user?.id, account?.space?.id,
+    account?.sessionId, account?.membership, account?.scopes
+  ]);
   const now = Date.now();
+  const previous = runtimeModelCache?.key === cacheKey
+    && runtimeModelCache.fetchImpl === fetchImpl ? runtimeModelCache : null;
   if (
     !force
     && runtimeModelCache?.key === cacheKey
@@ -260,7 +271,7 @@ async function loadRuntimeModelCatalog({
     if (runtimeModelCache.value && runtimeModelCache.expiresAt > now) {
       return runtimeModelCache.value;
     }
-    if (runtimeModelCache.promise) return runtimeModelCache.promise;
+    if (runtimeModelCache.promise) return runtimeModelCache.value || runtimeModelCache.promise;
   }
   const promise = (async () => {
     const client = createHttpRuntimeClient({
@@ -268,22 +279,33 @@ async function loadRuntimeModelCatalog({
       fetchImpl
     });
     const catalog = await client.getModels();
-    runtimeModelCache = {
-      key: cacheKey,
-      fetchImpl,
-      value: catalog,
-      expiresAt: Date.now() + RUNTIME_MODEL_CACHE_TTL_MS,
-      promise: null
-    };
+    // A response started before account/config invalidation cannot repopulate
+    // the cache or replace a newer forced refresh.
+    if (runtimeModelCache?.promise === promise) {
+      runtimeModelCache = {
+        key: cacheKey, fetchImpl, value: catalog,
+        expiresAt: Date.now() + RUNTIME_MODEL_CACHE_TTL_MS, promise: null
+      };
+    }
     return catalog;
   })();
   runtimeModelCache = {
     key: cacheKey,
     fetchImpl,
-    value: null,
-    expiresAt: 0,
+    value: previous?.value || null,
+    expiresAt: previous?.expiresAt || 0,
     promise
   };
+  // Sending reuses the already selected account's catalog. Refresh it in the
+  // background instead of making every expired TTL a network barrier.
+  if (!force && previous?.value) {
+    void promise.catch(() => {
+      if (runtimeModelCache?.promise === promise) {
+        runtimeModelCache = { ...previous, expiresAt: Date.now() + 5_000, promise: null };
+      }
+    });
+    return previous.value;
+  }
   try {
     return await promise;
   } catch (error) {

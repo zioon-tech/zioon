@@ -2246,8 +2246,14 @@ export async function activate(ctx) {
       ? Promise.all([
           Promise.resolve().then(() =>
             window.zion?.models?.getProvider?.(runModel?.providerId)?.resolve?.(runModel?.modelId)
-          ),
-          loadRuntimeModelProfiles().catch(() => null)
+          ).then(config => {
+            preparation?.mark?.("providerConfigReadCompleted");
+            return config;
+          }),
+          loadRuntimeModelProfiles().catch(() => null).then(profiles => {
+            preparation?.mark?.("runtimeProfilesReadCompleted");
+            return profiles;
+          })
         ]).then(result => {
           preparation?.mark?.("modelReadCompleted");
           return result;

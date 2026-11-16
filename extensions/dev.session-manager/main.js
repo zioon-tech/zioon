@@ -463,6 +463,7 @@ const durableSessionIds = new Set();
 const remoteSessionRevisions = new Map();
 const remoteSessionKV = new Map();
 const pendingRemoteMutations = [];
+let remoteTreeBase = null;
 let remoteMutationFlushActive = false;
 let remoteMutationFlushScheduled = false;
 let sessionTagIndex = createSessionTagIndex();
@@ -689,7 +690,7 @@ async function flushRemoteMutations() {
             mutation.tree,
             mutation.index,
             null,
-            { sourceClientId: WORKBENCH_CLIENT_ID }
+            { sourceClientId: WORKBENCH_CLIENT_ID, baseTree: mutation.baseTree }
           );
         } else if (mutation.type === "kv") {
           result = await writeRemoteSessionKV(mutation.id, mutation.value, {
@@ -710,6 +711,20 @@ async function flushRemoteMutations() {
         }
         if (mutation.type === "kv") remoteSessionKV.set(mutation.id, mutation.value);
         pendingRemoteMutations.shift();
+        if (mutation.type === "tree" && result?.tree) {
+          remoteTreeBase = structuredClone(result.tree);
+          const nextTree = pendingRemoteMutations.find(item => item.type === "tree");
+          if (nextTree && !nextTree.attempted) {
+            // Its snapshot includes this edit. Only the edits after our
+            // acknowledged snapshot should be replayed on the next save.
+            nextTree.baseTree = structuredClone(mutation.tree);
+          }
+          if (!pendingRemoteMutations.some(item => item.type === "tree")) {
+            window.zion?.state?.set("sessions.treeMem", result.tree);
+            window.zion?.state?.set("sessions.indexMem", result.index);
+            window.zion?.state?.set("sessions.catalog", result.index);
+          }
+        }
         for (const waiter of mutation.waiters || []) waiter.resolve(result);
         setRemoteStorageState(true);
         try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
@@ -803,7 +818,8 @@ function scheduleRemoteSnapshot(kind, id, value) {
     return enqueueRemoteMutation({
       type: "tree",
       id: "tree",
-      tree: window.zion?.state?.get("sessions.treeMem"),
+      tree: structuredClone(window.zion?.state?.get("sessions.treeMem")),
+      baseTree: remoteTreeBase ? structuredClone(remoteTreeBase) : null,
       index: window.zion?.state?.get("sessions.indexMem") || []
     });
   }
@@ -851,6 +867,9 @@ async function hydrateRemoteCatalogResponse(response) {
     hasPending: (id) => pendingRemoteMutations.some((mutation) => mutation.id === id),
     isOpen: (id) => openSessionEditors(id).length > 0
   });
+  if (!pendingRemoteMutations.some(item => item.type === "tree") && response.catalog.tree) {
+    remoteTreeBase = structuredClone(response.catalog.tree);
+  }
   remoteSessionKV.clear();
   for (const [key, value] of Object.entries(response.catalog.kv || {})) {
     remoteSessionKV.set(key, value);
@@ -888,6 +907,7 @@ function hydrateFromDurableSnapshot(snapshot) {
     remoteSessionRevisions.delete(id);
   }
   if (snapshot.tree?.type === "folder") {
+    remoteTreeBase = structuredClone(snapshot.tree);
     try { window.zion?.state?.set("sessions.treeMem", snapshot.tree); } catch {}
   }
   try {
@@ -954,8 +974,12 @@ function collaborationSynced(sessionId) {
 }
 
 async function refreshRemoteTree() {
+  const beforeTree = window.zion?.state?.get("sessions.treeMem");
   const remote = await readRemoteTree();
+  if (pendingRemoteMutations.some(item => item.type === "tree")
+    || window.zion?.state?.get("sessions.treeMem") !== beforeTree) return remote;
   if (remote?.tree?.type === "folder") {
+    remoteTreeBase = structuredClone(remote.tree);
     window.zion?.state?.set("sessions.treeMem", remote.tree);
   }
   if (Array.isArray(remote?.index)) {
@@ -963,11 +987,6 @@ async function refreshRemoteTree() {
     window.zion?.state?.set("sessions.catalog", remote.index);
   }
   remoteRevision = remote?.revision || remoteRevision;
-  remoteEventCursor = Math.max(
-    remoteEventCursor,
-    Number(remote?.event_cursor) || 0
-  );
-  remoteRealtimeSync?.setCursor(remoteEventCursor);
   try { refreshSessionsSidebarViewIfOpen(); } catch {}
   try { refreshSessionsOverlayIfOpen(); } catch {}
   return remote;
@@ -1269,7 +1288,7 @@ async function initSessionsStorage() {
         title: "Sessions",
         children: []
       };
-      await writeRemoteTree(initialTree, [], null);
+      await writeRemoteTree(initialTree, [], null, { baseTree: initialTree });
       response = await readRemoteCatalog();
     }
     const snapshot = response?.catalog || response?.snapshot || response;
