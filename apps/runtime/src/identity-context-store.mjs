@@ -40,7 +40,7 @@ export class PostgresIdentityContextStore {
       if (refreshEpoch !== undefined) {
         const selected = await client.query(
           `SELECT refresh_epoch FROM runtime_identity_context_bindings
-           WHERE scope_key = $1 AND session_id = $2`, [key, sessionId]
+           WHERE scope_key = $1 AND session_id = $2 FOR UPDATE`, [key, sessionId]
         );
         if (String(selected.rows[0]?.refresh_epoch) !== String(refreshEpoch)) {
           throw Object.assign(new Error("Identity refresh superseded by a newer request"), { statusCode: 409 });

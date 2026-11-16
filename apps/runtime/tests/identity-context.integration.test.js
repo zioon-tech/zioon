@@ -187,6 +187,65 @@ describe("versioned Identity context integration", () => {
     expect(await f.contribute(rebound, "shared-id")).toContain("Other scope");
   });
 
+  it("keeps epoch validation and publication atomic against a concurrent reservation", async () => {
+    const f = await fixture(), scope = "refresh-lock-test", sessionId = "session";
+    const snapshot = content => ({
+      content, sourceRoot: root, sourceHashes: { user: contentHash(content) }
+    });
+    await f.contextStore.publish(scope, sessionId, snapshot("Original"));
+    const epoch = await f.contextStore.reserveRefresh(scope, sessionId);
+    let release, selected, publisherPid;
+    const gate = new Promise(resolve => { release = resolve; });
+    const observed = new Promise(resolve => { selected = resolve; });
+    const pausedPublisher = new PostgresIdentityContextStore({
+      async connect() {
+        const client = await f.db.pool.connect();
+        publisherPid = client.processID;
+        return {
+          async query(...args) {
+            const result = await client.query(...args);
+            if (String(args[0]).includes("SELECT refresh_epoch")) {
+              selected();
+              await gate;
+            }
+            return result;
+          },
+          release() { client.release(); }
+        };
+      }
+    });
+    const contenderClient = await f.db.pool.connect();
+    const contender = new PostgresIdentityContextStore({
+      query: (...args) => contenderClient.query(...args)
+    });
+    const older = pausedPublisher.publish(scope, sessionId, snapshot("Older"), {
+      force: true, refreshEpoch: epoch
+    });
+    let reservation;
+    try {
+      await observed;
+      reservation = contender.reserveRefresh(scope, sessionId);
+      await vi.waitFor(async () => {
+        const result = await f.db.pool.query(
+          "SELECT pg_blocking_pids($1) AS blockers", [contenderClient.processID]
+        );
+        expect(result.rows[0].blockers).toContain(publisherPid);
+      }, { timeout: 1500, interval: 10 });
+      release();
+      await older;
+      const newerEpoch = await reservation;
+      expect(BigInt(newerEpoch)).toBe(BigInt(epoch) + 1n);
+      await f.contextStore.publish(scope, sessionId, snapshot("Newest"), {
+        force: true, refreshEpoch: newerEpoch
+      });
+      expect((await f.contextStore.read(scope, sessionId)).content).toBe("Newest");
+    } finally {
+      release();
+      await Promise.allSettled([older, reservation]);
+      contenderClient.release();
+    }
+  });
+
   it("atomically chooses one first-session version across workers and deduplicates immutable bodies", async () => {
     const f = await fixture();
     const scope = "concurrent-test";

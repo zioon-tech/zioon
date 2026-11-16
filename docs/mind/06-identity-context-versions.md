@@ -30,6 +30,9 @@ Existing sessions recheck the small durable version pointer and transfer the
 body only when the cached revision differs, so refresh on another worker is
 visible. Refresh reserves an epoch before reading sources; an older request
 cannot overwrite a newer refresh, even if its network response finishes later.
+Publication locks the session binding row from epoch validation through commit,
+so a concurrent reservation cannot advance the epoch between validation and
+the revision update. Source IO remains outside the publication transaction.
 
 `POST /v1/plugins/dev.identity/commands` with
 `{"action":"refresh_context","sessionId":"..."}` explicitly updates the selected
