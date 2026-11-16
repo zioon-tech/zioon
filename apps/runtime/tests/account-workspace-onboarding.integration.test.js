@@ -167,11 +167,24 @@ AliyunAccountStorage.prototype.provision = async function({accountId,workspaceId
       .toMatchObject({ preset: "trusted-automation", fileRoots: ["/"], allowedTools: expect.arrayContaining(["Bash", "write", "read"]) });
     const run = await request(a, "/v1/runs", {
       interactionProfileId: "interactive.default", prompt: "Reply with fresh-account-model-ok",
+      sessionId: "gateway-completion",
       policy: { allowedTools: [] }
     }, "POST");
     expect(run.status, JSON.stringify(run.body)).toBe(202);
     await vi.waitFor(async () => {
       expect((await request(a, `/v1/runs/${run.body.runId}`)).body.run.status).toBe("completed");
+    }, { timeout: 10000, interval: 100 });
+    // The actual main entry serves account Runtimes through a shared gateway.
+    // Terminal execution alone does not prove that their background work started.
+    await vi.waitFor(async () => {
+      const task = (await db.pool.query(
+        "SELECT status,attempts FROM runtime_run_completion_tasks WHERE space_id=$1 AND run_id=$2",
+        [a.space.id, run.body.runId]
+      )).rows[0];
+      expect(task?.status).toBe("completed");
+      expect(task.attempts).toBe(1);
+      const events = (await request(a, `/v1/runs/${run.body.runId}/events`)).body.events;
+      expect(events.some(event => event.type === "run.finalized")).toBe(true);
     }, { timeout: 10000, interval: 100 });
     expect(modelAuthorization).toBe("Bearer platform-fixture-key");
     const overwrite = await request(a, "/v1/model-profiles/deepseek-v4-flash", {

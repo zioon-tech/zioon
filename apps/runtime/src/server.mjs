@@ -2691,10 +2691,13 @@ export function createRuntimeServer({
     handleRequest,
     handleUpgrade,
     isIdle: () => handles.size === 0 && sessionFinalizations.size === 0 && (completionWorker?.isIdle() ?? true),
-    async start() {
-      if (server.listening) return this.address();
+    startBackgroundWork() {
       closing = false;
       completionWorker?.start();
+    },
+    async start() {
+      if (server.listening) return this.address();
+      this.startBackgroundWork();
       await new Promise((resolve, reject) => {
         const onError = (error) => {
           server.off("listening", onListening);

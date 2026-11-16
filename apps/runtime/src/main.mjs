@@ -2121,6 +2121,10 @@ const runtime = createRuntimeServer({
     assetStore: "filesystem-cas"
   }
 });
+// Account Runtime instances serve through the gateway without opening their
+// own HTTP listener, but must still recover and process durable completion work.
+startupCleanup.push(() => runtime.close());
+runtime.startBackgroundWork();
 sandboxTools?.start();
 extensionOutbox?.start();
 schedulerWorker?.start();
