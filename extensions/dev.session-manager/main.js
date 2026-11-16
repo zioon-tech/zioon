@@ -59,9 +59,7 @@ import { createSessionsListRendererFactory } from "./ui/list-renderer.js";
 import { extractDocumentLeadPreview } from "../shared/session-preview.js";
 import { markSessionRunViewed } from "./features/run-state.js";
 import {
-  hydrateLlmRequestWorkbenchEvent,
-  llmRequestPayloadFromWorkbenchEvent,
-  registerLlmRequestPayload
+  observeLlmRequestWorkbenchEvent
 } from "../../src/runtime/llm-request-observability.ts";
 import {
   planAssistantMarkerInsertionById,
@@ -1072,22 +1070,19 @@ async function applyRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
   window.zion?.state?.set("sessions.realtimeCursor", remoteEventCursor);
 
   if (event.type === "llm.request") {
-    let observableEvent = event;
-    try {
-      observableEvent = await hydrateLlmRequestWorkbenchEvent(
-        event,
-        (runId, sequence) => readRemoteRunEvent(runId, sequence)
-      );
-    } catch (error) {
-      console.warn(
+    // The inspector payload is optional detail. It must not hold run.started,
+    // run.completed or document updates behind another network round trip.
+    const sourceSync = remoteRealtimeSync;
+    observeLlmRequestWorkbenchEvent({
+      event,
+      zion: window.zion,
+      resolveDetail: (runId, sequence) => readRemoteRunEvent(runId, sequence),
+      isCurrent: () => remoteRealtimeSync === sourceSync && !window.zion?.state?.get("workbench.accessChanged"),
+      onError: error => console.warn(
         "[dev.session-manager] failed to load LLM request detail:",
         error
-      );
-    }
-    const requestPayload = llmRequestPayloadFromWorkbenchEvent(observableEvent);
-    if (requestPayload) {
-      registerLlmRequestPayload(window.zion, requestPayload);
-    }
+      )
+    });
     return;
   }
   if (String(event.type || "").startsWith("run.")) {

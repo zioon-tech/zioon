@@ -852,15 +852,19 @@ describe("Runtime compatibility with current zion-next contracts", () => {
     ]);
 
     expect(runtimeResult.output).toBe(legacyResult.output);
+    const expectedEvents = legacyEvents
+      .filter((event: any) => COMMON_LOOP_EVENTS.has(event.type))
+      .map((event: any) => event.type);
+    // Runtime also persists the tool-turn message, so final document replay
+    // does not rely on transient deltas. Legacy emitted only the final answer.
+    expectedEvents.splice(expectedEvents.indexOf("tool.requested") + 1, 0, "message.completed");
+    expect(runtimeEvents.filter(event => event.type === "message.completed").map(event => event.data))
+      .toEqual([{ turn: 1, content: "" }, { turn: 2, content: "zion-next" }]);
     expect(runtimeEvents
       .map(toZionNextRunEvent)
       .filter((event) => COMMON_LOOP_EVENTS.has(event.type))
       .map((event) => event.type)
-    ).toEqual(
-      legacyEvents
-        .filter((event: any) => COMMON_LOOP_EVENTS.has(event.type))
-        .map((event: any) => event.type)
-    );
+    ).toEqual(expectedEvents);
     expect(runtimeEvents
       .map(toZionNextRunEvent)
       .find((event) => event.type === "tool.requested")?.data)

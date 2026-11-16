@@ -222,11 +222,12 @@ export function scheduleConversationViewportFollow(
     state,
     cycleId = "",
     initial = false,
+    once = false,
     reveal
   } = {}
 ) {
   const current = getViewportState(view, { sessionId, state });
-  if (!current || !current.followLatest || typeof reveal !== "function") {
+  if (!current || (!current.followLatest && !once) || typeof reveal !== "function") {
     return false;
   }
   const normalizedCycleId = String(cycleId || current.cycleId || "");
@@ -237,10 +238,13 @@ export function scheduleConversationViewportFollow(
   ) {
     return false;
   }
+  // A completion input reveal takes priority over queued card/token follows.
+  if (current.pending?.once && !once) return true;
 
   current.pending = {
     cycleId: normalizedCycleId,
     initial: initial === true,
+    once: once === true,
     epoch: current.epoch,
     reveal
   };
@@ -252,7 +256,7 @@ export function scheduleConversationViewportFollow(
     current.pending = null;
     if (
       !pending
-      || !current.followLatest
+      || (!current.followLatest && !pending.once)
       || pending.epoch !== current.epoch
       || (
         pending.initial
@@ -266,7 +270,14 @@ export function scheduleConversationViewportFollow(
     let resolved = false;
     // A follow requested after document growth supersedes submit preservation.
     // Otherwise its 350ms guard pulls the viewport back after every token.
-    if (!pending.initial) clearViewportStability(current);
+    if (!pending.initial) {
+      clearViewportStability(current);
+      // A token can supersede the first reveal before it runs. Retire the
+      // submission baseline as well, so delayed cleanup cannot restore it.
+      current.completedInitialCycleId = pending.cycleId;
+      current.initialScrollTop = null;
+      current.initialAnchor = null;
+    }
     const scrollDOM = view?.scrollDOM;
     const beforeReveal = Number(scrollDOM?.scrollTop);
     try {

@@ -34,11 +34,12 @@ function createState(initial = {}) {
 }
 
 function appendToDisk(disk) {
-  return vi.fn(async ({ records }) => {
-    const existing = String(disk.get("biographyEvents") || "").split("\n").filter(Boolean).map(JSON.parse);
+  return vi.fn(async ({ records, relativePath }) => {
+    const key = relativePath === "biography/distillations.jsonl" ? "biographyDistillations" : "biographyEvents";
+    const existing = String(disk.get(key) || "").split("\n").filter(Boolean).map(JSON.parse);
     const ids = new Set(existing.map((event) => event.id));
     const added = records.filter((record) => !ids.has(record.id));
-    disk.set("biographyEvents", [...existing, ...added].map(JSON.stringify).join("\n") + "\n");
+    disk.set(key, [...existing, ...added].map(JSON.stringify).join("\n") + "\n");
     return { appended: added.map((event) => event.id), skipped: records.filter((event) => ids.has(event.id)).map((event) => event.id) };
   });
 }
@@ -765,10 +766,12 @@ describe("Runtime-backed Identity state", () => {
       skipped: ["session-1:run-1:0"],
       totalEvents: 1
     });
-    expect(fileService.writeTextFiles).not.toHaveBeenCalled();
+    expect(fileService.writeTextFiles).toHaveBeenCalledWith(expect.objectContaining({
+      files: { biography: expect.objectContaining({ content: expect.stringContaining("Runtime") }) }
+    }));
   });
 
-  it("registers a Runtime biography post-processor that distills completed Runs", async () => {
+  it.each(["success", "summary-failure", "append-failure"])("distills once and recovers partial publication (%s)", async failureStage => {
     const disk = new Map([
       ["biographyEvents", ""],
       ["identity", "# Identity\nRuntime identity"],
@@ -778,8 +781,16 @@ describe("Runtime-backed Identity state", () => {
       ["projectsInbox", ""],
       ["projectsAttention", ""]
     ]);
+    let failed = false;
+    const append = appendToDisk(disk);
     const fileService = {
-      appendJsonl: appendToDisk(disk),
+      appendJsonl: vi.fn(async input => {
+        if (failureStage === "append-failure" && !failed && input.relativePath.endsWith("/events.jsonl")) {
+          failed = true;
+          throw new Error("temporary publication failure");
+        }
+        return append(input);
+      }),
       readTextFiles: vi.fn(async ({ fileRoot, files }) => ({
         fileRoot,
         files: Object.fromEntries(
@@ -787,6 +798,10 @@ describe("Runtime-backed Identity state", () => {
         )
       })),
       writeTextFiles: vi.fn(async ({ fileRoot, files }) => {
+        if (failureStage === "summary-failure" && !failed && files.biography) {
+          failed = true;
+          throw new Error("temporary publication failure");
+        }
         for (const [key, spec] of Object.entries(files)) {
           disk.set(key, spec.content);
         }
@@ -824,7 +839,7 @@ describe("Runtime-backed Identity state", () => {
     };
     const stateBucket = new Map();
     const processors = [];
-    activateRuntimePlugin({
+    const pluginContext = {
       apiVersion: 2,
       plugin: { id: "dev.identity", version: "test" },
       config: {
@@ -859,14 +874,16 @@ describe("Runtime-backed Identity state", () => {
           return { dispose() {} };
         }
       }
-    });
+    };
+    activateRuntimePlugin(pluginContext);
 
     expect(processors).toHaveLength(1);
-    await processors[0].process({
+    const run = {
       runId: "run-1",
       attemptId: "attempt-1",
       sessionId: "session-1",
       status: "completed",
+      idempotencyKey: "run-1:attempt-1:dev.identity.biography",
       model: { profileId: "workbench.user.dynamic.kimi-k2.5" },
       policy: { preset: "trusted-automation" },
       metadata: { sessionTitle: "Runtime Post Processor" },
@@ -874,9 +891,19 @@ describe("Runtime-backed Identity state", () => {
         { role: "user", content: "继续推进 Runtime" },
         { role: "assistant", content: "完成 Runtime post processor" }
       ]
-    });
+    };
+    if (failureStage !== "success") {
+      await expect(processors[0].process(run)).rejects.toThrow("temporary publication failure");
+      activateRuntimePlugin(pluginContext);
+      await processors[1].process(run);
+    } else {
+      await processors[0].process(run);
+    }
+    await processors.at(-1).process(run);
 
     expect(modelService.generateText).toHaveBeenCalledOnce();
+    expect(String(disk.get("biographyEvents")).split("\n").filter(Boolean)).toHaveLength(1);
+    expect(String(disk.get("biographyDistillations")).split("\n").filter(Boolean)).toHaveLength(1);
     expect(fileService.readTextFiles).toHaveBeenCalledWith(
       expect.not.objectContaining({
         sessionId: "session-1"
@@ -895,5 +922,8 @@ describe("Runtime-backed Identity state", () => {
       records: [expect.objectContaining({ id: "session-1:run-1:0" })]
     }));
     expect(stateBucket.get("snapshot").files.biography).toContain("完成 Runtime post processor");
+    await expect(processors.at(-1).process({
+      ...run, runId: "missing-input", messages: [{ role: "assistant", content: "completed" }]
+    })).rejects.toThrow("input context is unavailable");
   });
 });

@@ -2,14 +2,14 @@
   "id": "dev.sticky-user-header",
   "name": "Sticky User Header",
   "description": "Keep the active user message header visible while scrolling.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Zion Team",
   "main": "main.js",
   "enabled": true,
   "zion": {
     "id": "dev.sticky-user-header",
     "name": "Sticky User Header",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "main": "main.js",
     "presentation": {
       "displayName": {

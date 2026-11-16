@@ -1,13 +1,13 @@
 {
   "name": "dev.identity",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Maintain agent identity, user profile, and distilled biography context.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.identity",
     "name": "Identity",
-    "version": "0.1.15",
+    "version": "0.1.16",
     "main": "./main.js",
     "entries": {
       "ui": "./main.js",

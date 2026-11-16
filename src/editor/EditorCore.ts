@@ -431,11 +431,11 @@ export class EditorCore {
   private applyingVimOperationalMode = false;
 
   // runtime flags for feature toggles
-  private lineNumbersEnabled = true;
-  private activeLineHighlightEnabled = true;
+  private lineNumbersEnabled = false;
+  private activeLineHighlightEnabled = false;
   private autoIndentEnabled = true;
   private syntaxHighlightEnabled = true;
-  private foldEnabled = true;
+  private foldEnabled = false;
   private lineWrapEnabled = true;
   private wysiwygEnabled = true;
   private wysiwygKeepActiveLineRendered = true;
@@ -449,9 +449,9 @@ export class EditorCore {
   constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0", options: EditorCoreOptions = {}) {
     this._panelId = panelId;
     this._editorId = createEditorId(panelId);
-    this.lineNumbersEnabled = options.lineNumbers ?? true;
-    this.activeLineHighlightEnabled = options.activeLineHighlight ?? true;
-    this.foldEnabled = options.folding ?? true;
+    this.lineNumbersEnabled = options.lineNumbers ?? false;
+    this.activeLineHighlightEnabled = options.activeLineHighlight ?? false;
+    this.foldEnabled = options.folding ?? false;
     parent.setAttribute("data-panel-id", panelId);
     this.view = new EditorView({
       state: EditorState.create({

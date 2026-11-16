@@ -18,6 +18,7 @@ export type AcceptedRuntimeRun = {
   runId: string;
   attemptId: string;
   status: "accepted";
+  inputSnapshotId?: string;
   model?: ModelRef;
   policy?: CapabilityPolicy;
   interactionProfile?: RuntimeInteractionProfile;
@@ -103,6 +104,7 @@ export type RuntimeEventSubscription = {
 
 export interface RuntimeClient {
   createRun(request: RunRequest): Promise<AcceptedRuntimeRun>;
+  getInputReceipt(sessionId: string, clientRequestId: string, expectedAccount?: { userId: string; spaceId: string }): Promise<{ status: string; response?: AcceptedRuntimeRun }>;
   resumeRun(runId: string, request: ResumeRunRequest): Promise<AcceptedRuntimeRun>;
   previewRun(request: RunRequest): Promise<RuntimeRequestPreview>;
   getModels(interactionProfileId?: string): Promise<RuntimeModelCatalog>;
@@ -137,7 +139,7 @@ export interface RuntimeClient {
     runId: string,
     options?: RuntimeEventSubscription
   ): AsyncIterable<RunEvent>;
-  abort(runId: string, reason?: string): Promise<void>;
+  abort(runId: string, reason?: string, expectedAccount?: { userId: string; spaceId: string }): Promise<void>;
 }
 
 export type HttpRuntimeClientOptions = {
@@ -160,11 +162,13 @@ export type RemoteRunHandleOptions = {
 
 export class RuntimeHttpError extends Error {
   readonly status: number;
+  readonly code: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code = "") {
     super(message);
     this.name = "RuntimeHttpError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -395,7 +399,8 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   if (!response.ok) {
     throw new RuntimeHttpError(
       response.status,
-      String(body.error || `Runtime HTTP ${response.status}`)
+      String(body.error || `Runtime HTTP ${response.status}`),
+      String(body.code || "")
     );
   }
   return body;
@@ -578,17 +583,30 @@ export function createHttpRuntimeClient(
       return body.selection;
     },
 
+    async getInputReceipt(sessionId, clientRequestId, expectedAccount) {
+      const query = expectedAccount ? `?${new URLSearchParams({
+        expectedUserId: expectedAccount.userId, expectedSpaceId: expectedAccount.spaceId
+      })}` : "";
+      const response = await fetchRequest(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/inputs/${encodeURIComponent(clientRequestId)}${query}`, {
+        signal: AbortSignal.timeout(10_000)
+      });
+      const body = await readJson(response);
+      return body.input as { status: string; response?: AcceptedRuntimeRun };
+    },
+
     async createRun(request) {
       const response = await fetchRequest(`${baseUrl}/v1/runs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(request)
+        body: JSON.stringify(request),
+        ...(request.conversationInput ? { signal: AbortSignal.timeout(15_000) } : {})
       });
       const body = await readJson(response);
       return {
         runId: requireString(body.runId, "runId", response.status),
         attemptId: requireString(body.attemptId, "attemptId", response.status),
         status: "accepted",
+        ...(body.inputSnapshotId ? { inputSnapshotId: String(body.inputSnapshotId) } : {}),
         ...(body.model && typeof body.model === "object"
           ? { model: body.model as ModelRef }
           : {}),
@@ -819,11 +837,11 @@ export function createHttpRuntimeClient(
       })();
     },
 
-    async abort(runId, reason = "user") {
+    async abort(runId, reason = "user", expectedAccount) {
       const response = await fetchRequest(runUrl(runId, "/abort"), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason })
+        body: JSON.stringify({ reason, ...(expectedAccount ? { expectedAccount } : {}) })
       });
       await readJson(response);
     }

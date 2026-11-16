@@ -164,7 +164,19 @@ export async function activate(context) {
   }
   disposables.push(zion.sideBar.registerView({
     id: "adc.devices", pluginId, title: "ADC", icon: "$(remote)", order: 45, location: "sidebar",
-    component: { render(node) { container = node; render(); void refresh(); } }
+    component: { render(node) {
+      // Workbench reuses its sidebar host for other views. Keep async ADC
+      // updates inside a node owned by this mount, and release it on unmount.
+      const mounted = element("div");
+      node.append(mounted);
+      container = mounted;
+      render();
+      void refresh();
+      return { dispose() {
+        if (container === mounted) container = null;
+        mounted.remove();
+      } };
+    } }
   }));
   disposables.push(zion.activityBar.registerItem({
     id: "adc.activity", pluginId, icon: "$(remote)", tooltip: "ADC", sideBarViewId: "adc.devices", order: 45
@@ -179,7 +191,7 @@ export async function activate(context) {
   disposables.push({ dispose() {
     disposed = true;
     requests.forEach((request) => request.abort());
-    statusItem?.dispose?.(); container?.replaceChildren();
+    statusItem?.dispose?.(); container?.remove(); container = null;
     window.removeEventListener("focus", focused);
   } });
   const callback = new URL(location.href);

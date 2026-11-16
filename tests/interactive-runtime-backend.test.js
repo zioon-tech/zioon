@@ -15,6 +15,7 @@ import {
   syncWorkbenchModelProfiles
 } from "../extensions/dev.langchain-chat/runtime-backend.js";
 import { reconstructWidgetHistoryMessages } from "../src/chat/widget-history.ts";
+import { setAccountSession } from "../packages/account-ui/src/client";
 
 async function collect(iterable) {
   const values = [];
@@ -23,6 +24,37 @@ async function collect(iterable) {
 }
 
 describe("interactive Runtime backend", () => {
+  it.each(["during-model-resolution", "stale-cookie"])("binds captured account before admission (%s)", change => {
+    return (async () => {
+      setAccountSession({ user: { id: "alice" }, space: { id: "space-a" }, scopes: [] });
+      const sent = [];
+      const fetchImpl = vi.fn(async (url, init = {}) => {
+        if (String(url).endsWith("/v1/models")) {
+          if (change === "during-model-resolution") setAccountSession({ user: { id: "bob" }, space: { id: "space-a" }, scopes: [] });
+          return new globalThis.Response(JSON.stringify({
+            activeProfileId: "profile", profiles: [{ id: "profile", providerId: "test", providerType: "openai", model: "model" }]
+          }));
+        }
+        if (String(url).endsWith("/v1/runs")) {
+          sent.push(JSON.parse(init.body));
+          return new globalThis.Response(JSON.stringify({ error: "Account changed", code: "INPUT_SUBMISSION_ACCOUNT_CHANGED" }), { status: 403 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await expect(createInteractiveRuntimeHandle({
+          messages: [{ role: "user", content: "alice private input" }], tools: [],
+          selectedModel: { providerId: "test", modelId: "model" }, selectedModelConfig: {},
+          workbenchSessionId: `account-${change}`, baseUrl: "http://runtime.test", fetchImpl
+        })).rejects.toMatchObject({ code: "INPUT_SUBMISSION_ACCOUNT_CHANGED" });
+        if (change === "during-model-resolution") expect(sent).toHaveLength(0);
+        else expect(sent[0].conversationInput.expectedAccount).toEqual({ userId: "alice", spaceId: "space-a" });
+      } finally {
+        setAccountSession(null);
+      }
+    })();
+  });
+
   it("requests goal workflow tools automatically while preserving selected tool policy", async () => {
     const fetchImpl = vi.fn(async (url, init) => {
       if (String(url).endsWith("/v1/models")) return new globalThis.Response(JSON.stringify({

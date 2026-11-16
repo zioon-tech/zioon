@@ -154,3 +154,22 @@ export async function hydrateLlmRequestWorkbenchEvent(
     }
   };
 }
+
+export function observeLlmRequestWorkbenchEvent({
+  event, zion, resolveDetail, isCurrent = () => true, onError = () => {}
+}: {
+  event: unknown;
+  zion: ZionLlmRequestHost | null | undefined;
+  resolveDetail: (runId: string, sequence: number) => Promise<unknown>;
+  isCurrent?: () => boolean;
+  onError?: (error: unknown) => void;
+}) {
+  // Register the summary immediately; optional detail cannot hold the event queue.
+  const summary = llmRequestPayloadFromWorkbenchEvent(event);
+  if (summary && isCurrent()) registerLlmRequestPayload(zion, summary);
+  void hydrateLlmRequestWorkbenchEvent(event, resolveDetail).then(hydrated => {
+    if (hydrated === event || !isCurrent()) return;
+    const detail = llmRequestPayloadFromWorkbenchEvent(hydrated);
+    if (detail) registerLlmRequestPayload(zion, detail);
+  }).catch(onError);
+}

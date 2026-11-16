@@ -129,11 +129,10 @@ function isEnabled() {
   try {
     const key = "dev.sticky-user-header.enabled";
     const val = localStorage.getItem(key);
-    // Default to true if not set
-    if (val === "false") return false;
-    return true;
+    if (val === "true" || val === "1") return true;
+    return false;
   } catch {
-    return true;
+    return false;
   }
 }
 

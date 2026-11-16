@@ -9,11 +9,14 @@ import {
   findAssistantBlockEndOffsetById
 } from "../../src/chat/restore";
 import {
-  appendAssistantTokenToYText
+  appendAssistantTokenToYText,
+  findUserPromptAfterAssistantBlock
 } from "./session-document-projector.js";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
+import { resolveToolCardId } from "../../src/chat/tool-card-id";
+import { appendConversationDraft } from "../../src/chat/conversation-draft.js";
 import {
   cancelConversationViewportFollow,
   initializeConversationViewport,
@@ -21,6 +24,7 @@ import {
 } from "../../src/chat/conversation-viewport.js";
 import {
   clearPendingAssistant,
+  hasSubmittedAssistantHeader,
   pendingAssistantExtension,
   revealPendingAssistantInView,
   setPendingAssistant
@@ -76,6 +80,10 @@ function collaborationState(zion, sessionId, patch = {}) {
 }
 
 function projectionAcknowledges(entry, projection) {
+  if (entry?.documentProjectionMode === "final" || projection?.mode === "final") {
+    return projection?.detached === true || (projection?.committed === true
+      && Number(projection.lastSequence || 0) >= Number(entry?.projectionSequence || 0));
+  }
   const expected = Number(entry?.projectionSequence || 0);
   const actual = Number(projection?.lastSequence || 0);
   return expected > 0 && actual >= expected;
@@ -125,6 +133,7 @@ export function createSessionCollaborationManager({
   const records = new Map();
   const pendingBySession = new Map();
   const durableFollowBySession = new Map();
+  const submittedFollowBySession = new Map();
   const pendingClearTimers = new Map();
   const tokenFollowRuns = new Set();
   const cardRestoreScheduled = new Set();
@@ -145,7 +154,7 @@ export function createSessionCollaborationManager({
     sessionId,
     runId,
     entryHint = null,
-    { initial = false } = {}
+    { initial = false, revealInput = false } = {}
   ) => {
     const record = records.get(sessionId);
     const entry = pendingBySession.get(sessionId)?.get(runId) || entryHint;
@@ -159,19 +168,25 @@ export function createSessionCollaborationManager({
         state: zion?.state,
         cycleId: entry?.followCycleId || entry?.runId || runId,
         initial,
+        // Completing a submitted turn reveals its new input once, even if
+        // streaming follow was paused. Other panes keep their own follow state.
+        once: revealInput && entry?.sourceView === view,
         reveal: () => {
-          if (!view?.scrollDOM) return false;
+          if (!view?.scrollDOM || !record.views.has(view)) return false;
           try {
-            const revealed = revealPendingAssistantInView(view, {
+            const activeRun = zion?.state?.get?.(`chat.runs.${sessionId}`);
+            if (revealInput && activeRun?.runId && activeRun.runId !== runId) return false;
+            const revealed = !revealInput && revealPendingAssistantInView(view, {
               runId: entry?.runId || runId,
               sessionId,
               preserveVisible: initial
             });
             if (!revealed && entry?.assistantBlockId) {
-              const position = findAssistantBlockEndOffsetById(
-                view.state.doc.toString(),
-                entry.assistantBlockId
-              ) ?? view.state.doc.length;
+              const source = view.state.doc.toString();
+              const position = revealInput
+                ? findUserPromptAfterAssistantBlock(source, entry.assistantBlockId)
+                : findAssistantBlockEndOffsetById(source, entry.assistantBlockId) ?? view.state.doc.length;
+              if (position == null) return false;
               const suppressUntil = Date.now() + 160;
               zion?.state?.set?.(
                 `chat.followSuppressUntil.${sessionId}`,
@@ -182,11 +197,14 @@ export function createSessionCollaborationManager({
                 suppressUntil
               );
               view.dispatch({
+                ...(revealInput && entry?.sourceView === view
+                  ? { selection: { anchor: position } } : {}),
                 effects: EditorView.scrollIntoView(position, {
                   y: "nearest",
                   yMargin: 24
                 })
               });
+              if (revealInput && entry?.sourceView === view) view.focus();
               return true;
             }
             return revealed;
@@ -198,7 +216,44 @@ export function createSessionCollaborationManager({
   };
 
   const scheduleSettledFollow = (sessionId, runId, entry) => {
-    schedulePendingFollow(sessionId, runId, entry, { initial: true });
+    const projection = records.get(sessionId)?.runProjections.get(runId);
+    if (projection?.detached) return;
+    schedulePendingFollow(sessionId, runId, entry, {
+      revealInput: projection?.committed && projection.status === "completed" && projection.appendUserPrompt === true
+    });
+  };
+
+  const settleDurableFollow = (sessionId, { reveal = false } = {}) => {
+    const record = records.get(sessionId);
+    if (!record) return;
+    record.revealDurableFollow ||= reveal;
+    if (record.durableFollowScheduled) return;
+    record.durableFollowScheduled = true;
+    // SSE completion may precede the last Yjs update. Keep following that
+    // update, reveal its next input once, then retire the run.
+    globalThis.queueMicrotask(() => {
+      record.durableFollowScheduled = false;
+      const shouldReveal = record.revealDurableFollow;
+      record.revealDurableFollow = false;
+      if (records.get(sessionId) !== record) return;
+      const follows = durableFollowBySession.get(sessionId);
+      for (const entry of follows?.values() || []) {
+        const projection = record.runProjections.get(entry.runId);
+        const activeRun = zion?.state?.get?.(`chat.runs.${sessionId}`);
+        const replaced = activeRun?.runId && activeRun.runId !== entry.runId;
+        const completed = projection?.committed && projection.status !== "waiting";
+        if ((shouldReveal || completed) && !entry.completionRevealed && !projection?.detached && !replaced) {
+          schedulePendingFollow(sessionId, entry.runId, entry, {
+            revealInput: completed && projection.status === "completed" && projection.appendUserPrompt === true
+          });
+          if (completed) entry.completionRevealed = true;
+        }
+        if (replaced || projection?.detached || (entry.terminal && projection?.committed)) {
+          follows.delete(entry.runId);
+        }
+      }
+      if (follows?.size === 0) durableFollowBySession.delete(sessionId);
+    });
   };
 
   const clearPending = (sessionId, runId, { follow = false } = {}) => {
@@ -222,12 +277,22 @@ export function createSessionCollaborationManager({
     const entries = pendingBySession.get(sessionId);
     if (!record || !entries) return;
     for (const entry of [...entries.values()]) {
+      const projection = record.runProjections.get(
+        entry.submittedHeader ? entry.assistantBlockId : entry.runId
+      );
+      if (entry.submittedHeader) {
+        if (projection?.detached) clearPending(sessionId, entry.runId);
+        continue;
+      }
       if (
         projectionAcknowledges(
           entry,
-          record.runProjections.get(entry.runId)
+          projection
         )
       ) {
+        if (projection?.detached) zion?.notification?.show?.(
+          "回答位置已修改，完整回答保留在运行记录中。", { type: "info" }
+        );
         clearPending(sessionId, entry.runId, { follow: true });
       }
     }
@@ -246,12 +311,18 @@ export function createSessionCollaborationManager({
     cardRestoreScheduled.add(sessionId);
     globalThis.queueMicrotask(() => {
       cardRestoreScheduled.delete(sessionId);
+      if (records.get(sessionId) !== record) return;
       try {
-        zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
-          sessionId,
-          annotations,
-          clearFirst: false
-        });
+        const panels = (zion?.panels?.list?.() || [])
+          .filter(panel => panel.activeTabId === sessionId);
+        for (const panel of panels.length ? panels : [null]) {
+          zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+            sessionId,
+            ...(panel ? { panelId: panel.id } : {}),
+            annotations: zion?.state?.get?.(key) || annotations,
+            clearFirst: false
+          });
+        }
       } catch {}
     });
   };
@@ -274,16 +345,105 @@ export function createSessionCollaborationManager({
     return true;
   };
 
+  const isFinalProjection = (payload) => payload.documentProjectionMode === "final"
+    || records.get(String(payload.sessionId || ""))?.runProjections
+      .get(String(payload.runId || ""))?.mode === "final";
+
+  // Final projection protects the editable document. Display the ordered run
+  // activity separately until that projection acknowledges its durable write.
+  const updateFinalActivity = (topic, payload = {}) => {
+    if (payload.backend !== "runtime" || !isFinalProjection(payload)) return false;
+    const sessionId = String(payload.sessionId || "");
+    const runId = String(payload.runId || "");
+    if (!sessionId || !runId || zion?.state?.get?.(`sessions.deleted.${sessionId}`)) return true;
+    const reasoning = topic.startsWith("chat/reasoning");
+    if (reasoning && (payload.silentReasoning || zion?.state?.get?.("chat.thinkingVisible") === false)) return true;
+    const entries = pendingBySession.get(sessionId) || new Map();
+    const previous = entries.get(runId);
+    if (previous?.terminal) return true;
+    const sequence = Number(payload.projectionSequence ?? payload.sequence ?? 0);
+    const segmentId = String(payload.reasoningSegmentId || `${runId}:step:${payload.stepIndex || 0}`);
+    const toolId = topic.startsWith("chat/tool") ? resolveToolCardId(payload) : "";
+    const eventKey = `${topic}:${reasoning ? segmentId : toolId}`;
+    if (sequence > 0 && sequence <= Number(previous?.eventSequences?.[eventKey] || 0)) return true;
+    const blocks = [...(previous?.blocks || [])];
+    if (topic === "chat/token") {
+      const token = String(payload.token || "");
+      if (!token) return true;
+      const last = blocks.at(-1);
+      if (last?.kind === "answer") blocks[blocks.length - 1] = { ...last, text: last.text + token };
+      else blocks.push({ kind: "answer", id: `answer:${runId}:${blocks.length}`, text: token });
+    } else if (reasoning) {
+      const index = blocks.findIndex(block => block.kind === "reasoning" && block.segmentId === segmentId);
+      const block = index >= 0 ? blocks[index] : {
+        kind: "reasoning", segmentId,
+        id: `thinking:${runId}:${blocks.filter(item => item.kind === "reasoning").length + 1}`,
+        text: "", done: false
+      };
+      const next = {
+        ...block,
+        ...(topic === "chat/reasoningToken" ? {
+          text: payload.replay && typeof payload.reasoningText === "string"
+            ? payload.reasoningText : block.text + String(payload.token || "")
+        } : {}),
+        done: block.done || topic === "chat/reasoningEnd"
+      };
+      if (index >= 0) blocks[index] = next;
+      else blocks.push(next);
+    } else if (toolId) {
+      const index = blocks.findIndex(block => block.id === toolId);
+      const block = index >= 0 ? blocks[index] : {
+        kind: "tool", id: toolId, name: payload.toolCall?.name || "tool", done: false
+      };
+      const next = topic === "chat/toolCall" ? {
+        ...block, name: payload.toolCall?.name || block.name, args: payload.toolCall?.args || {}
+      } : {
+        ...block, result: payload.result, ok: payload.ok, done: true
+      };
+      if (index >= 0) blocks[index] = next;
+      else blocks.push(next);
+    } else return true;
+    const entry = {
+      ...previous, runId, sessionId, blocks,
+      text: (previous?.text || "") + (topic === "chat/token" ? String(payload.token || "") : ""),
+      status: "", terminal: false, documentWriter: false, documentProjectionMode: "final",
+      assistantBlockId: String(payload.assistantBlockId || previous?.assistantBlockId || runId),
+      fallbackOffset: previous?.fallbackOffset ?? optionalDocumentOffset(payload.answerAnchorPos),
+      sourceView: payload.editorView || previous?.sourceView || null,
+      followCycleId: String(payload.followCycleId || previous?.followCycleId || runId),
+      projectionSequence: Math.max(Number(previous?.projectionSequence || 0), sequence),
+      eventSequences: { ...previous?.eventSequences, [eventKey]: sequence }
+    };
+    if (projectionAcknowledges(entry, records.get(sessionId)?.runProjections.get(runId))) {
+      clearPending(sessionId, runId);
+      return true;
+    }
+    entries.set(runId, entry);
+    pendingBySession.set(sessionId, entries);
+    dispatchPending(sessionId, setPendingAssistant.of(entry));
+    schedulePendingFollow(sessionId, runId, entry, { initial: !previous });
+    return true;
+  };
+
   const completePending = (payload = {}) => {
     const sessionId = String(payload.sessionId || "");
     const runId = String(payload.runId || "");
     if (!sessionId || !runId) return;
     tokenFollowRuns.delete(`${sessionId}:${runId}`);
-    durableFollowBySession.get(sessionId)?.delete(runId);
+    const durableEntry = durableFollowBySession.get(sessionId)?.get(runId);
+    if (durableEntry) {
+      durableEntry.terminal = true;
+      settleDurableFollow(sessionId);
+    }
     const entries = pendingBySession.get(sessionId);
     const entry = entries?.get(runId);
     if (!entry) return;
-    entry.terminal = true;
+    const settled = {
+      ...entry, terminal: true,
+      blocks: entry.blocks?.map(block => block.kind === "reasoning" ? { ...block, done: true } : block)
+    };
+    entries.set(runId, settled);
+    dispatchPending(sessionId, setPendingAssistant.of(settled));
     if (
       projectionAcknowledges(
         entry,
@@ -293,6 +453,9 @@ export function createSessionCollaborationManager({
       clearPending(sessionId, runId, { follow: true });
       return;
     }
+    // A completed response must remain visible while the durable projection is
+    // delayed. Clear it only on a commit/detach acknowledgement.
+    if (entry.documentProjectionMode === "final") return;
     const timerKey = `${sessionId}:${runId}`;
     if (pendingClearTimers.has(timerKey)) {
       globalThis.clearTimeout(pendingClearTimers.get(timerKey));
@@ -314,34 +477,77 @@ export function createSessionCollaborationManager({
       if (!changed) return;
       for (const record of records.values()) record.provider.destroy();
     }));
-    const showSubmitted = (payload = {}, submittedHeader = false) => {
+    const showSubmitted = (payload = {}) => {
       const sessionId = String(payload.sessionId || "");
       const runId = String(payload.submissionId || "");
       if (!sessionId || !runId) return;
       const entries = pendingBySession.get(sessionId) || new Map();
+      const previous = entries.get(runId);
       const entry = {
         runId,
         assistantBlockId: String(payload.assistantBlockId || runId),
         fallbackOffset: optionalDocumentOffset(payload.answerAnchorPos),
         text: "",
-        submittedHeader,
-        status: submittedHeader ? "" : String(payload.status || ""),
-        existingHeaders: [...(records.get(sessionId)?.text?.toString() || "").matchAll(/<!-- zion-assistant:id=([^\s]+) -->/g)].map(match => match[1]),
+        submittedHeader: true,
+        status: "",
+        existingHeaders: previous?.existingHeaders
+          || [...(records.get(sessionId)?.text?.toString() || "").matchAll(/<!-- zion-assistant:id=([^\s]+) -->/g)].map(match => match[1]),
         documentWriter: false,
         sourceView: payload.editorView || null,
         followCycleId: String(payload.followCycleId || runId)
       };
       entries.set(runId, entry);
       pendingBySession.set(sessionId, entries);
+      // Keep submission intent after the temporary header yields to Yjs. A
+      // fast run can finish before its first SSE event reaches this editor.
+      submittedFollowBySession.set(sessionId, entry);
       dispatchPending(sessionId, setPendingAssistant.of(entry));
       schedulePendingFollow(sessionId, runId, entry, { initial: true });
     };
-    eventDisposables.push(zion?.events?.on?.("chat/submitted", payload => showSubmitted(payload, true)));
+    eventDisposables.push(zion?.events?.on?.("chat/submitted", showSubmitted));
     eventDisposables.push(zion?.events?.on?.("chat/preparing", payload => showSubmitted(payload)));
     eventDisposables.push(zion?.events?.on?.("chat/prepared", (payload = {}) => {
-      clearPending(String(payload.sessionId || ""), String(payload.submissionId || ""));
+      const sessionId = String(payload.sessionId || "");
+      const runId = String(payload.submissionId || "");
+      const entry = pendingBySession.get(sessionId)?.get(runId);
+      if (payload.waitForDocument && entry?.submittedHeader
+        && !hasSubmittedAssistantHeader(records.get(sessionId)?.text.toString() || "", entry)
+        && !records.get(sessionId)?.runProjections.get(entry.assistantBlockId)?.detached) return;
+      clearPending(sessionId, runId);
+    }));
+    eventDisposables.push(zion?.events?.on?.("chat/runStarted", (payload = {}) => {
+      if (payload.backend !== "runtime" || payload.documentProjectionMode !== "live") return;
+      const sessionId = String(payload.sessionId || "");
+      const runId = String(payload.runId || "");
+      if (!sessionId || !runId) return;
+      const record = records.get(sessionId);
+      const projection = record?.runProjections.get(runId);
+      const submitted = submittedFollowBySession.get(sessionId);
+      const cycleId = String(payload.followCycleId || runId);
+      const localSubmission = submitted?.followCycleId === cycleId
+        && submitted.sourceView === payload.editorView
+        && record?.views.has(submitted.sourceView);
+      if (localSubmission) submittedFollowBySession.delete(sessionId);
+      const completed = projection?.committed && projection.status !== "waiting";
+      // Historical/replayed run events must not claim completion focus. Only
+      // the current locally submitted cycle can recover this early Yjs case.
+      if (completed && !localSubmission) return;
+      const follows = durableFollowBySession.get(sessionId) || new Map();
+      follows.set(runId, {
+        ...follows.get(runId),
+        runId, assistantBlockId: String(payload.assistantBlockId || runId),
+        sourceView: payload.editorView || null,
+        followCycleId: cycleId,
+        ...(completed ? { terminal: true } : {})
+      });
+      durableFollowBySession.set(sessionId, follows);
+      if (completed) {
+        clearPending(sessionId, submitted.runId);
+        settleDurableFollow(sessionId);
+      }
     }));
     eventDisposables.push(zion?.events?.on?.("chat/token", (payload = {}) => {
+      if (updateFinalActivity("chat/token", payload)) return;
       if (payload.backend !== "runtime") return;
       const sessionId = String(payload.sessionId || "");
       const runId = String(payload.runId || "");
@@ -353,13 +559,23 @@ export function createSessionCollaborationManager({
       tokenFollowRuns.add(followRunKey);
       // Synced editors receive the durable text over Yjs. Rendering a second
       // token widget here briefly duplicates text and changes line layout.
-      if (payload.documentWriter === false && records.get(sessionId)?.ready) {
+      const finalProjection = payload.documentProjectionMode === "final"
+        || records.get(sessionId)?.runProjections.get(runId)?.mode === "final";
+      const liveProjection = payload.documentProjectionMode === "live"
+        || records.get(sessionId)?.runProjections.get(runId)?.mode === "live";
+      if (!finalProjection && payload.documentWriter === false
+        && (liveProjection || records.get(sessionId)?.ready)) {
+        const projection = records.get(sessionId)?.runProjections.get(runId);
+        // A late/replayed token must not revive completion scrolling.
+        if (projection?.committed && projection.status !== "waiting") return;
         clearPending(sessionId, runId);
         const follows = durableFollowBySession.get(sessionId) || new Map();
+        const previous = follows.get(runId);
         follows.set(runId, {
+          ...previous,
           runId, assistantBlockId: String(payload.assistantBlockId || runId),
-          sourceView: payload.editorView || null,
-          followCycleId: String(payload.followCycleId || runId)
+          sourceView: payload.editorView || previous?.sourceView || null,
+          followCycleId: String(payload.followCycleId || previous?.followCycleId || runId)
         });
         durableFollowBySession.set(sessionId, follows);
         const sequence = Number(payload.projectionSequence ?? payload.sourceSequenceEnd ?? payload.sequence ?? 0);
@@ -382,20 +598,21 @@ export function createSessionCollaborationManager({
       const nextFallbackOffset = optionalDocumentOffset(payload.answerAnchorPos);
       const entry = {
         ...previous,
+        documentProjectionMode: finalProjection ? "final" : "",
         documentWriter: payload.documentWriter === true,
         assistantBlockId: String(
           payload.assistantBlockId
           || previous.assistantBlockId
           || runId
         ),
-        fallbackOffset: nextFallbackOffset ?? previous.fallbackOffset,
+        fallbackOffset: previous.fallbackOffset ?? nextFallbackOffset,
         sourceView: payload.editorView || previous.sourceView || null,
         followCycleId: String(
           payload.followCycleId
           || previous.followCycleId
           || runId
         ),
-        plainText: records.get(sessionId)?.ready === true,
+        plainText: !finalProjection && records.get(sessionId)?.ready === true,
         projectionSequence: Math.max(
           Number(previous.projectionSequence || 0),
           Number(
@@ -429,11 +646,43 @@ export function createSessionCollaborationManager({
         initial: initialToken
       });
     }));
+    for (const topic of ["chat/reasoningStart", "chat/reasoningToken", "chat/reasoningEnd", "chat/toolCall", "chat/toolResult"]) {
+      eventDisposables.push(zion?.events?.on?.(topic, payload => updateFinalActivity(topic, payload)));
+    }
+    eventDisposables.push(zion?.events?.on?.("chat/runWaiting", (payload = {}) => {
+      const sessionId = String(payload.sessionId || "");
+      const runId = String(payload.runId || "");
+      const entries = pendingBySession.get(sessionId);
+      const previous = entries?.get(runId);
+      if (previous?.documentProjectionMode !== "final") return;
+      const entry = { ...previous, status: "等待回复…" };
+      entries.set(runId, entry);
+      dispatchPending(sessionId, setPendingAssistant.of(entry));
+    }));
     for (const topic of ["chat/runFinished"]) {
       eventDisposables.push(zion?.events?.on?.(topic, completePending));
     }
     for (const topic of ["chat/runError", "chat/aborted"]) {
       eventDisposables.push(zion?.events?.on?.(topic, (payload = {}) => {
+        const sessionId = String(payload.sessionId || "");
+        const runId = String(payload.runId || "");
+        const entries = pendingBySession.get(sessionId);
+        for (const entry of [...(entries?.values() || [])]) {
+          if (entry.submittedHeader && entry.assistantBlockId === runId) {
+            clearPending(sessionId, entry.runId);
+          }
+        }
+        const previous = entries?.get(runId);
+        if (previous?.documentProjectionMode === "final") {
+          entries.set(runId, {
+            ...previous,
+            status: topic === "chat/aborted" ? "已停止" : "运行失败",
+            blocks: previous.blocks?.map(block =>
+              block.kind === "tool" && !block.done ? { ...block, interrupted: true } : block)
+          });
+          completePending(payload);
+          return;
+        }
         durableFollowBySession.get(String(payload.sessionId || ""))?.delete(String(payload.runId || ""));
         tokenFollowRuns.delete(
           `${String(payload.sessionId || "")}:${String(payload.runId || "")}`
@@ -451,6 +700,7 @@ export function createSessionCollaborationManager({
     if (!record) return;
     records.delete(sessionId);
     durableFollowBySession.delete(sessionId);
+    submittedFollowBySession.delete(sessionId);
     record.deleted = zion?.state?.get?.(`sessions.deleted.${sessionId}`) === true;
     try { record.text.unobserve(record.onTextChange); } catch {}
     try { record.cards.unobserve(record.onCardsChange); } catch {}
@@ -536,22 +786,23 @@ export function createSessionCollaborationManager({
       if (!record?.ready) return;
       const value = text.toString();
       zion?.state?.set?.(`sessions.doc.${sessionId}`, value);
-      for (const entry of [...(pendingBySession.get(sessionId)?.values() || [])]) {
-        if (entry.submittedHeader && [...value.matchAll(/<!-- zion-assistant:id=([^\s]+) -->/g)].some(match => !entry.existingHeaders.includes(match[1]))) {
-          clearPending(sessionId, entry.runId);
+      globalThis.queueMicrotask(() => {
+        if (records.get(sessionId) !== record) return;
+        for (const entry of [...(pendingBySession.get(sessionId)?.values() || [])]) {
+          if (entry.submittedHeader && hasSubmittedAssistantHeader(text.toString(), entry)) {
+            clearPending(sessionId, entry.runId);
+          }
         }
-      }
+      });
       // Yjs observers run before y-codemirror dispatches the document change.
       // Queue the reveal so it measures the updated editor, not the SSE token.
-      const follows = durableFollowBySession.get(sessionId);
-      if (follows?.size) globalThis.queueMicrotask(() => {
-        if (records.get(sessionId) !== record) return;
-        for (const entry of follows.values()) schedulePendingFollow(sessionId, entry.runId, entry);
-      });
+      if (durableFollowBySession.get(sessionId)?.size) settleDurableFollow(sessionId, { reveal: true });
     };
     const onCardsChange = () => syncProjectedCards(sessionId);
-    const onRunProjectionChange = () =>
+    const onRunProjectionChange = () => {
       clearAcknowledgedPending(sessionId);
+      settleDurableFollow(sessionId);
+    };
     text.observe(onTextChange);
     cards.observe(onCardsChange);
     runProjections.observe(onRunProjectionChange);
@@ -784,6 +1035,9 @@ export function createSessionCollaborationManager({
         )
       });
       record.ready = true;
+      if (!record.runProjections.size && !zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming) {
+        appendConversationDraft(view);
+      }
       zion?.state?.set?.(`sessions.doc.${sessionId}`, record.text.toString());
       syncProjectedCards(sessionId);
       clearAcknowledgedPending(sessionId);
@@ -859,11 +1113,12 @@ export function createSessionCollaborationManager({
     createAnchor(sessionId, index, fallback = {}) {
       const record = records.get(String(sessionId || ""));
       const offset = Math.max(0, Number(index) || 0);
-      const relative = record?.text
+      const relative = record?.ready && record?.text && offset <= record.text.length
+        && ![...record.views].some(view => view.dom?.dataset?.zionCollaborationPending === "true")
         ? Y.createRelativePositionFromTypeIndex(
             record.text,
             Math.min(record.text.length, offset),
-            1
+            -1
           )
         : null;
       return {
@@ -871,6 +1126,11 @@ export function createSessionCollaborationManager({
         ...(relative
           ? { encoded: encodeBase64(Y.encodeRelativePosition(relative)) }
           : {}),
+        ...(relative && offset > 0 ? {
+          guard: encodeBase64(Y.encodeRelativePosition(
+            Y.createRelativePositionFromTypeIndex(record.text, offset - 1, 0)
+          ))
+        } : {}),
         fallback: {
           offset,
           before: String(fallback.before || "").slice(-64),
@@ -887,6 +1147,7 @@ export function createSessionCollaborationManager({
       }
       pendingClearTimers.clear();
       pendingBySession.clear();
+      submittedFollowBySession.clear();
       tokenFollowRuns.clear();
       for (const sessionId of [...records.keys()]) disposeRecord(sessionId);
     }

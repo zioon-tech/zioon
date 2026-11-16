@@ -343,6 +343,9 @@ describe("standalone agent executor", () => {
         type: "reasoning.delta",
         delta: "inspect first"
       }, {
+        type: "message.delta",
+        delta: "searching"
+      }, {
         type: "tool.call",
         call: {
           id: "call-1",
@@ -374,7 +377,7 @@ describe("standalone agent executor", () => {
     });
     await expect(handle.completion).resolves.toMatchObject({
       status: "completed",
-      output: "found it"
+      output: "searchingfound it"
     });
 
     expect(invocations).toHaveLength(1);
@@ -389,7 +392,7 @@ describe("standalone agent executor", () => {
     expect(engine.requests[0].tools.map((tool) => tool.name)).toEqual(["search"]);
     expect(engine.requests[1].messages.at(-2)).toEqual({
       role: "assistant",
-      content: "",
+      content: "searching",
       reasoningContent: "inspect first",
       toolCalls: [{
         id: "call-1",
@@ -414,8 +417,11 @@ describe("standalone agent executor", () => {
     ]);
     expect(reasoningEvents.map((event) => event.data)).toEqual([
       { turn: 1 },
-      { turn: 1 }
+      { turn: 1, content: "inspect first" }
     ]);
+    expect((await store.getEvents(handle.runId))
+      .filter(event => event.type === "message.completed").map(event => event.data))
+      .toEqual([{ turn: 1, content: "searching" }, { turn: 2, content: "found it" }]);
     await expect(store.getTranscript(handle.runId)).resolves.toEqual([
       expect.objectContaining({
         turn: 1,

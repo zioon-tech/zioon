@@ -593,6 +593,7 @@ export async function syncEnabledToolsFromRuntimeProfile({
   state = window.zion?.state,
   storage = globalThis.localStorage,
   fetchImpl = globalThis.fetch,
+  isCurrentScope = () => true,
   shouldApplyEnabledTools = () => true,
   applyEnabledTools = (enabledTools) => {
     state?.set?.("chat.enabledTools", enabledTools);
@@ -618,6 +619,7 @@ export async function syncEnabledToolsFromRuntimeProfile({
       client.getCapabilityTools(),
       client.getInteractionProfile(profileId)
     ]);
+    if (!isCurrentScope()) return { applied: false, reason: "scope-changed" };
     mergeRuntimeCapabilityToolsIntoWorkbenchTools({ state, capabilityTools });
     const supportedNames = uniqueStrings(capabilityTools.map(toolName));
     const injectableNames = runtimeInjectableToolNames(capabilityTools);
@@ -669,6 +671,7 @@ export async function syncEnabledToolsFromRuntimeProfile({
       runtimeInjectableTools: injectableNames
     };
   } catch (error) {
+    if (!isCurrentScope()) return { applied: false, reason: "scope-changed" };
     state?.set?.("runtime.toolSync", {
       status: "error",
       profileId,
@@ -737,6 +740,31 @@ export async function persistEnabledToolsToRuntimeProfile({
   }
 }
 
+export function createRuntimeToolSync({ readScope, readStatus, refresh, now = Date.now }) {
+  let pending = null;
+  let pendingScope = null;
+  const sync = ({ preferCached = false } = {}) => {
+    const scope = readScope();
+    const key = JSON.stringify(scope);
+    const status = readStatus();
+    const same = status?.status === "synced"
+      && Object.entries(scope).every(([name, value]) => status[name] === value);
+    if (preferCached && same) {
+      void sync().catch(() => null);
+      return Promise.resolve({ applied: true, cached: true });
+    }
+    if (pending) {
+      return pendingScope === key ? pending : pending.catch(() => null).then(() => sync());
+    }
+    if (same && now() - status.syncedAt < 15_000) return Promise.resolve({ applied: true, cached: true });
+    pendingScope = key;
+    pending = Promise.resolve().then(() => refresh(scope, () => JSON.stringify(readScope()) === key))
+      .finally(() => { pending = null; pendingScope = null; });
+    return pending;
+  };
+  return sync;
+}
+
 export async function activate(ctx) {
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
@@ -747,7 +775,6 @@ export async function activate(ctx) {
   registerDefaultTools();
 
   let applyingRuntimeToolProfile = false;
-  let runtimeToolSyncPromise = null;
   let runtimeToolSelectionVersion = 0;
   let runtimeToolOperationQueue = Promise.resolve();
   const enqueueRuntimeToolOperation = (operation) => {
@@ -765,24 +792,23 @@ export async function activate(ctx) {
       () => persistEnabledToolsToRuntimeProfile({ enabledTools: selection })
     );
   };
-  const syncRuntimeToolSelection = () => {
-    if (runtimeToolSyncPromise) return runtimeToolSyncPromise;
-    const sync = window.zion?.state?.get?.("runtime.toolSync");
+  const readToolSyncScope = () => {
     const config = readWorkbenchRuntimeConfig({
       state: window.zion?.state, storage: globalThis.localStorage
     });
     const profileId = readRuntimeInteractionProfileId();
     const identity = currentAccountSession();
     const accountScope = JSON.stringify([identity?.user?.id, identity?.space?.id, identity?.membership?.role]);
-    if (sync?.status === "synced"
-      && sync.baseUrl === config.baseUrl && sync.profileId === profileId
-      && sync.accountScope === accountScope
-      && Date.now() - sync.syncedAt < 15_000) {
-      return Promise.resolve({ applied: true, cached: true });
-    }
-    runtimeToolSyncPromise = enqueueRuntimeToolOperation(async () => {
+    return { baseUrl: config.baseUrl, profileId, accountScope };
+  };
+  const syncRuntimeToolSelection = createRuntimeToolSync({
+    readScope: readToolSyncScope,
+    readStatus: () => window.zion?.state?.get?.("runtime.toolSync"),
+    refresh: (scope, isCurrentScope) => enqueueRuntimeToolOperation(async () => {
+      if (!isCurrentScope()) return { applied: false, reason: "scope-changed" };
       const selectionVersion = runtimeToolSelectionVersion;
       const result = await syncEnabledToolsFromRuntimeProfile({
+        isCurrentScope,
         shouldApplyEnabledTools: () =>
           selectionVersion === runtimeToolSelectionVersion,
         applyEnabledTools(enabledTools) {
@@ -794,17 +820,13 @@ export async function activate(ctx) {
           }
         }
       });
-      if (result.applied) {
+      if (result.applied && isCurrentScope()) {
         const current = window.zion?.state?.get?.("runtime.toolSync");
-        window.zion?.state?.set?.("runtime.toolSync", { ...current, baseUrl: config.baseUrl, accountScope });
+        window.zion?.state?.set?.("runtime.toolSync", { ...current, ...scope });
       }
       return result;
     })
-      .finally(() => {
-        runtimeToolSyncPromise = null;
-      });
-    return runtimeToolSyncPromise;
-  };
+  });
 
   try {
     registerContextPanel(ctx);
@@ -917,8 +939,8 @@ export async function activate(ctx) {
   const dispClose = window.zion.commands.registerCommand("tools.closeSwitcher", () => {
     toolSwitcher?.close?.();
   });
-  const dispSyncRuntime = window.zion.commands.registerCommand("tools.syncRuntime", async () =>
-    await syncRuntimeToolSelection()
+  const dispSyncRuntime = window.zion.commands.registerCommand("tools.syncRuntime", async (options) =>
+    await syncRuntimeToolSelection(options)
   );
   ctx.subscriptions.push(dispOpen, dispClose, dispSyncRuntime);
 

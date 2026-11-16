@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createRuntimeToolPolicyPatch,
+  createRuntimeToolSync,
   mergeRuntimeCapabilityToolsIntoWorkbenchTools,
   persistEnabledToolsToRuntimeProfile,
   syncEnabledToolsFromRuntimeProfile
@@ -26,6 +27,58 @@ function createState(initial = {}) {
 }
 
 describe("tools Runtime interaction profile sync", () => {
+  it("uses a same-scope stale snapshot immediately while refreshing in the background", async () => {
+    const scope = { baseUrl: "runtime", profileId: "profile", accountScope: "alice" };
+    let finish;
+    const refresh = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    const sync = createRuntimeToolSync({
+      readScope: () => scope, readStatus: () => ({ ...scope, status: "synced", syncedAt: 1 }),
+      refresh, now: () => 20_000
+    });
+    expect(await sync({ preferCached: true })).toEqual({ applied: true, cached: true });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(await sync({ preferCached: true })).toEqual({ applied: true, cached: true });
+    finish({ applied: true });
+    await sync();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["baseUrl", "profileId", "accountScope"])("waits for a fresh snapshot after %s changes", async field => {
+    let scope = { baseUrl: "runtime", profileId: "profile", accountScope: "alice" };
+    const previous = { ...scope, status: "synced", syncedAt: 1 };
+    let finish;
+    const isCurrent = [];
+    const refresh = vi.fn((_scope, guard) => {
+      isCurrent.push(guard);
+      return refresh.mock.calls.length === 1 ? new Promise(resolve => { finish = resolve; }) : { applied: true };
+    });
+    const sync = createRuntimeToolSync({ readScope: () => scope, readStatus: () => previous, refresh, now: () => 20_000 });
+    const first = sync();
+    await Promise.resolve();
+    scope = { ...scope, [field]: "changed" };
+    let settled = false;
+    const next = sync({ preferCached: true }).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(isCurrent[0]()).toBe(false);
+    finish({ applied: false });
+    await first;
+    await next;
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh.mock.calls[1][0][field]).toBe("changed");
+  });
+
+  it("does not apply an old account catalog after the account has changed", async () => {
+    const state = createState({ "runtime.mode": "runtime" });
+    const before = [...state.values];
+    await expect(syncEnabledToolsFromRuntimeProfile({
+      state, storage: localStorage, isCurrentScope: () => false,
+      fetchImpl: async url => jsonResponse(200, String(url).endsWith("/v1/capabilities/tools")
+        ? { tools: [{ name: "privateTool" }] } : { profile: { id: "private", policy: {} } })
+    })).resolves.toMatchObject({ applied: false, reason: "scope-changed" });
+    expect([...state.values]).toEqual(before);
+  });
+
   it("applies only Runtime-supported tool enablement in Runtime mode", async () => {
     const state = createState({
       "chat.tools": [

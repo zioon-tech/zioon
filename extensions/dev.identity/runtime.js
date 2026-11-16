@@ -43,6 +43,7 @@ import {
 export const runtimePluginApiVersion = 2;
 const IDENTITY_RUNTIME_SESSION_SNAPSHOTS_KEY = "sessionSnapshots.v1";
 const MAX_IDENTITY_RUNTIME_SESSION_SNAPSHOTS = 128;
+const BIOGRAPHY_DISTILLATIONS_FILE_PATH = "biography/distillations.jsonl";
 
 function allowsWorkspaceWrite(policy = {}) {
   return ["workspace-write", "trusted-automation"].includes(String(policy?.preset || "read-only"));
@@ -286,18 +287,20 @@ async function appendBiographyEventsToFiles({
     update.digest = buildBiographyDigest(update.events);
     update.appended = update.appended.filter((event) => result.appended.includes(event.id));
     update.skipped.push(...(result.skipped || []));
-    await fileService.writeTextFiles({
-      fileRoot: loadedEvents.fileRoot,
-      files: {
-        biography: {
-          relativePath: IDENTITY_PROFILE_FILE_PATHS.biography,
-          content: update.digest
-        }
-      },
-      sessionId: terminalSessionId,
-      runContext
-    });
   }
+  // A previous append may have succeeded before summary publication failed.
+  // Rebuild from authoritative events even when this retry appends no records.
+  await fileService.writeTextFiles({
+    fileRoot: loadedEvents.fileRoot,
+    files: {
+      biography: {
+        relativePath: IDENTITY_PROFILE_FILE_PATHS.biography,
+        content: update.digest
+      }
+    },
+    sessionId: terminalSessionId,
+    runContext
+  });
   const loaded = await fileService.readTextFiles({
     fileRoot: loadedEvents.fileRoot,
     files: IDENTITY_PROFILE_FILE_PATHS,
@@ -621,7 +624,10 @@ export function activateRuntimePlugin(context) {
       async process(run) {
         if (!eligibleRuntimeBiographyRun(run)) return;
         const exchange = extractLatestExchange(run.messages);
-        if (!exchange) return;
+        if (!exchange) {
+          if (run.idempotencyKey) throw new Error(`Biography input context is unavailable for run ${run.runId}`);
+          return;
+        }
         const initialFileContext = postProcessorFileContext(run, memoryRoot);
         const location = hasDataLocation
           ? await provider.locationFor(initialFileContext, "write")
@@ -639,7 +645,8 @@ export function activateRuntimePlugin(context) {
           loadedEvents = await fileService.readTextFiles({
             fileRoot,
             files: {
-              biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH
+              biographyEvents: IDENTITY_BIOGRAPHY_EVENTS_FILE_PATH,
+              biographyDistillations: BIOGRAPHY_DISTILLATIONS_FILE_PATH
             },
             runContext: fileContext
           });
@@ -662,7 +669,20 @@ export function activateRuntimePlugin(context) {
             runContext: fileContext
           });
         }
-        const output = await context.config.modelService.generateText({
+        const distillationId = `${run.sessionId}:${run.runId}`;
+        const parseSavedDistillation = text => String(text || "").split("\n").filter(Boolean)
+          .map(line => JSON.parse(line)).find(record => record.id === distillationId);
+        let saved = parseSavedDistillation(loadedEvents.files.biographyDistillations);
+        // Events written by a previous plugin version already contain the
+        // durable result; recover its original occurrence time without a model.
+        const priorEvents = existingEvents.filter(event =>
+          event.sessionId === run.sessionId && event.runId === run.runId);
+        if (!saved && priorEvents.length) saved = {
+          id: distillationId, events: priorEvents, sourceAt: priorEvents[0].at
+        };
+        if (!saved) {
+          if (!fileService.appendJsonl) throw new Error("Biography distillation requires atomic JSONL append support");
+          const output = await context.config.modelService.generateText({
           model: run.model,
           runContext: run,
           timeoutMs: context.config?.biography?.timeoutMs || 30000,
@@ -677,8 +697,25 @@ export function activateRuntimePlugin(context) {
             title: run.title || run.metadata?.title || run.metadata?.sessionTitle || "",
             ...biographyContextFromEvents(existingEvents, run.sessionId)
           })
-        });
-        const distilled = parseDistillationResult(output);
+          });
+          const record = {
+            id: distillationId, events: parseDistillationResult(output),
+            sourceAt: new Date().toISOString()
+          };
+          // Publish the model result before applying its effects. A restart or
+          // partial failure reuses this result and timestamp.
+          await fileService.appendJsonl({
+            fileRoot, relativePath: BIOGRAPHY_DISTILLATIONS_FILE_PATH,
+            records: [record], runContext: fileContext
+          });
+          const published = await fileService.readTextFiles({
+            fileRoot, files: { biographyDistillations: BIOGRAPHY_DISTILLATIONS_FILE_PATH },
+            runContext: fileContext
+          });
+          saved = parseSavedDistillation(published.files.biographyDistillations);
+          if (!saved) throw new Error(`Biography distillation was not persisted for run ${run.runId}`);
+        }
+        const distilled = saved.events;
         if (!distilled.length) {
           context.log?.(
             "info",
@@ -694,7 +731,7 @@ export function activateRuntimePlugin(context) {
           events: distilled,
           sourceSessionId: run.sessionId,
           sourceRunId: run.runId,
-          sourceAt: new Date().toISOString(),
+          sourceAt: saved.sourceAt,
           runContext: fileContext,
           accessMode: location?.backend === "agent-fs"
             ? location.accessMode === "cli" ? "cli" : "runtime-tools"

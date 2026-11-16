@@ -1,13 +1,13 @@
 {
   "name": "dev.thinking",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Control and display model thinking-related content.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.thinking",
     "name": "Thinking",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "main": "./thinking-main.js",
     "presentation": {
       "displayName": {
