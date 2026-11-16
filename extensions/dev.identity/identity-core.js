@@ -81,7 +81,8 @@ export function buildIdentityContext(files = {}, options = {}) {
   const fragments = [];
   const identity = clipCharacters(files.identity, limits.identity);
   const user = clipCharacters(files.user, limits.user);
-  const biography = clipCharacters(files.biography, limits.biography);
+  const biography = clipCharacters(String(files.biography || "")
+    .replace(/\n?<!-- zion-biography-source:[a-f0-9]{64} -->\s*$/, ""), limits.biography);
   const projectContext = buildProjectContext(files.projects, {
     inbox: files.projectsInbox,
     attention: files.projectsAttention,

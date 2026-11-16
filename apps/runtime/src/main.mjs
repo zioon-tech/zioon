@@ -79,6 +79,7 @@ import { NodeBroker } from "./node-broker.mjs";
 import { createNodeHttpHandler } from "./node-http-handler.mjs";
 import { createPluginFileService } from "./plugin-file-service.mjs";
 import { createAgentFsMemoryClient, createAgentFsMemoryLocations } from "./agentfs-memory-client.mjs";
+import { PostgresIdentityContextStore } from "./identity-context-store.mjs";
 import { createAgentFsMcpClient } from "./agentfs-mcp-client.mjs";
 import { AGENTFS_MCP_READ_NAMES } from "../../../packages/plugin-sdk/src/agentfs-mcp-policy.mjs";
 import { createPluginFilesHttpHandler } from "./plugin-files-http-handler.mjs";
@@ -1480,6 +1481,8 @@ const runtimePlugins = new RuntimePluginService({
     },
     "dev.identity": {
       fileService: identityFileService,
+      contextStore: new PostgresIdentityContextStore(postgresPool),
+      contextBindingKey: `${memoryServiceUrl}|${memoryMcpEnabled ? "mcp" : "cli"}`,
       mcpService: identityMcpService,
       modelService: createPluginModelService({
         engine,

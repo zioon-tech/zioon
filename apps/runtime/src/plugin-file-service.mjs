@@ -579,6 +579,9 @@ export function createPluginFileService({
     async readTextFiles({
       fileRoot,
       files = {},
+      knownHashes = {},
+      metadataOnly = [],
+      includeHashes = false,
       sessionId = "",
       runContext = {}
     } = {}) {
@@ -587,6 +590,20 @@ export function createPluginFileService({
         await boundRequest(fileRoot, sessionId, runContext, "read"));
       const root = requestRoot(fileRoot, runContext.policy);
       const entries = Object.entries(files || {});
+      if (fileClient?.readTextFiles && !sessionId && !readFallbacks.length && entries.length) {
+        const absoluteFiles = Object.fromEntries(entries.map(([key, path]) => [key, resolveRelativePath(root, path)]));
+        for (const path of Object.values(absoluteFiles)) {
+          await authorizeRequest?.(runContext, { write: false, path, fileRoot: root });
+        }
+        const batch = await fileClient.readTextFiles({
+          files: absoluteFiles, knownHashes, metadataOnly,
+          runContext: { ...runContext, policy: { ...runContext.policy, preset: "read-only", fileRoots: [root] } }
+        });
+        for (const path of Object.values(absoluteFiles)) {
+          await authorizeRequest?.(runContext, { write: false, path, fileRoot: root });
+        }
+        if (batch) return { ...batch, fileRoot: root };
+      }
       const results = new Array(entries.length);
       let cursor = 0;
       const readNext = async () => {
@@ -619,6 +636,9 @@ export function createPluginFileService({
       return {
         fileRoot: root,
         files: Object.fromEntries(results.map(({ key, content }) => [key, content])),
+        ...(includeHashes ? {
+          hashes: Object.fromEntries(results.map(({ key, contentHash, missing }) => [key, missing ? null : contentHash]))
+        } : {}),
         ...(fileClient || dataLocation
           ? { missing: results.filter((item) => item.missing).map((item) => item.key) }
           : {})

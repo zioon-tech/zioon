@@ -38,6 +38,7 @@ import {
   hasIdentityContext,
   insertAfterLeadingSystem as insertAfterLeadingSystemMessage,
   loadProjectAutomationFromRuntime,
+  refreshIdentityContextInRuntime,
   projectAutomationRevision,
   projectAutomationSyncDirection,
   syncProjectAutomationToRuntime
@@ -3534,7 +3535,10 @@ export async function activate(ctx) {
         return { ok: false, error: "missing sessionId" };
       }
       try {
-        const content = await loadIdentityContextForSession(sessionId, { force: true });
+        const runtimeSnapshot = await refreshIdentityContextInRuntime({ sessionId });
+        if (runtimeSnapshot) await writeSessionIdentitySnapshot(sessionId, runtimeSnapshot);
+        const content = runtimeSnapshot?.content
+          ?? await loadIdentityContextForSession(sessionId, { force: true });
         const ok = !!content;
         window.zion?.notification?.show?.(
           ok ? "已刷新当前会话的身份上下文快照" : "身份上下文为空，未生成快照",

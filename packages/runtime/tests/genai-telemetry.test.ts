@@ -37,13 +37,15 @@ function engineFor(value: ModelTransportResponse, extra = {}) {
 
 describe("model operation telemetry", () => {
   it("separates caller backpressure from model call-chain wall time", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "hrtime", "setTimeout", "clearTimeout"] });
+    // Advance only the measured clocks at each delay boundary. Keep exporter
+    // scheduling real so flushing cannot wait on an undriven fake timer.
+    vi.useFakeTimers({ toFake: ["Date", "performance", "hrtime"] });
     // The SDK keeps node:perf_hooks while the engine reads global performance.
     const sdkClock = vi.spyOn(nodePerformance, "now").mockImplementation(() => performance.now());
     try {
       class SlowRunStore extends MemoryRunStore {
         override async append(...args: Parameters<MemoryRunStore["append"]>) {
-          await new Promise((resolve) => setTimeout(resolve, 15));
+          vi.advanceTimersByTime(15);
           return super.append(...args);
         }
       }
@@ -52,7 +54,7 @@ describe("model operation telemetry", () => {
       ]);
       const engine = engineFor(modelResponse, {
         transport: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 7));
+          vi.advanceTimersByTime(7);
           return modelResponse;
         }
       });
@@ -72,7 +74,6 @@ describe("model operation telemetry", () => {
         }
         return handle.completion;
       })();
-      await vi.runAllTimersAsync();
       expect((await drained).output).toBe("done");
       expect(text.join("")).toBe("done");
 

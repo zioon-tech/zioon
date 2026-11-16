@@ -1039,6 +1039,45 @@ describe("identity extension", () => {
       restoredActivation.dispose();
     });
 
+  it("refreshes the Runtime version and stores exactly the returned projection in frontend metadata", async () => {
+    const commands = new Map(), metadata = new Map();
+    const snapshot = { version: 1, revision: "runtime-revision", sourceRoot: "/memory/dev.identity",
+      content: "<identity_context>New Runtime profile</identity_context>" };
+    window.zion = {
+      state: { get(key) {
+        if (key === "runtime.mode") return "runtime";
+        if (key === "runtime.baseUrl") return "http://runtime.test";
+        return null;
+      }, set: vi.fn() },
+      commands: {
+        registerCommand(id, handler) { commands.set(id, handler); return { dispose() {} }; },
+        executeCommand(id, arg) {
+          if (id === "zion.sessions.patchMeta") {
+            const next = arg.updater(metadata.get(arg.id) || { id: arg.id });
+            metadata.set(arg.id, next);
+            return next;
+          }
+          return null;
+        }
+      },
+      notification: { show: vi.fn() }
+    };
+    const commandCalls = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).endsWith("/commands")) {
+        commandCalls.push(JSON.parse(init.body));
+        return Response.json({ result: { ok: true, snapshot } });
+      }
+      return Response.json({ content: "", entries: [] });
+    }));
+    const disposable = await activate({ subscriptions: [] });
+    try {
+      expect(await commands.get("identity.refreshContext")({ sessionId: "runtime-session" })).toMatchObject({ ok: true });
+      expect(commandCalls).toEqual([{ action: "refresh_context", sessionId: "runtime-session" }]);
+      expect(metadata.get("runtime-session").identitySnapshot).toMatchObject(snapshot);
+    } finally { disposable.dispose(); }
+  });
+
   it("appends a finished run and rebuilds digest.md", async () => {
     let onRunFinished;
     const writes = [];

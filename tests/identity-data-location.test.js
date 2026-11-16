@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -60,7 +60,7 @@ describe("Identity plugin data integration", () => {
     expect(fileService.writeTextFiles).not.toHaveBeenCalled();
   });
 
-  it("initializes without terminals and refreshes externally edited files between Runs", async () => {
+  it("reads without provisioning and refreshes externally edited files between Runs", async () => {
     const { location, state, fileService } = await setup();
     const provider = new RuntimeIdentityContextProvider({
       state, fileService, memoryRoot: location.root, dataLocation: location
@@ -69,6 +69,8 @@ describe("Identity plugin data integration", () => {
     const first = await provider.contribute(messages, { runId: "one" });
     expect(first[0].content).toContain(location.root);
     expect(first[0].content).not.toContain("~/.zion-next/memory");
+    await expect(access(location.root)).rejects.toMatchObject({ code: "ENOENT" });
+    await mkdir(location.root, { recursive: true });
     await writeFile(join(location.root, "user.md"), "Updated outside Zion using Bash");
     expect((await provider.contribute(messages, { runId: "one" }))[0].content).not.toContain("Updated outside");
     const second = await provider.contribute(first, { runId: "two" });
