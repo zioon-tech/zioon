@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const component = process.argv[2];
@@ -16,7 +16,25 @@ if (component === "runtime") {
   for (const entry of readdirSync("packages")) {
     if (existsSync(`packages/${entry}/dist`)) copy(`packages/${entry}/dist`);
   }
+  // These browser libraries are bundled into Workbench. Keeping them as root
+  // production dependencies otherwise adds >120 MiB to every Runtime archive.
+  // Change only the staged manifest; product development/builds keep their
+  // original dependency tree. npm computes and prunes transitive dependencies.
+  const manifestPath = resolve(stage, "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const frontendOnly = ["monaco-editor", "mermaid", "lucide-react"];
+  for (const name of frontendOnly) {
+    if (!manifest.dependencies[name]) throw new Error(`Missing classified browser dependency: ${name}`);
+    manifest.devDependencies[name] = manifest.dependencies[name];
+    delete manifest.dependencies[name];
+  }
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   execFileSync("npm", ["prune", "--omit=dev", "--ignore-scripts"], { cwd: stage, stdio: "inherit" });
+  for (const name of frontendOnly) {
+    if (existsSync(resolve(stage, "node_modules", name))) {
+      throw new Error(`Runtime archive still contains browser dependency: ${name}`);
+    }
+  }
   // Sandbox has its own lockfile and is not part of the root dependency tree.
   execFileSync("npm", ["ci", "--omit=dev", "--ignore-scripts", "--prefix", "packages/sandbox"],
     { cwd: stage, stdio: "inherit" });
