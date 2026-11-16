@@ -203,13 +203,15 @@ export async function writeRemoteSession(sessionId, payload, options = {}) {
 }
 
 export async function writeRemoteTree(tree, index, expectedRevision = null, {
-  sourceClientId = ""
+  sourceClientId = "",
+  baseTree = null
 } = {}) {
   return request("/v1/workbench-state/tree", {
     method: "PUT",
     body: JSON.stringify({
       tree,
       index,
+      ...(baseTree ? { base_tree: baseTree } : {}),
       expected_revision: expectedRevision,
       source_client_id: sourceClientId || null
     })

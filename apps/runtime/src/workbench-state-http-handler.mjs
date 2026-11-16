@@ -204,11 +204,19 @@ export function createWorkbenchStateHttpHandler({
     if (request.method === "PUT" && path === "/v1/workbench-state/tree") {
       if (!requireWorkbenchStateProtocol(request, response)) return true;
       const body = await readJson(request);
+      if (!body.base_tree && body.expected_revision == null) {
+        json(response, 426, {
+          error: "Folder saving has changed; refresh Workbench before saving",
+          expectedProtocol: WORKBENCH_STATE_PROTOCOL
+        }, { "x-zion-workbench-protocol": WORKBENCH_STATE_PROTOCOL });
+        return true;
+      }
       json(response, 200, await store.writeTree(
         body.tree,
         body.index,
         body.expected_revision ?? null,
-        body.source_client_id ?? ""
+        body.source_client_id ?? "",
+        body.base_tree ?? null
       ));
       return true;
     }

@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { deriveSessionTitleFromContent, isPlaceholderSessionTitle } from "./session-title.mjs";
+import { mergeMigratedSessionTree, mergeSessionTree, sessionTreeChanges } from "./session-tree-merge.mjs";
 
 const MAX_SESSION_REVISIONS = 20;
 const MAX_SESSION_REVISION_BYTES = 8 * 1024 * 1024;
@@ -85,12 +87,15 @@ function normalizeConversationTextForDisplay(text) {
 
 function normalizeSessionMeta(sessionId, text, meta = {}, timestamp = nowMs()) {
   const current = isObject(meta) ? meta : {};
-  const title = String(current.title || titleFromText(text, sessionId)).trim() || sessionId;
+  const placeholder = isPlaceholderSessionTitle(current.title, sessionId, current);
+  const derivedTitle = placeholder ? deriveSessionTitleFromContent(text) : "";
+  const title = derivedTitle || String(current.title || "新会话").trim() || "新会话";
   const hasSize = Object.prototype.hasOwnProperty.call(current, "size");
   const hasCreatedAt = Object.prototype.hasOwnProperty.call(current, "createdAt");
   const hasUpdatedAt = Object.prototype.hasOwnProperty.call(current, "updatedAt");
   return {
     ...current,
+    ...(placeholder ? { titleAuto: true } : {}),
     id: sessionId,
     title,
     createdAt: Number(hasCreatedAt ? current.createdAt : timestamp) || timestamp,
@@ -1400,7 +1405,7 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "") {
+  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "", baseTree = null) {
     if (!isObject(tree)) throw new Error("tree must be an object");
     return this.transaction(async (client, published) => {
       const currentRevision = await this.revision(client);
@@ -1408,17 +1413,23 @@ export class PostgresWorkbenchStateStore {
         return { ok: false, conflict: true, revision: currentRevision };
       }
       const timestamp = this.now();
-      const completeTree = await this.completeTree(tree, client);
+      const currentTree = await this.stateTree(client);
+      const completeTree = await this.completeTree(
+        baseTree ? mergeSessionTree(baseTree, tree, currentTree) : tree,
+        client
+      );
+      const index = await this.rebuildIndexFromTree(completeTree, client);
       const revision = await this.bumpRevision(client, timestamp, {
         tree: completeTree,
-        index: await this.rebuildIndexFromTree(completeTree, client)
+        index
       });
       const event = await this.recordEvent("tree.updated", {
         revision,
         sourceClientId,
+        payload: { changes: sessionTreeChanges(currentTree, completeTree) },
         timestamp
       }, client, published);
-      return { ok: true, revision, event_sequence: event.sequence };
+      return { ok: true, revision, tree: completeTree, index, event_sequence: event.sequence };
     });
   }
 
@@ -1488,7 +1499,7 @@ export class PostgresWorkbenchStateStore {
     const explicitMeta = isObject(input.meta) ? input.meta : {};
     const metaCandidate = input.meta == null
       ? { ...current.meta }
-      : { ...explicitMeta, id };
+      : { ...current.meta, ...explicitMeta, id };
     if (input.title != null) metaCandidate.title = String(input.title || "");
     if (input.text != null) {
       if (!Object.prototype.hasOwnProperty.call(explicitMeta, "size")) delete metaCandidate.size;
@@ -1865,7 +1876,9 @@ export class PostgresWorkbenchStateStore {
           metas,
           kv: snapshot?.kv || {},
           tree: appendMissingSessionsToTree(
-            current.tree,
+            isObject(snapshot?.tree)
+              ? mergeMigratedSessionTree(current.tree, snapshot.tree)
+              : current.tree,
             imported.map((id) => ({
               id,
               title: importedMetas.get(id)?.title || id
