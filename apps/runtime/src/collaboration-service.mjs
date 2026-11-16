@@ -472,6 +472,9 @@ export function createRuntimeCollaborationService({
         await connection.transact(document => {
           if (["live", "final"].includes(mode)) {
             const projection = document.getMap("runProjection").get(runId);
+            // A user-detached working copy needs no further document replay.
+            // Its captured anchor may remain unresolved after an edit.
+            if (projection?.mode === mode && projection.detached) return;
             if (!projection || projection.pendingAnchor || projection.mode !== mode) {
               throw new Error("Snapshot document anchor is not prepared");
             }

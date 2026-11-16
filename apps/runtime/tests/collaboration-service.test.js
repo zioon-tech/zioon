@@ -141,6 +141,75 @@ describe("Runtime collaboration service", () => {
     await expect(collaboration.applyRunEvents("snapshot", input)).resolves.toBeUndefined();
   });
 
+  it.each(["live", "final"])("keeps an attached %s snapshot retryable until its anchor arrives", async mode => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-pending-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({ id: "pending", text: "user question" });
+    const collaboration = createCollaboration({ store: workbenchState });
+    resources.push({ directory, workbenchState, collaboration });
+    const input = { runId: "pending-run", mode, events: [
+      { runId: "pending-run", sequence: 1, type: "message.delta", data: { delta: "answer" } },
+      { runId: "pending-run", sequence: 2, type: "run.completed", data: {} }
+    ] };
+    await collaboration.prepareRun("pending", { runId: input.runId, mode,
+      documentAnchor: { fallback: { offset: 13, before: "user missing", after: "" } } });
+    await expect(collaboration.applyRunEvents("pending", input)).rejects.toThrow("anchor is not prepared");
+    await collaboration.prepareRun("pending", { runId: input.runId, mode,
+      documentAnchor: { fallback: { offset: 13, before: "user question", after: "" } } });
+    await expect(collaboration.applyRunEvents("pending", {
+      ...input, mode: mode === "live" ? "final" : "live"
+    })).rejects.toThrow("anchor is not prepared");
+    await expect(collaboration.applyRunEvents("pending", input)).resolves.toBeUndefined();
+    const connection = await collaboration.hocuspocus.openDirectConnection("pending");
+    try {
+      await connection.transact(document => {
+        expect(document.getText("content").toString()).toContain("answer");
+        expect(document.getMap("runProjection").get(input.runId).pendingAnchor).toBeNull();
+      });
+    } finally { await connection.disconnect({ unloadImmediately: false }); }
+  });
+
+  it.each(["live", "final"])("finishes %s replay without restoring a detached working copy", async mode => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-detached-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    const original = "user question";
+    const edited = "user my edited working copy";
+    const runId = "detached-run";
+    await workbenchState.createSession({ id: "detached", text: edited });
+    const collaboration = createCollaboration({ store: workbenchState });
+    resources.push({ directory, workbenchState, collaboration });
+    const documentAnchor = { fallback: { offset: original.length, before: original, after: "" } };
+    const projection = { runId, mode, detached: true, status: "detached",
+      pendingAnchor: documentAnchor, lastSequence: 1 };
+    const connection = await collaboration.hocuspocus.openDirectConnection("detached");
+    try {
+      await connection.transact(document => document.getMap("runProjection").set(runId, projection));
+      const events = [
+        { runId, sequence: 2, type: "message.delta", data: { delta: "canonical answer" } },
+        { runId, sequence: 3, type: "run.completed", data: {} }
+      ];
+      await expect(collaboration.applyRunEvents("detached", { runId, mode, events })).resolves.toBeUndefined();
+      await connection.transact(document => {
+        expect(document.getText("content").toString()).toBe(edited);
+        expect(document.getMap("runProjection").get(runId)).toEqual(projection);
+        // Restoring matching text does not restore Runtime's ownership.
+        const text = document.getText("content");
+        text.delete(0, text.length);
+        text.insert(0, original);
+      });
+      await collaboration.prepareRun("detached", { runId, mode, documentAnchor });
+      await collaboration.applyRunEvents("detached", { runId, mode, events });
+      await collaboration.reconcileTranscript("detached", [
+        { role: "user", runId, content: "question" },
+        { role: "assistant", runId, content: "canonical answer" }
+      ]);
+      await connection.transact(document => {
+        expect(document.getText("content").toString()).toBe(original);
+        expect(document.getMap("runProjection").get(runId)).toEqual(projection);
+      });
+    } finally { await connection.disconnect({ unloadImmediately: false }); }
+  });
+
   it("rejects an oversized peer message without terminating Runtime HTTP", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-payload-"));
     const spaceId = database.nextSpaceId();
