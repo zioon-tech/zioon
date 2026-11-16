@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { performance as nodePerformance } from "node:perf_hooks";
 import { context, trace, SpanStatusCode } from "@opentelemetry/api";
 import {
   CancellationController,
@@ -36,41 +37,59 @@ function engineFor(value: ModelTransportResponse, extra = {}) {
 
 describe("model operation telemetry", () => {
   it("separates caller backpressure from model call-chain wall time", async () => {
-    class SlowRunStore extends MemoryRunStore {
-      override async append(...args: Parameters<MemoryRunStore["append"]>) {
-        await new Promise((resolve) => setTimeout(resolve, 15));
-        return super.append(...args);
+    vi.useFakeTimers({ toFake: ["Date", "performance", "hrtime", "setTimeout", "clearTimeout"] });
+    // The SDK keeps node:perf_hooks while the engine reads global performance.
+    const sdkClock = vi.spyOn(nodePerformance, "now").mockImplementation(() => performance.now());
+    try {
+      class SlowRunStore extends MemoryRunStore {
+        override async append(...args: Parameters<MemoryRunStore["append"]>) {
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          return super.append(...args);
+        }
       }
-    }
-    const engine = engineFor(response([
-      { choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }
-    ]));
-    const executor = createAgentExecutor({
-      engine,
-      tools: {
-        async listTools() { return []; },
-        async invoke() { return { ok: true, content: "" }; }
-      },
-      runs: new SlowRunStore()
-    });
-    const handle = executor.execute({ prompt: "private" });
-    for await (const _event of handle.events) {
-      // Drain the durable event stream.
-    }
-    await handle.completion;
+      const modelResponse = response([
+        { choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }
+      ]);
+      const engine = engineFor(modelResponse, {
+        transport: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 7));
+          return modelResponse;
+        }
+      });
+      const executor = createAgentExecutor({
+        engine,
+        tools: {
+          async listTools() { return []; },
+          async invoke() { return { ok: true, content: "" }; }
+        },
+        runs: new SlowRunStore()
+      });
+      const handle = executor.execute({ prompt: "private" });
+      const text: string[] = [];
+      const drained = (async () => {
+        for await (const event of handle.events) {
+          if (event.type === "message.delta") text.push(String(event.data?.delta));
+        }
+        return handle.completion;
+      })();
+      await vi.runAllTimersAsync();
+      expect((await drained).output).toBe("done");
+      expect(text.join("")).toBe("done");
 
-    const span = (await telemetry.spans()).find((item) => item.name === "chat")!;
-    const wallMs = span.duration[0] * 1000 + span.duration[1] / 1_000_000;
-    const consumerWaitMs = Number(
-      span.attributes["zion.model.consumer_wait.duration"]
-    ) * 1000;
+      const span = (await telemetry.spans()).find((item) => item.name === "chat")!;
+      const wallMs = span.duration[0] * 1000 + span.duration[1] / 1_000_000;
+      const consumerWaitMs = Number(
+        span.attributes["zion.model.consumer_wait.duration"]
+      ) * 1000;
 
-    // Transient text deltas no longer wait for durable storage. The remaining
-    // wait is caused by semantic events such as usage.
-    expect(consumerWaitMs).toBeGreaterThanOrEqual(10);
-    expect(consumerWaitMs).toBeLessThan(30);
-    expect(wallMs).toBeGreaterThan(consumerWaitMs);
-    expect(wallMs - consumerWaitMs).toBeGreaterThanOrEqual(0);
+      // The durable model request takes 15ms. Text delivery must not add
+      // another storage wait, and the 7ms transport belongs to model time.
+      expect(consumerWaitMs).toBe(15);
+      expect(wallMs - consumerWaitMs).toBeCloseTo(7, 6);
+    } finally {
+      sdkClock.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("covers the stream through credential release with usage, finish reason and first chunk timing", async () => {
