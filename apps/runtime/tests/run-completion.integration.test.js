@@ -41,6 +41,31 @@ async function fixture(options = {}) {
 }
 
 describe("durable nonblocking completion", () => {
+  it("recovers completion work without an HTTP listener and starts it only once", async () => {
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const handle = executor(runs).execute({ prompt: "gateway restart recovery" });
+    await handle.completion;
+    const processed = vi.fn();
+    const server = createRuntimeServer({
+      runs, executor: executor(runs),
+      runPostProcessors: [{ id: "recovered", process: processed }]
+    });
+    try {
+      expect(server.address()).toBeNull();
+      server.startBackgroundWork();
+      server.startBackgroundWork();
+      await vi.waitFor(() => expect(processed).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(server.isIdle()).toBe(true));
+      expect(server.address()).toBeNull();
+      expect(await runs.claimCompletionTask("verification")).toBeNull();
+      const task = (await database.pool.query(
+        "SELECT status,attempts,completed_steps FROM runtime_run_completion_tasks WHERE space_id=$1 AND run_id=$2",
+        [runs.spaceId, handle.runId]
+      )).rows[0];
+      expect(task).toMatchObject({ status: "completed", attempts: 1, completed_steps: ["recovered"] });
+    } finally { await server.close(); }
+  });
+
   it("accepts new input while document projection and a post-processor are blocked", async () => {
     const projection = deferred();
     const processor = deferred();
