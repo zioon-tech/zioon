@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { gunzip, gzip } from "node:zlib";
+import { snapshotContextMessages } from "./conversation-input.mjs";
 
 const SESSION_MESSAGE_COMMAND_STALE_MS = 15 * 60_000;
 const DEFAULT_MODEL_REQUEST_DETAIL_MAX_BYTES = 8 * 1024 * 1024;
@@ -173,12 +174,35 @@ export class PostgresRunStore {
   }
 
   async create(record) {
+    const { inputMessages, ...storedRecord } = record;
     try {
-      await this.pool.query(
+      await this.transaction(async client => {
+      await client.query(
         `INSERT INTO runtime_runs (space_id, id, payload_json, status, updated_at)
          VALUES ($1, $2, $3::jsonb, $4, $5)`,
-        [this.spaceId, record.id, JSON.stringify(record), record.status, record.updatedAt]
+        [this.spaceId, record.id, JSON.stringify(storedRecord), record.status, record.updatedAt]
       );
+      if (Array.isArray(inputMessages)) await client.query(
+        `INSERT INTO runtime_run_inputs (space_id, run_id, messages_json) VALUES ($1, $2, $3::jsonb)`,
+        [this.spaceId, record.id, JSON.stringify(inputMessages)]
+      );
+      const inputId = record.metadata?.conversationInputId;
+      if (inputId) {
+        const claimed = await client.query(
+          `UPDATE runtime_conversation_inputs
+           SET status = 'accepted', run_id = $3,
+             response_json = COALESCE(response_json, '{}'::jsonb) || $4::jsonb
+           WHERE space_id = $1 AND id = $2 AND session_id = $5 AND status = 'reserved'
+             AND reserved_until > EXTRACT(EPOCH FROM clock_timestamp()) * 1000
+           RETURNING id`,
+          [this.spaceId, inputId, record.id, JSON.stringify({
+            runId: record.id, attemptId: record.attemptId, status: "accepted",
+            inputSnapshotId: inputId, model: record.model || null, policy: record.policy
+          }), record.sessionId]
+        );
+        if (!claimed.rowCount) throw new Error("Conversation input is no longer reserved");
+      }
+      });
     } catch (error) {
       if (error?.code === "23505") throw new Error(`Run already exists: ${record.id}`);
       throw error;
@@ -300,6 +324,14 @@ export class PostgresRunStore {
          WHERE space_id = $4 AND id = $5`,
         [JSON.stringify(next), next.status, next.updatedAt, this.spaceId, event.runId]
       );
+      if (["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
+        await client.query(
+          `INSERT INTO runtime_run_completion_tasks
+           (space_id, run_id, attempt_id, terminal_sequence, payload_json, available_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6) ON CONFLICT DO NOTHING`,
+          [this.spaceId, event.runId, event.attemptId, event.sequence, JSON.stringify(next), event.timestamp]
+        );
+      }
       for (const entry of outbox) {
         if (!/^[a-zA-Z0-9_.:-]{1,200}$/.test(entry.id || "")
           || !/^[a-zA-Z0-9_.:-]{1,100}$/.test(entry.kind || "")
@@ -562,8 +594,8 @@ export class PostgresRunStore {
     if (!result.rowCount) throw new Error(`Run not found: ${entry.runId}`);
   }
 
-  async getTranscript(runId) {
-    const result = await this.pool.query(
+  async getTranscript(runId, client = this.pool) {
+    const result = await client.query(
       `SELECT payload_json FROM runtime_run_transcript
        WHERE space_id = $1 AND run_id = $2 ORDER BY turn, ordinal`,
       [this.spaceId, String(runId)]
@@ -648,6 +680,17 @@ export class PostgresRunStore {
          ORDER BY sequence DESC LIMIT 1`, [this.spaceId, runId]
       );
       if (Number(checkpoint.rows[0]?.sequence) !== checkpointSequence) return false;
+      // Upgrade recovery uses this Run's checkpoint, never the current session.
+      // Drop generated turns after the caller's last user message so replaying
+      // the durable transcript does not duplicate earlier tool/assistant turns.
+      const checkpointMessages = payload(checkpoint.rows[0])?.messages || [];
+      const lastUser = checkpointMessages.findLastIndex(message => message.role === "user");
+      await client.query(
+        `INSERT INTO runtime_run_inputs
+         (space_id, run_id, messages_json, source, source_checkpoint_sequence)
+         VALUES ($1, $2, $3::jsonb, 'checkpoint', $4) ON CONFLICT DO NOTHING`,
+        [this.spaceId, runId, JSON.stringify(checkpointMessages.slice(0, lastUser + 1)), checkpointSequence]
+      );
       if (waitId) {
         const saved = payload(checkpoint.rows[0]);
         if (!saved.pending) return false;
@@ -704,6 +747,47 @@ export class PostgresRunStore {
       [this.spaceId, ["queued", "running", "waiting"], String(sessionId)]
     );
     return payload(result.rows[0]);
+  }
+
+  async claimCompletionTask(owner, leaseMs = 180_000) {
+    const result = await this.pool.query(
+      `UPDATE runtime_run_completion_tasks SET owner = $2, status = 'running',
+         lease_until = $3 + $4, attempts = attempts + 1
+       WHERE (space_id, run_id, attempt_id, terminal_sequence) = (
+         SELECT space_id, run_id, attempt_id, terminal_sequence FROM runtime_run_completion_tasks
+         WHERE space_id = $1 AND status <> 'completed' AND available_at <= $3
+           AND lease_until <= $3 ORDER BY available_at, run_id
+         FOR UPDATE SKIP LOCKED LIMIT 1
+       ) RETURNING *`,
+      [this.spaceId, owner, this.now(), leaseMs]
+    );
+    const row = result.rows[0];
+    return row ? { run: payload(row), terminalSequence: Number(row.terminal_sequence),
+      completedSteps: row.completed_steps, attempts: row.attempts, owner } : null;
+  }
+
+  async getRunInputMessages(runId) {
+    const result = await this.pool.query(
+      `SELECT messages_json FROM runtime_run_inputs WHERE space_id = $1 AND run_id = $2`,
+      [this.spaceId, runId]
+    );
+    return result.rows[0]?.messages_json ?? null;
+  }
+
+  async updateCompletionTask(task, { step, complete = false, retryMs, leaseMs = 180_000 } = {}) {
+    const result = await this.pool.query(
+      `UPDATE runtime_run_completion_tasks SET
+         completed_steps = CASE WHEN $5::text IS NULL THEN completed_steps
+           ELSE completed_steps || to_jsonb($5::text) END,
+         status = CASE WHEN $6 THEN 'completed' WHEN $7::bigint IS NOT NULL THEN 'queued' ELSE status END,
+         available_at = CASE WHEN $7::bigint IS NULL THEN available_at ELSE $8 + $7 END,
+         lease_until = CASE WHEN $6 OR $7::bigint IS NOT NULL THEN 0 ELSE $8 + $9 END
+       WHERE space_id = $1 AND run_id = $2 AND attempt_id = $3 AND owner = $4
+         AND lease_until > $8 AND terminal_sequence = $10 RETURNING run_id`,
+      [this.spaceId, task.run.id, task.run.attemptId, task.owner, step || null,
+        complete, retryMs ?? null, this.now(), leaseMs, task.terminalSequence]
+    );
+    if (!result.rowCount) throw new Error("Completion task lease lost");
   }
 
   async updateSession(sessionId, patch = {}, updatedAt = Date.now()) {
@@ -876,9 +960,14 @@ export class PostgresRunStore {
     if (!source) throw new Error(`Session not found: ${sourceSessionId}`);
     const targetId = String(id || "").trim();
     if (!targetId) throw new Error("Forked Session id is required");
-    const sourceSeedTranscript = await this.getSessionSeedTranscript(sourceSessionId);
-    const sourceMessages = await this.getSessionMessages(sourceSessionId);
-    const sourceTranscript = await this.getSessionTranscript(sourceSessionId);
+    const sourceVersion = await this.getSessionTranscriptVersion(sourceSessionId);
+    const sourceTranscript = sourceVersion.messages;
+    const sourceInputId = sourceVersion.inputSnapshotId;
+    // A fork takes the current conversation version. Historical Run records
+    // remain on the source Session, with provenance retained in the seed.
+    const sourceSeedTranscript = sourceInputId
+      ? sourceTranscript : await this.getSessionSeedTranscript(sourceSessionId);
+    const sourceMessages = sourceInputId ? [] : await this.getSessionMessages(sourceSessionId);
     const session = {
       ...source,
       id: targetId,
@@ -889,6 +978,7 @@ export class PostgresRunStore {
         forkedFrom: {
           sessionId: sourceSessionId,
           transcriptSequence: sourceTranscript.at(-1)?.sequence || 0,
+          ...(sourceInputId ? { inputSnapshotId: sourceInputId } : {}),
           forkedAt: createdAt
         }
       },
@@ -942,8 +1032,8 @@ export class PostgresRunStore {
     };
   }
 
-  async getSessionMessages(sessionId, afterSequence = 0) {
-    const result = await this.pool.query(
+  async getSessionMessages(sessionId, afterSequence = 0, client = this.pool) {
+    const result = await client.query(
       `SELECT payload_json FROM runtime_session_messages
        WHERE space_id = $1 AND session_id = $2 AND sequence > $3
        ORDER BY sequence`,
@@ -952,14 +1042,116 @@ export class PostgresRunStore {
     return result.rows.map(payload);
   }
 
+  conversationInputRow(row) {
+    return row ? {
+      ...payload(row), status: row.status, runId: row.run_id,
+      baseSequence: Number(row.base_sequence), ordinal: Number(row.ordinal),
+      reservedUntil: Number(row.reserved_until),
+      response: payload({ payload_json: row.response_json })
+    } : null;
+  }
+
+  async getConversationInput(sessionId, clientRequestId, client = this.pool) {
+    const result = await client.query(
+      `SELECT *, CASE WHEN status = 'reserved'
+           AND reserved_until <= EXTRACT(EPOCH FROM clock_timestamp()) * 1000
+         THEN 'rejected' ELSE status END AS status FROM runtime_conversation_inputs
+       WHERE space_id = $1 AND session_id = $2 AND client_request_id = $3`,
+      [this.spaceId, sessionId, clientRequestId]
+    );
+    return this.conversationInputRow(result.rows[0]);
+  }
+
+  async getLatestConversationInput(sessionId, client = this.pool) {
+    const result = await client.query(
+      `SELECT * FROM runtime_conversation_inputs
+       WHERE space_id = $1 AND session_id = $2 AND status = 'accepted'
+       ORDER BY ordinal DESC LIMIT 1`, [this.spaceId, sessionId]
+    );
+    return this.conversationInputRow(result.rows[0]);
+  }
+
+  async getRunConversationInput(runId) {
+    const result = await this.pool.query(
+      `SELECT * FROM runtime_conversation_inputs WHERE space_id = $1 AND run_id = $2`,
+      [this.spaceId, runId]
+    );
+    return this.conversationInputRow(result.rows[0]);
+  }
+
+  async reserveConversationInput(snapshot, response = {}) {
+    return this.transaction(async client => {
+      const session = await client.query(
+        `SELECT id FROM runtime_sessions WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+        [this.spaceId, snapshot.sessionId]
+      );
+      if (!session.rowCount) throw new Error("Conversation Session does not exist");
+      const existing = await this.getConversationInput(snapshot.sessionId, snapshot.clientRequestId, client);
+      if (existing) return { reserved: false, input: existing };
+      const busy = await client.query(
+        `SELECT 1 FROM runtime_conversation_inputs
+         WHERE space_id = $1 AND session_id = $2 AND status = 'reserved'
+           AND reserved_until > EXTRACT(EPOCH FROM clock_timestamp()) * 1000
+         UNION ALL
+         SELECT 1 FROM runtime_runs WHERE space_id = $1
+           AND payload_json->>'sessionId' = $2 AND status IN ('queued', 'running', 'waiting')
+         LIMIT 1`, [this.spaceId, snapshot.sessionId]
+      );
+      if (busy.rowCount) throw Object.assign(new Error("Session already has an active submission"), { statusCode: 409 });
+      if (snapshot.parentInputId) {
+        const parent = await client.query(
+          `SELECT 1 FROM runtime_conversation_inputs WHERE space_id = $1 AND session_id = $2 AND id = $3`,
+          [this.spaceId, snapshot.sessionId, snapshot.parentInputId]
+        );
+        if (!parent.rowCount) throw Object.assign(new Error("Input parent does not belong to this Session"), { statusCode: 400 });
+      }
+      const result = await client.query(
+        `INSERT INTO runtime_conversation_inputs
+         (space_id, session_id, id, client_request_id, fingerprint, principal_id,
+          base_sequence, status, payload_json, response_json, created_at, reserved_until)
+         VALUES ($1, $2, $3, $4, $5, $6,
+           (SELECT COALESCE(MAX(sequence), 0) FROM runtime_session_messages
+            WHERE space_id = $1 AND session_id = $2),
+           'reserved', $7::jsonb, $8::jsonb, $9,
+           EXTRACT(EPOCH FROM clock_timestamp()) * 1000 + 120000) RETURNING *`,
+        [this.spaceId, snapshot.sessionId, snapshot.id, snapshot.clientRequestId,
+          snapshot.fingerprint, snapshot.principalId, JSON.stringify(snapshot),
+          JSON.stringify(response), snapshot.createdAt]
+      );
+      return { reserved: true, input: this.conversationInputRow(result.rows[0]) };
+    });
+  }
+
+  async rejectConversationInput(inputId) {
+    // Never release an accepted receipt: a tool may already have run.
+    await this.pool.query(
+      `UPDATE runtime_conversation_inputs SET status = 'rejected'
+       WHERE space_id = $1 AND id = $2 AND status = 'reserved'`, [this.spaceId, inputId]
+    );
+  }
+
   async getSessionTranscript(sessionId, afterSequence = 0) {
-    const messages = await this.getSessionMessages(sessionId);
+    return (await this.getSessionTranscriptVersion(sessionId, afterSequence)).messages;
+  }
+
+  async getSessionTranscriptVersion(sessionId, afterSequence = 0) {
+    return this.transaction(async client => {
+    await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const messages = await this.getSessionMessages(sessionId, 0, client);
+    const input = await this.getLatestConversationInput(sessionId, client);
     const canonical = [];
     let sequence = 0;
-    for (const entry of await this.getSessionSeedTranscript(sessionId)) {
+    for (const entry of input ? snapshotContextMessages(input) : await this.getSessionSeedTranscript(sessionId, client)) {
       canonical.push({ ...entry, schemaVersion: 1, sessionId, sequence: ++sequence });
     }
-    for (const userMessage of messages.filter((message) => message.role === "user")) {
+    if (input && messages.some(message => message.runId === input.runId && message.role === "assistant")) {
+      const transcript = await this.getTranscript(input.runId, client);
+      const output = transcript.length ? transcript : messages.filter(message =>
+        message.runId === input.runId && message.role === "assistant");
+      for (const entry of output) canonical.push({ ...entry, sessionId, sequence: ++sequence });
+    }
+    for (const userMessage of messages.filter((message) => message.role === "user"
+      && (!input || (message.sequence > input.baseSequence && message.runId !== input.runId)))) {
       const { canonicalContent, ...displayUserMessage } = userMessage;
       canonical.push({
         ...displayUserMessage,
@@ -971,7 +1163,7 @@ export class PostgresRunStore {
         message.runId === userMessage.runId && message.role === "assistant"
       );
       if (!assistantMessage) continue;
-      const transcript = await this.getTranscript(userMessage.runId);
+      const transcript = await this.getTranscript(userMessage.runId, client);
       if (transcript.length) {
         for (const entry of transcript) {
           canonical.push({ ...entry, sessionId, sequence: ++sequence });
@@ -980,7 +1172,9 @@ export class PostgresRunStore {
         canonical.push({ ...assistantMessage, schemaVersion: 1, sequence: ++sequence });
       }
     }
-    return canonical.filter((message) => message.sequence > afterSequence);
+    return { inputSnapshotId: input?.id || null,
+      messages: canonical.filter((message) => message.sequence > afterSequence) };
+    });
   }
 
   async appendSessionMessages(sessionId, messages) {

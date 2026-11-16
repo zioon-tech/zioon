@@ -15,7 +15,7 @@
 // context builders never drift apart.
 
 import { getAssistantBlockIdFromHeader, stripAssistantBlockIdComment } from "./restore";
-import { isContinuationBoundaryLine } from "./session-document-format.js";
+import { conversationLineRanges, isContinuationBoundaryLine } from "./session-document-format.js";
 
 const THINKING_STUB_RE = /^(思考|Thinking)\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/i;
 const TOOL_STUB_RE = /^(?:调用|Call)\s+[^\n<]+(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/i;
@@ -33,6 +33,7 @@ export type WidgetHistoryAnnotations = {
 };
 
 export type WidgetHistoryOptions = {
+  requireDocumentAnchors?: boolean;
   includeToolHistory?: boolean;
   includeThinkingHistory?: boolean;
   preservedThinking?: boolean;
@@ -57,7 +58,12 @@ export function buildChatWidgetAnchorIndex(text: string): WidgetAnchorIndex {
   const thinking = new Map<string, WidgetAnchor>();
   const lines = String(text || "").replace(/\r/g, "").split("\n");
   let pos = 0;
-  for (const line of lines) {
+  const lexicalLines = conversationLineRanges(lines.join("\n"));
+  for (const { line, literal } of lexicalLines) {
+    if (literal) {
+      pos += line.length + 1;
+      continue;
+    }
     const toolMatch = line.match(/(?:调用|Call)\s+([^\n<]+?)\s*<!--\s*zion-tool:id=([^>\s]+)\s*-->/i);
     if (toolMatch) {
       const startInLine = Math.max(0, toolMatch.index || 0);
@@ -123,7 +129,12 @@ function buildRoleRanges(text: string): RoleRange[] {
   let currentRole = "user";
   let hasContent = false;
   let assistantBlockId: string | null = null;
-  for (const line of lines) {
+  for (const { line, literal } of conversationLineRanges(lines.join("\n"))) {
+    if (literal) {
+      hasContent = true;
+      pos += line.length + 1;
+      continue;
+    }
     const trimmed = line.trim();
     if (isContinuationBoundaryLine(line)) {
       if (pos > startPos) {
@@ -183,13 +194,17 @@ function buildAssistantTextSegments(text: string, range: RoleRange, units: Unit[
     textLines = [];
   };
 
-  for (const line of lines) {
+  for (const { line, literal } of conversationLineRanges(lines.join("\n"))) {
     const lineFrom = pos;
     const lineTo = pos + line.length;
     const nextPos = lineTo + 1;
     pos = nextPos;
     if (nextPos <= range.from) continue;
     if (lineFrom >= range.to) break;
+    if (literal) {
+      textLines.push(line);
+      continue;
+    }
 
     const trimmed = line.trim();
     if (isContinuationBoundaryLine(line)) continue;
@@ -356,6 +371,7 @@ export function reconstructWidgetHistoryMessages(
       .filter((id) => !widgetAnchors.tools.has(id))
   );
   const itemsTools = itemsToolsRaw
+    .filter((it) => !options.requireDocumentAnchors || widgetAnchors.tools.has(String(it?.id || "")))
     .map((it) => resolveChatWidgetPosition(it, widgetAnchors.tools))
     .filter((it: any) => it && it.id && !deleted.has(String(it.id)))
     .filter((it: any) => typeof it.from === "number" && it.from >= 0 && it.from < limitPos)
@@ -369,6 +385,7 @@ export function reconstructWidgetHistoryMessages(
       .filter((id) => !widgetAnchors.thinking.has(id))
   );
   const itemsThinking = itemsThinkingRaw
+    .filter((it) => !options.requireDocumentAnchors || widgetAnchors.thinking.has(String(it?.id || "")))
     .map((it) => resolveChatWidgetPosition(it, widgetAnchors.thinking))
     .filter((it: any) => it && it.id && !deletedThinking.has(String(it.id)))
     .filter((it: any) => typeof it.from === "number" && it.from >= 0 && it.from < limitPos)

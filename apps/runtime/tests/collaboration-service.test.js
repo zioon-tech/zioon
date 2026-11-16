@@ -92,6 +92,22 @@ afterEach(async () => {
 });
 
 describe("Runtime collaboration service", () => {
+  it("requires a resolved snapshot anchor before terminal replay", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-anchor-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({ id: "snapshot", title: "Snapshot", text: "user question\nuser later" });
+    const collaboration = createCollaboration({ store: workbenchState });
+    resources.push({ directory, workbenchState, collaboration });
+    const input = { runId: "fast", mode: "final", events: [{
+      schemaVersion: 1, runId: "fast", attemptId: "attempt", sequence: 1,
+      eventId: "complete", type: "run.completed", timestamp: Date.now(), data: { output: "answer" }
+    }] };
+    await expect(collaboration.applyRunEvents("snapshot", input)).rejects.toThrow("anchor is not prepared");
+    await collaboration.prepareRun("snapshot", { runId: "fast", mode: "final",
+      documentAnchor: { fallback: { offset: 13, before: "user question", after: "\nuser later" } } });
+    await expect(collaboration.applyRunEvents("snapshot", input)).resolves.toBeUndefined();
+  });
+
   it("rejects an oversized peer message without terminating Runtime HTTP", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-payload-"));
     const spaceId = database.nextSpaceId();
@@ -1129,7 +1145,7 @@ describe("Runtime collaboration service", () => {
     ].join("\n"));
   });
 
-  it("repairs missing multi-turn document blocks from canonical messages", () => {
+  it("preserves missing editable context when no projection ownership baseline exists", () => {
     const document = new Y.Doc();
     const ytext = document.getText(COLLABORATION_TEXT_KEY);
     ytext.insert(0, [
@@ -1144,17 +1160,16 @@ describe("Runtime collaboration service", () => {
       { role: "assistant", runId: "run-2", content: "second answer" }
     ];
 
-    expect(reconcileSessionMessagesInYText(ytext, messages)).toBe(true);
+    expect(reconcileSessionMessagesInYText(ytext, messages)).toBe(false);
     expect(ytext.toString()).toBe([
       "user first question",
       "assistant <!-- zion-assistant:id=run-1 --> first answer",
-      "user second question",
-      "assistant <!-- zion-assistant:id=run-2 --> second answer"
+      "assistant <!-- zion-assistant:id=run-2 --> "
     ].join("\n"));
     expect(reconcileSessionMessagesInYText(ytext, messages)).toBe(false);
   });
 
-  it("repairs an empty assistant block despite stale Runtime owner metadata", () => {
+  it("does not treat stale Runtime owner metadata as proof that an empty block is unedited", () => {
     const document = new Y.Doc();
     const ytext = document.getText(COLLABORATION_TEXT_KEY);
     ytext.insert(0, [
@@ -1170,8 +1185,8 @@ describe("Runtime collaboration service", () => {
     expect(reconcileSessionMessagesInYText(ytext, [
       { role: "user", runId: "run-stale", content: "question" },
       { role: "assistant", runId: "run-stale", content: "recovered answer" }
-    ])).toBe(true);
-    expect(ytext.toString()).toContain("recovered answer");
+    ])).toBe(false);
+    expect(ytext.toString()).toBe("user question\nassistant <!-- zion-assistant:id=run-stale --> ");
     document.destroy();
   });
 
@@ -1182,6 +1197,7 @@ describe("Runtime collaboration service", () => {
       "user current question",
       "assistant <!-- zion-assistant:id=run-current --> "
     ].join("\n"));
+    document.getMap("runProjection").set("run-current", { projectedOutput: "" });
 
     expect(reconcileSessionMessagesInYText(ytext, [
       { role: "user", runId: "run-removed", content: "removed question" },

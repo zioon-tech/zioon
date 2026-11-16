@@ -284,13 +284,17 @@ function scheduleRevealToolContent(view, { id, pos } = {}) {
   try {
     const sid = getViewSessionId(view);
     if (!sid) return;
-    const runId = window?.zion?.state?.get?.(`chat.runs.${sid}`)?.runId || "";
+    const run = window?.zion?.state?.get?.(`chat.runs.${sid}`);
+    if (!run?.streaming) return;
+    const runId = run.runId || "";
     scheduleConversationViewportFollow(view, {
       sessionId: sid,
       state: window?.zion?.state,
       cycleId: runId,
       reveal: () => {
         try {
+          const current = window?.zion?.state?.get?.(`chat.runs.${sid}`);
+          if (!current?.streaming || current.runId !== runId || getViewSessionId(view) !== sid) return false;
           const scrollDOM = view?.scrollDOM;
           if (!scrollDOM) return false;
           const selectorId = String(id || "").replace(/"/g, '\\"');
@@ -1907,7 +1911,7 @@ function summarizeToolArgsCompact(name, args, max = 44) {
   return summary ? clipMiddle(summary, max) : "";
 }
 
-class ToolCallCardWidget extends WidgetType {
+export class ToolCallCardWidget extends WidgetType {
   constructor(id, name, args, result, ok, sessionId = null, action = null) {
     super();
     this.id = id + ":card";
@@ -2046,7 +2050,7 @@ class ToolCallCardWidget extends WidgetType {
  * that shows small gray text and a collapse toggle. Click events bubble up and are
  * handled by the existing domEventHandlers to dispatch toggleInline.
  */
-class ToolInlineWidget extends WidgetType {
+export class ToolInlineWidget extends WidgetType {
   constructor(id, name, args, ok, done, action = null, result = null, sessionId = null) {
     super();
     this.id = id + ":inline";

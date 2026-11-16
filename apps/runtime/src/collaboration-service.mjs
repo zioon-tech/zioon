@@ -70,6 +70,34 @@ export function replaceYText(ytext, value) {
   return true;
 }
 
+export function authorizeCollaborationSends(webSocket, contexts, authorize) {
+  const send = webSocket.send.bind(webSocket);
+  let pending = [];
+  let draining = false;
+  webSocket.send = (...args) => {
+    pending.push(args);
+    if (draining) return;
+    draining = true;
+    void Promise.resolve().then(async () => {
+      try {
+        while (pending.length && webSocket.readyState === 1) {
+          // Only this already queued batch shares a check. Frames arriving during
+          // authorization are checked again, so revocation is never time-cached.
+          const batch = pending;
+          pending = [];
+          for (const context of contexts) await authorize(context);
+          if (webSocket.readyState === 1) for (const args of batch) send(...args);
+        }
+      } catch {
+        webSocket.terminate();
+      } finally {
+        pending = [];
+        draining = false;
+      }
+    });
+  };
+}
+
 export function createRuntimeCollaborationService({
   store,
   documentProjector = null,
@@ -399,18 +427,7 @@ export function createRuntimeCollaborationService({
       });
       const authorizationState = { contexts: new Set() };
       if (authorizeOutbound) {
-        const send = webSocket.send.bind(webSocket);
-        let outbound = Promise.resolve();
-        webSocket.send = (...args) => {
-          outbound = outbound.then(async () => {
-            for (const context of authorizationState.contexts) {
-              await authorizeOutbound(context);
-            }
-            if (webSocket.readyState === 1) send(...args);
-          }).catch(() => {
-            webSocket.terminate();
-          });
-        };
+        authorizeCollaborationSends(webSocket, authorizationState.contexts, authorizeOutbound);
       }
       const connection = hocuspocus.handleConnection(
         webSocket,
@@ -447,6 +464,22 @@ export function createRuntimeCollaborationService({
       };
     },
     replaceDocument,
+    async applyRunEvents(sessionId, { runId, events, includeReasoning, mode } = {}) {
+      const connection = await hocuspocus.openDirectConnection(collaborationDocumentName(sessionId), { clientId: "runtime" });
+      try {
+        await connection.transact(document => {
+          if (["live", "final"].includes(mode)) {
+            const projection = document.getMap("runProjection").get(runId);
+            if (!projection || projection.pendingAnchor || projection.mode !== mode) {
+              throw new Error("Snapshot document anchor is not prepared");
+            }
+          }
+          activeDocumentProjector?.projectEvents?.({ document, runId, events, includeReasoning });
+        });
+      } finally {
+        await connection.disconnect({ unloadImmediately: false });
+      }
+    },
     async prepareRun(sessionId, input = {}) {
       if (!activeDocumentProjector?.prepareRun) return null;
       const name = collaborationDocumentName(sessionId);

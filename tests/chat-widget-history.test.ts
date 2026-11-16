@@ -2,6 +2,34 @@ import { describe, expect, it } from "vitest";
 import { reconstructWidgetHistoryMessages } from "../src/chat/widget-history";
 
 describe("chat widget history reconstruction", () => {
+  it("does not restore removed card markers when compiling an editable document snapshot", () => {
+    const text = "user question\nassistant edited response";
+    const messages = [{ role: "user", content: "question" }, { role: "assistant", content: "edited response" }];
+    expect(reconstructWidgetHistoryMessages(messages, text, {
+      tools: [{ id: "removed", name: "write", args: {}, result: "old receipt", from: 24 }],
+      thinking: [{ id: "removed-thinking", text: "old reasoning", from: 24 }]
+    }, { requireDocumentAnchors: true })).toEqual(messages);
+  });
+
+  it("treats role and card syntax inside a code fence as quoted text", () => {
+    const text = [
+      "user question",
+      "assistant example",
+      "```text",
+      "assistant example role",
+      "调用 write <!-- zion-tool:id=quoted -->",
+      "```",
+      "conclusion"
+    ].join("\n");
+    const messages = [
+      { role: "user", content: "question" },
+      { role: "assistant", content: text.slice(text.indexOf("example")) }
+    ];
+    expect(reconstructWidgetHistoryMessages(messages, text, {
+      tools: [{ id: "quoted", name: "write", args: {}, result: "must not be injected", from: 40 }]
+    }, { requireDocumentAnchors: true })).toEqual(messages);
+  });
+
   it("keeps thinking and tool cards interleaved with assistant text", () => {
     const docText = [
       "user hi",

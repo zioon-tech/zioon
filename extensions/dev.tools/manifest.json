@@ -1,13 +1,13 @@
 {
   "name": "dev.tools",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Manage tool parsing, switches, and tool calls from AI responses.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.tools",
     "name": "Tools",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "main": "./main.js",
     "entries": {
       "ui": "./main.js",

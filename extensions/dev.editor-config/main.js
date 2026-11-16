@@ -188,7 +188,7 @@ export async function activate(ctx) {
 
   // Editor width mode: full / wide / standard (same as before)
   const STATE_KEY = "ui.editorWidthMode";
-  const DEFAULT_MODE = "full";
+  const DEFAULT_MODE = "standard";
   const getMode = () => window.zion.state.get(STATE_KEY) || DEFAULT_MODE;
   const setMode = (mode) => {
     const m = mode === "full" || mode === "wide" || mode === "standard" ? mode : DEFAULT_MODE;
@@ -351,7 +351,7 @@ export async function activate(ctx) {
         if (v === "0" || v === "false") return false;
         if (v === "1" || v === "true") return true;
       } catch {}
-      return true;
+      return false;
     };
 
     const init = readStored();
@@ -408,9 +408,9 @@ export async function activate(ctx) {
       register({ id: "dev.editor.menu.lineWrap", title: "Line Wrap", section: "Editor", kind: "toggle", order: 46, getChecked: () => !!window.zion.state.get("ui.lineWrap"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleLineWrap") });
       register({ id: "dev.editor.menu.minimap", title: "Minimap", section: "Editor", kind: "toggle", order: 47, getChecked: () => !!window.zion.state.get("ui.minimapEnabled"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleMinimap") });
 
-      register({ id: "dev.editor.menu.width.standard", title: "Width: Standard", section: "Layout", kind: "toggle", order: 50, getChecked: () => String(window.zion.state.get("ui.editorWidthMode") || "full") === "standard", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthStandard") });
-      register({ id: "dev.editor.menu.width.wide", title: "Width: Wide", section: "Layout", kind: "toggle", order: 51, getChecked: () => String(window.zion.state.get("ui.editorWidthMode") || "full") === "wide", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthWide") });
-      register({ id: "dev.editor.menu.width.full", title: "Width: Full", section: "Layout", kind: "toggle", order: 52, getChecked: () => String(window.zion.state.get("ui.editorWidthMode") || "full") === "full", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthFull") });
+      register({ id: "dev.editor.menu.width.standard", title: "Width: Standard", section: "Layout", kind: "toggle", order: 50, getChecked: () => getMode() === "standard", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthStandard") });
+      register({ id: "dev.editor.menu.width.wide", title: "Width: Wide", section: "Layout", kind: "toggle", order: 51, getChecked: () => getMode() === "wide", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthWide") });
+      register({ id: "dev.editor.menu.width.full", title: "Width: Full", section: "Layout", kind: "toggle", order: 52, getChecked: () => getMode() === "full", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthFull") });
 
       register({ id: "dev.editor.menu.heading.medium", title: "Heading: Medium", section: "Layout", kind: "toggle", order: 60, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "medium", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeMedium") });
       register({ id: "dev.editor.menu.heading.small", title: "Heading: Small", section: "Layout", kind: "toggle", order: 61, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "small", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeSmall") });

@@ -124,7 +124,7 @@ export function registerEditorTools() {
           line_wrap: !!window.zion?.state?.get("ui.lineWrap"),
           minimap: !!window.zion?.state?.get("ui.minimapEnabled"),
           selection_highlight: !!window.zion?.state?.get("ui.selectionHighlight"),
-          width_mode: String(window.zion?.state?.get("ui.editorWidthMode") || "full"),
+          width_mode: String(window.zion?.state?.get("ui.editorWidthMode") || "standard"),
           heading_size: String(window.zion?.state?.get("ui.headingSize") || "xsmall"),
           include_tool_history: !!window.zion?.state?.get("chat.includeToolHistory"),
           include_thinking_history: !!window.zion?.state?.get("chat.includeThinkingHistory"),

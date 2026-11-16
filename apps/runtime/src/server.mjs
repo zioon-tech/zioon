@@ -11,6 +11,12 @@ import {
   projectRunEvents
 } from "./run-event-projection.mjs";
 import { createRunLiveHub } from "./run-live-hub.mjs";
+import { createRunCompletionWorker } from "./run-completion-worker.mjs";
+import {
+  assertConversationInputAccount,
+  conversationInputCommand,
+  createConversationInputSnapshot
+} from "./conversation-input.mjs";
 import { createMobileHttpHandler } from "./mobile-http-handler.mjs";
 import {
   deriveSessionTitleFromContent,
@@ -193,6 +199,10 @@ function normalizeModelOptions(value) {
 function cloneObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   return JSON.parse(JSON.stringify(value));
+}
+
+function submittingPrincipalId(principal) {
+  return String(principal?.user?.id || principal?.userId || principal?.deviceId || "");
 }
 
 function normalizeMessageContent(value, role = "user") {
@@ -573,6 +583,8 @@ export function createRuntimeServer({
     return { ...resolved, model: await resolveRequestedModel(resolved.model, principal) };
   };
   const admitRun = async (principal, runRequest) => {
+    // This link is assigned by admission, never by a client or a continuation.
+    if (runRequest.metadata) delete runRequest.metadata.conversationInputId;
     let admitted;
     if (!accessControl?.authorizeRunRequest) {
       // Principal is reserved even on the legacy admission surface.
@@ -612,16 +624,21 @@ export function createRuntimeServer({
   const liveRunRetirements = new Map();
   const sessionHandles = new Map();
   const sessionFinalizations = new Map();
+  const sessionPersistence = new Map();
+  const sessionAdmissionVersions = new Map();
   const runFinalizations = new Map();
   const sessionAdmissions = new Set();
-  const reserveSessionAdmission = async (sessionId, resumingRunId) => {
+  const reserveSessionAdmission = async (sessionId, resumingRunId, expectedVersion) => {
     if (!sessionId) return null;
     const previous = sessionHandles.get(sessionId);
     if (previous && !sessionAdmissions.has(sessionId)) {
       const record = await runs.get(previous.runId);
       if (record && TERMINAL_STATUSES.has(record.status)) {
-        await sessionFinalizations.get(sessionId);
+        await sessionPersistence.get(sessionId);
       }
+    }
+    if (expectedVersion !== undefined && sessionAdmissionVersions.get(sessionId) !== expectedVersion) {
+      throw Object.assign(new Error("New input superseded automatic continuation"), { code: "CONTINUATION_SUPERSEDED", statusCode: 409 });
     }
     if (sessionAdmissions.has(sessionId) || sessionHandles.has(sessionId)) {
       const error = new Error("Session already has an active Run");
@@ -629,6 +646,7 @@ export function createRuntimeServer({
       throw error;
     }
     sessionAdmissions.add(sessionId);
+    sessionAdmissionVersions.set(sessionId, (sessionAdmissionVersions.get(sessionId) || 0) + 1);
     try {
       const persisted = await runs.getActiveRunForSession?.(sessionId);
       if (persisted?.status === "waiting" && persisted.id !== resumingRunId) {
@@ -827,10 +845,12 @@ export function createRuntimeServer({
     result,
     runRequest,
     sessionId,
-    messages
+    messages,
+    processors = listRunPostProcessors(),
+    idempotencyKey,
+    retryErrors = false
   }) => {
     if (result.status !== "completed") return;
-    const processors = listRunPostProcessors();
     if (!processors.length) return;
     const runId = result.runId || handle.runId;
     let storedRun = null;
@@ -895,13 +915,15 @@ export function createRuntimeServer({
       model: runRequest?.model || storedRun?.model || null,
       policy: postProcessRequest.policy,
       principal: postProcessPrincipal,
-      request: postProcessRequest
+      request: postProcessRequest,
+      idempotencyKey
     });
     for (const processor of processors) {
       try {
         await accessControl?.authorizeRunExecution?.(postProcessRequest);
         await processor.process(context);
       } catch (error) {
+        if (retryErrors) throw error;
         try {
           onPostProcessorError(error, {
             processorId: processor.id,
@@ -920,7 +942,82 @@ export function createRuntimeServer({
     await sessions.reconcileCompletedSessionMessages();
     projectionFailures.clear();
   };
+  const completionWorker = runs.claimCompletionTask ? createRunCompletionWorker({
+    store: runs,
+    onError: onPostProcessorError,
+    steps: async run => {
+      const inputMessages = await runs.getRunInputMessages?.(run.id) || run.inputMessages || [];
+      const runRequest = { ...run, messages: inputMessages };
+      const transcript = [
+        ...inputMessages,
+        ...await runs.getTranscript(run.id)
+      ];
+      const steps = [];
+      if (run.sessionId) {
+        steps.push({
+          id: "runtime.transcript",
+          async run() {
+            if (run.status !== "completed" || !await sessions.getSession(run.sessionId)) return;
+            const user = transcript.findLast(message => message.role === "user");
+            if (user) await sessions.appendSessionMessages(run.sessionId, [{
+              schemaVersion: 1, id: `message_input_${run.id}`, sessionId: run.sessionId,
+              role: "user", runId: run.id, createdAt: run.createdAt,
+              content: messageContentText(user.content), canonicalContent: user.content
+            }]);
+            await sessions.appendSessionMessages(run.sessionId, [{
+              schemaVersion: 1, id: `message_completed_${run.id}`, sessionId: run.sessionId,
+              role: "assistant", runId: run.id, createdAt: run.completedAt || run.updatedAt,
+              content: transcript.findLast(message => message.role === "assistant")?.content ?? run.output ?? ""
+            }]);
+          }
+        });
+        steps.push({
+          id: "runtime.document",
+          async run() {
+            if (!await sessions.getSession(run.sessionId)) return;
+            // A previous waiting attempt must never project over its resumed owner.
+            const current = await runs.get(run.id);
+            if (current?.attemptId !== run.attemptId || current.status !== run.status) return;
+            const projection = run.metadata?.documentProjection;
+            if (sessionDocumentService?.applyRunEvents && ["live", "final"].includes(projection?.mode)) {
+              if (!sessionDocumentService?.prepareRun) throw new Error("Snapshot document preparation is unavailable");
+              await sessionDocumentService.prepareRun(run.sessionId, {
+                runId: run.id,
+                userContent: messageContentText(transcript.findLast(message => message.role === "user")?.content),
+                mode: projection.mode,
+                appendUserPrompt: projection.appendUserPrompt === true,
+                documentAnchor: projection.anchor
+              });
+            }
+            if (sessionDocumentService?.applyRunEvents) {
+              await sessionDocumentService.applyRunEvents(run.sessionId, {
+                runId: run.id, events: await runs.getEvents(run.id),
+                mode: projection?.mode,
+                includeReasoning: run.metadata?.documentProjection?.includeReasoning !== false
+              });
+            }
+            await sessionDocumentService?.reconcileTranscript?.(run.sessionId, await sessions.getSessionMessages(run.sessionId));
+          }
+        });
+      }
+      if (run.status === "completed") {
+        for (const processor of listRunPostProcessors()) {
+          steps.push({
+            id: processor.id,
+            run: idempotencyKey => runCompletedPostProcessors({
+              handle: { runId: run.id, attemptId: run.attemptId },
+              result: { ...run, runId: run.id }, runRequest,
+              sessionId: run.sessionId, messages: transcript, processors: [processor],
+              idempotencyKey, retryErrors: true
+            })
+          });
+        }
+      }
+      return steps;
+    }
+  }) : null;
   const trackHandle = async (handle, sessionId, runRequest = {}, { initialEvents = [], publishStarted = true } = {}) => {
+    const admissionVersion = sessionAdmissionVersions.get(sessionId);
     const live = createRunLiveHub();
     for (const event of initialEvents) live.publish(event);
     globalThis.clearTimeout(liveRunRetirements.get(handle.runId));
@@ -928,7 +1025,6 @@ export function createRuntimeServer({
     handles.set(handle.runId, handle);
     liveRuns.set(handle.runId, live);
     if (sessionId) sessionHandles.set(sessionId, handle);
-    let completedAssistantContent;
     let terminalSessionEventPublished = false;
     if (sessionId && publishStarted) {
       await publishSessionEvent("run.started", {
@@ -946,9 +1042,6 @@ export function createRuntimeServer({
     }
     const documentProjection = drainEvents(handle.events, async (event) => {
       live.publish(event);
-      if (event.type === "message.completed") {
-        completedAssistantContent = String(event.data?.content || "");
-      }
       if (
         sessionId
         && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)
@@ -970,6 +1063,16 @@ export function createRuntimeServer({
       }
       if (!sessionId || !sessionDocumentService?.applyRunEvent) return;
       try {
+        if (runRequest?.metadata?.documentProjection?.mode === "final"
+          && sessionDocumentService.applyRunEvents) {
+          if (!completionWorker && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
+            await sessionDocumentService.applyRunEvents(sessionId, {
+              runId: handle.runId, events: await runs.getEvents(handle.runId),
+              includeReasoning: runRequest.metadata.documentProjection.includeReasoning !== false
+            });
+          }
+          return;
+        }
         await sessionDocumentService.applyRunEvent(
           sessionId,
           event,
@@ -995,31 +1098,30 @@ export function createRuntimeServer({
       });
     });
     void documentProjection;
-    const finalization = handle.completion
+    const persisted = handle.completion
       .then(async (result) => {
-        await documentProjection;
-        let projectedMessages = null;
         if (sessionId && result.status === "completed") {
-          if (completedAssistantContent === undefined) {
-            const transcript = await runs.getTranscript(result.runId);
-            const finalAssistant = transcript.findLast((message) => message.role === "assistant");
-            if (finalAssistant) completedAssistantContent = String(finalAssistant.content || "");
-          }
+          const transcript = await runs.getTranscript(result.runId);
+          const finalAssistant = transcript.findLast(message => message.role === "assistant");
           await sessions.appendSessionMessages(sessionId, [{
             schemaVersion: 1,
             id: createId("message"),
             sessionId,
             role: "assistant",
-            content: completedAssistantContent ?? result.output,
+            content: finalAssistant?.content ?? result.output,
             runId: result.runId,
             createdAt: Date.now()
           }]);
-          projectedMessages = await sessions.getSessionTranscript(sessionId);
-          await sessionDocumentService?.reconcileTranscript?.(
-            sessionId,
-            await sessions.getSessionMessages(sessionId)
-          );
         }
+        if (sessionId && sessionHandles.get(sessionId) === handle) sessionHandles.delete(sessionId);
+        return result;
+      });
+    if (sessionId) sessionPersistence.set(sessionId, persisted);
+    const finalization = persisted.then(async result => {
+        // Execution has yielded. Document projection and plugin work cannot block
+        // the next user command; terminal events already hold a durable retry task.
+        void completionWorker?.kick();
+        await documentProjection;
         if (sessionId && !terminalSessionEventPublished) {
           await publishSessionEvent(`run.${result.status}`, {
             sessionId,
@@ -1035,15 +1137,11 @@ export function createRuntimeServer({
             }
           });
         }
-        await runCompletedPostProcessors({
-          handle,
-          result,
-          runRequest,
-          sessionId,
-          messages: projectedMessages
-        });
-        // Yield the Session only after transcript/document persistence completes.
-        if (sessionId && sessionHandles.get(sessionId) === handle) sessionHandles.delete(sessionId);
+        if (!completionWorker) {
+          if (sessionId) await sessionDocumentService?.reconcileTranscript?.(sessionId, await sessions.getSessionMessages(sessionId));
+          await runCompletedPostProcessors({ handle, result, runRequest, sessionId,
+            messages: [...(runRequest.messages || []), ...await runs.getTranscript(handle.runId)] });
+        }
         if (result.status === "waiting") return;
         const events = await runs.getEvents(handle.runId);
         const publishHostEvent = async (event) => {
@@ -1091,7 +1189,7 @@ export function createRuntimeServer({
           let release;
           let nextHandle;
           try {
-            release = await reserveSessionAdmission(sessionId);
+            release = await reserveSessionAdmission(sessionId, undefined, admissionVersion);
             const session = await sessions.getSession(sessionId);
             if (!session || session.status !== "active") throw new Error("Continuation Session is unavailable");
             await accessControl?.authorizeRunExecution?.(runRequest);
@@ -1111,10 +1209,11 @@ export function createRuntimeServer({
                 })),
                 { role: "user", content: continuationText }
               ],
-              metadata: { ...runRequest.metadata, ...next.metadata, workbenchClientId: "" }
+              metadata: { ...runRequest.metadata, ...next.metadata, conversationInputId: undefined, workbenchClientId: "" }
             };
             await validateRunRequest?.(nextRequest);
             nextHandle = executor.execute(nextRequest);
+            await nextHandle.ready;
             await sessions.appendSessionMessages(sessionId, [{
               schemaVersion: 1, id: createId("message"), sessionId,
               role: "user", content: continuationText, runId: nextHandle.runId,
@@ -1123,6 +1222,8 @@ export function createRuntimeServer({
             await sessionDocumentService?.prepareRun?.(sessionId, {
               runId: nextHandle.runId,
               userContent: continuationText,
+              mode: nextRequest.metadata?.documentProjection?.mode,
+              appendUserPrompt: nextRequest.metadata?.documentProjection?.appendUserPrompt === true,
               forceNewUser: true
             });
             await trackHandle(nextHandle, sessionId, nextRequest);
@@ -1132,7 +1233,7 @@ export function createRuntimeServer({
               await nextHandle.completion;
             }
             await controller.continuationFailed?.({ request: runRequest, error, runId: nextHandle?.runId });
-            throw error;
+            try { onPostProcessorError(error, { processorId: controller.id, runId: handle.runId, sessionId }); } catch {}
           } finally {
             release?.();
           }
@@ -1175,6 +1276,7 @@ export function createRuntimeServer({
         if (sessionId && sessionFinalizations.get(sessionId) === finalization) {
           sessionFinalizations.delete(sessionId);
         }
+        if (sessionId && sessionPersistence.get(sessionId) === persisted) sessionPersistence.delete(sessionId);
         if (runFinalizations.get(handle.runId) === finalization) runFinalizations.delete(handle.runId);
       });
     runFinalizations.set(handle.runId, finalization);
@@ -1559,6 +1661,12 @@ export function createRuntimeServer({
       if (request.method === "POST" && url.pathname === "/v1/runs") {
         const receivedAt = Date.now();
         const body = await readRequestJson(request);
+        const inputCommand = conversationInputCommand(body);
+        assertConversationInputAccount(inputCommand?.expectedAccount, request.zionPrincipal);
+        if (inputCommand && !sessions.reserveConversationInput) {
+          json(response, 501, { error: "Conversation input storage is unavailable" });
+          return;
+        }
         if (
           body?.metadata?.source === "interactive-chat"
           && Number(body.metadata.workbenchProtocolVersion) !== 4
@@ -1583,6 +1691,7 @@ export function createRuntimeServer({
           ...body,
           target: normalizeExecutionTarget(body.target),
           ...(normalizedMessages ? { messages: normalizedMessages } : {}),
+          ...(normalizedSessionHistory ? { sessionHistory: normalizedSessionHistory } : {}),
           ...(resolved.model ? { model: resolved.model } : {}),
           modelOptions: normalizeModelOptions(body.modelOptions),
           policy: resolved.policy,
@@ -1593,6 +1702,44 @@ export function createRuntimeServer({
           chatAdmission: { receivedAt, admissionMs: Date.now() - receivedAt }
         };
         const requestedSessionId = String(body.sessionId || "").trim();
+        const inputSnapshot = inputCommand ? createConversationInputSnapshot({
+          id: createId("input"),
+          sessionId: requestedSessionId,
+          command: inputCommand,
+          request: runRequest,
+          principalId: submittingPrincipalId(request.zionPrincipal)
+        }) : null;
+        const replayInput = async existing => {
+          try {
+          if (existing.principalId !== inputSnapshot.principalId) {
+            json(response, 403, { error: "Submission belongs to another principal" });
+          } else if (existing.fingerprint !== inputSnapshot.fingerprint
+            || existing.parentInputId !== inputSnapshot.parentInputId) {
+            json(response, 409, { error: "clientRequestId was already used for different input", code: "INPUT_ID_CONFLICT" });
+          } else if (existing.status === "accepted") {
+            await authorizeExistingRun(request.zionPrincipal, await runs.get(existing.runId), { allowRevoked: true });
+            json(response, 202, { ...existing.response, replayed: true });
+          } else {
+            json(response, 409, {
+              error: existing.status === "reserved"
+                ? "Submission is pending; query its receipt before submitting again"
+                : "Submission failed before execution",
+              code: existing.status === "reserved" ? "INPUT_SUBMISSION_PENDING" : "INPUT_SUBMISSION_REJECTED",
+              status: existing.status,
+              clientRequestId: inputCommand.clientRequestId, inputSnapshotId: existing.id
+            });
+          }
+          } finally {
+            await accessControl?.releaseRunPreview?.(runRequest);
+          }
+        };
+        if (inputSnapshot) {
+          const existing = await sessions.getConversationInput(requestedSessionId, inputCommand.clientRequestId);
+          if (existing) {
+            await replayInput(existing);
+            return;
+          }
+        }
         const latestUserMessage = Array.isArray(normalizedMessages)
           ? normalizedMessages.slice().reverse().find((message) => message?.role === "user")
           : null;
@@ -1600,7 +1747,7 @@ export function createRuntimeServer({
         const sessionUserContent = messageContentText(canonicalUserContent);
         let attachedSessionId = "";
         let createdSession = false;
-        if (requestedSessionId && sessionUserContent.trim()) {
+        if (requestedSessionId && (inputSnapshot || sessionUserContent.trim())) {
           releaseAdmission = await reserveSessionAdmission(requestedSessionId);
           let session = await sessions.getSession(requestedSessionId);
           if (!session) {
@@ -1639,7 +1786,7 @@ export function createRuntimeServer({
           attachedSessionId = requestedSessionId;
         }
         if (
-          createdSession
+          !inputSnapshot && createdSession
           && normalizedSessionHistory?.length
           && typeof sessions.saveSessionSeedTranscript === "function"
         ) {
@@ -1649,10 +1796,31 @@ export function createRuntimeServer({
             Date.now()
           );
         }
-        const handle = executor.execute(runRequest);
+        if (inputSnapshot) {
+          const reservation = await sessions.reserveConversationInput(inputSnapshot, {
+            ...(resolved.profile ? { interactionProfile: resolved.profile } : {})
+          });
+          if (!reservation.reserved) {
+            await replayInput(reservation.input);
+            return;
+          }
+          runRequest.metadata.conversationInputId = inputSnapshot.id;
+        }
+        let handle;
+        try {
+          handle = executor.execute(runRequest);
+          await handle.ready;
+        } catch (error) {
+          if (handle) {
+            await handle.abort("admission-persistence-failed");
+            await handle.completion;
+          }
+          if (inputSnapshot) await sessions.rejectConversationInput(inputSnapshot.id);
+          throw error;
+        }
         if (attachedSessionId) {
           try {
-            await sessions.appendSessionMessages(attachedSessionId, [{
+            if (sessionUserContent.trim()) await sessions.appendSessionMessages(attachedSessionId, [{
               schemaVersion: 1,
               id: createId("message"),
               sessionId: attachedSessionId,
@@ -1667,6 +1835,8 @@ export function createRuntimeServer({
               {
                 runId: handle.runId,
                 userContent: sessionUserContent,
+                mode: runRequest.metadata?.documentProjection?.mode,
+                appendUserPrompt: runRequest.metadata?.documentProjection?.appendUserPrompt === true,
                 documentAnchor: runRequest.metadata?.documentProjection?.anchor
               }
             );
@@ -1684,6 +1854,7 @@ export function createRuntimeServer({
           status: "accepted",
           model: resolved.model || null,
           policy: runRequest.policy,
+          ...(inputSnapshot ? { inputSnapshotId: inputSnapshot.id } : {}),
           ...(resolved.profile ? { interactionProfile: resolved.profile } : {})
         });
         return;
@@ -1733,6 +1904,28 @@ export function createRuntimeServer({
           session,
           ...(resolved.profile ? { interactionProfile: resolved.profile } : {})
         });
+        return;
+      }
+
+      const inputReceiptPath = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/inputs\/([^/]+)$/);
+      if (request.method === "GET" && inputReceiptPath) {
+        const expectedAccount = url.searchParams.has("expectedUserId") || url.searchParams.has("expectedSpaceId") ? {
+          userId: url.searchParams.get("expectedUserId"), spaceId: url.searchParams.get("expectedSpaceId")
+        } : null;
+        assertConversationInputAccount(expectedAccount, request.zionPrincipal);
+        const sessionId = decodeURIComponent(inputReceiptPath[1]);
+        const input = await sessions.getConversationInput?.(sessionId, decodeURIComponent(inputReceiptPath[2]));
+        if (!input) {
+          json(response, 404, { error: "Submission not found" });
+          return;
+        }
+        const principalId = submittingPrincipalId(request.zionPrincipal);
+        if (input.principalId !== principalId) {
+          json(response, 403, { error: "Submission belongs to another principal" });
+          return;
+        }
+        if (input.runId) await authorizeExistingRun(request.zionPrincipal, await runs.get(input.runId), { allowRevoked: true });
+        json(response, 200, { input });
         return;
       }
 
@@ -1885,6 +2078,8 @@ export function createRuntimeServer({
             {
               runId: handle.runId,
               userContent: content,
+              mode: runRequest.metadata?.documentProjection?.mode,
+              appendUserPrompt: runRequest.metadata?.documentProjection?.appendUserPrompt === true,
               documentAnchor: runRequest.metadata?.documentProjection?.anchor
             }
           );
@@ -1967,8 +2162,16 @@ export function createRuntimeServer({
         }
         await reconcileSessionProjections();
         const after = Math.max(0, Number(url.searchParams.get("after") || 0) || 0);
+        const version = canonicalTranscriptSessionId
+          ? await sessions.getSessionTranscriptVersion?.(transcriptSessionId, after) : null;
+        if (after && version?.inputSnapshotId
+          && url.searchParams.get("inputSnapshotId") !== version.inputSnapshotId) {
+          json(response, 409, { code: "CONTEXT_VERSION_CHANGED", inputSnapshotId: version.inputSnapshotId,
+            error: "Conversation context changed; read the complete transcript" });
+          return;
+        }
         const messages = canonicalTranscriptSessionId
-          ? await sessions.getSessionTranscript(transcriptSessionId, after)
+          ? version?.messages || await sessions.getSessionTranscript(transcriptSessionId, after)
           : await sessions.getSessionMessages(transcriptSessionId, after);
         if (canonicalTranscriptSessionId) {
           await sessionDocumentService?.reconcileTranscript?.(
@@ -1978,6 +2181,7 @@ export function createRuntimeServer({
         }
         json(response, 200, {
           sessionId: transcriptSessionId,
+          ...(version?.inputSnapshotId ? { inputSnapshotId: version.inputSnapshotId } : {}),
           messages
         });
         return;
@@ -2352,6 +2556,18 @@ export function createRuntimeServer({
         return;
       }
 
+      const inputRunId = matchRunPath(url.pathname, "/input");
+      if (request.method === "GET" && inputRunId) {
+        const run = await runs.get(inputRunId);
+        if (!run) {
+          json(response, 404, { error: "Run not found" });
+          return;
+        }
+        await authorizeExistingRun(request.zionPrincipal, run, { allowRevoked: true });
+        json(response, 200, { runId: inputRunId, input: await sessions.getRunConversationInput?.(inputRunId) || null });
+        return;
+      }
+
       const transcriptRunId = matchRunPath(url.pathname, "/transcript");
       if (request.method === "GET" && transcriptRunId) {
         const run = await runs.get(transcriptRunId);
@@ -2390,6 +2606,7 @@ export function createRuntimeServer({
           { allowRevoked: true }
         );
         const body = await readRequestJson(request);
+        assertConversationInputAccount(body.expectedAccount, request.zionPrincipal);
         if (run?.status === "waiting") {
           // Drain the completed waiting attempt before replacing its live hub.
           await runFinalizations.get(run.id);
@@ -2473,10 +2690,11 @@ export function createRuntimeServer({
   return {
     handleRequest,
     handleUpgrade,
-    isIdle: () => handles.size === 0 && sessionFinalizations.size === 0,
+    isIdle: () => handles.size === 0 && sessionFinalizations.size === 0 && (completionWorker?.isIdle() ?? true),
     async start() {
       if (server.listening) return this.address();
       closing = false;
+      completionWorker?.start();
       await new Promise((resolve, reject) => {
         const onError = (error) => {
           server.off("listening", onListening);
@@ -2509,6 +2727,7 @@ export function createRuntimeServer({
       }
       await Promise.allSettled(activeHandles.map((handle) => handle.completion));
       await Promise.allSettled([...runFinalizations.values()]);
+      await completionWorker?.close();
       for (const retirement of liveRunRetirements.values()) {
         globalThis.clearTimeout(retirement);
       }

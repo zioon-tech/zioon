@@ -15,25 +15,73 @@ async function mount(fetcher, href = "http://127.0.0.1:18866/") {
   vi.stubGlobal("navigator", { language: "zh-CN" });
   vi.stubGlobal("history", { replaceState: vi.fn() });
   vi.stubGlobal("fetch", fetcher);
+  const statusRegistration = vi.fn(() => ({ dispose() {} }));
   window.zion = {
     state: { get: () => undefined },
     panels: { getActivePanelId: () => "new", list: () => [{ id: "new", activeTabId: "workbench-only-session" }] },
     sideBar: { registerView(value) { view = value; return { dispose() {} }; } },
     activityBar: { registerItem() { return { dispose() {} }; } },
+    bottomStatusBar: { registerItem: statusRegistration },
     commands: { registerCommand() { return { dispose() {} }; } },
     events: { on() { return { dispose() {} }; } }
   };
   const subscriptions = [];
   await activate({ subscriptions });
-  cleanup.push(() => subscriptions.reverse().forEach((item) => item?.dispose?.()));
+  const deactivate = () => subscriptions.splice(0).reverse().forEach((item) => item?.dispose?.());
+  cleanup.push(deactivate);
   const container = document.createElement("aside");
   document.body.append(container);
-  view.component.render(container);
+  let mounted = view.component.render(container);
+  const unmount = () => { mounted?.dispose?.(); mounted = null; };
+  cleanup.push(unmount);
   await vi.waitFor(() => expect(container.textContent).toContain("ADC"));
-  return { container, navigate };
+  return {
+    container, navigate, unmount, deactivate, statusRegistration,
+    remount() { mounted = view.component.render(container); }
+  };
 }
 const ok = (result) => new Response(JSON.stringify({ result }), { headers: { "content-type": "application/json" } });
 describe("ADC connection button on a fresh Workbench", () => {
+  it.each(["success", "error"])("keeps the session sidebar intact after a late ADC status %s and window focus", async outcome => {
+    const pending = [];
+    const fetcher = vi.fn(() => new Promise(resolve => pending.push(resolve)));
+    const { container, unmount, remount, statusRegistration } = await mount(fetcher);
+    unmount();
+    const sessions = document.createElement("nav");
+    sessions.textContent = "会话列表";
+    container.replaceChildren(sessions);
+    const respond = () => pending.splice(0).forEach(resolve => resolve(outcome === "success"
+      ? ok({ connected: true, devices: [], tasks: [] })
+      : Response.json({ error: "status unavailable" }, { status: 503 })));
+    respond();
+    await vi.waitFor(() => expect(statusRegistration).toHaveBeenCalledTimes(1));
+    expect(container.firstChild).toBe(sessions);
+    expect(container.textContent).toBe("会话列表");
+    expect(container.classList.contains("adc-sidebar")).toBe(false);
+    window.dispatchEvent(new Event("focus"));
+    respond();
+    await vi.waitFor(() => expect(statusRegistration).toHaveBeenCalledTimes(2));
+    expect(container.firstChild).toBe(sessions);
+    container.replaceChildren();
+    remount();
+    respond();
+    await vi.waitFor(() => expect(statusRegistration).toHaveBeenCalledTimes(3));
+    expect(container.querySelector(".adc-sidebar")?.textContent).toContain("ADC");
+  });
+
+  it("does not clear the next sidebar when the ADC plugin is disposed", async () => {
+    const { container, unmount, deactivate, statusRegistration } = await mount(async () =>
+      ok({ connected: false, devices: [], tasks: [] }));
+    await vi.waitFor(() => expect(statusRegistration).toHaveBeenCalled());
+    unmount();
+    const sessions = document.createElement("nav");
+    sessions.textContent = "会话列表";
+    container.replaceChildren(sessions);
+    deactivate();
+    expect(container.firstChild).toBe(sessions);
+    expect(container.textContent).toBe("会话列表");
+  });
+
   it("uses the current HTTP Workbench origin and connects without an existing Run Session", async () => {
     let complete;
     const pending = new Promise((resolve) => { complete = resolve; });

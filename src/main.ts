@@ -2182,12 +2182,10 @@ function mountPanelHeaderRunStopButton(pathEl: HTMLElement, panelId: string, get
           return;
         }
         const ed = getEditor?.() || window.zion?.window?.activeEditor;
-        const sel = String(ed?.getSelection?.() || "");
         window.zion.chat?.run?.({
           sessionId: targetSessionId || undefined,
           panelId,
-          editor: ed || null,
-          useSelection: !!sel.trim()
+          editor: ed || null
         });
       } catch {}
     };
@@ -4981,9 +4979,9 @@ async function bootstrap() {
       const v = localStorage.getItem("zion.lineNumbers");
       if (v === "0" || v === "false") return false;
       if (v === "1" || v === "true") return true;
-      return true;
+      return false;
     } catch {
-      return true;
+      return false;
     }
   })();
 
@@ -4992,9 +4990,9 @@ async function bootstrap() {
       const v = localStorage.getItem("zion.activeLineHighlight");
       if (v === "0" || v === "false") return false;
       if (v === "1" || v === "true") return true;
-      return true;
+      return false;
     } catch {
-      return true;
+      return false;
     }
   })();
 
@@ -5025,9 +5023,9 @@ async function bootstrap() {
       const v = localStorage.getItem("zion.folding");
       if (v === "0" || v === "false") return false;
       if (v === "1" || v === "true") return true;
-      return true;
+      return false;
     } catch {
-      return true;
+      return false;
     }
   })();
 

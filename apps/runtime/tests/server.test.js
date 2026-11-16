@@ -1753,9 +1753,9 @@ describe("Runtime Host", () => {
         };
       },
       async authorizeRunExecution(request) {
-        if (request?.principal !== runGrant) {
-          throw new Error("post-processor did not receive the Run grant");
-        }
+        // A durable recovery reconstructs the grant from JSON, so authority is
+        // checked by all persisted fields rather than in-process object identity.
+        expect(request?.principal).toEqual(runGrant);
         return request.policy;
       }
     };

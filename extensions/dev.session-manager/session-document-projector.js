@@ -1,7 +1,8 @@
 import * as Y from "yjs";
 import {
   continuationBoundaryText,
-  appendUserMessageText
+  appendUserMessageText,
+  conversationLineRanges
 } from "../../src/chat/session-document-format.js";
 
 export const SESSION_DOCUMENT_PROJECTOR_ID =
@@ -120,9 +121,9 @@ function assistantBlockRange(source, runId) {
   const header = assistantBlockHeader(runId);
   if (!header) return null;
   const value = String(source || "");
-  const ranges = lineRanges(value);
+  const ranges = conversationLineRanges(value);
   const startIndex = ranges.findIndex((range) =>
-    range.line.startsWith(header)
+    !range.literal && range.line.startsWith(header)
   );
   if (startIndex < 0) {
     return {
@@ -134,7 +135,7 @@ function assistantBlockRange(source, runId) {
   let endIndex = startIndex + 1;
   while (
     endIndex < ranges.length
-    && !/^(system|user|assistant|tool)\s+/.test(ranges[endIndex].line)
+    && (ranges[endIndex].literal || !/^(system|user|assistant|tool)\s+/.test(ranges[endIndex].line))
   ) {
     endIndex += 1;
   }
@@ -178,6 +179,14 @@ function assistantBlockRange(source, runId) {
     answerEnd,
     answerPrefix
   };
+}
+
+export function findUserPromptAfterAssistantBlock(documentText, runId) {
+  const source = String(documentText || "");
+  const range = assistantBlockRange(source, runId);
+  if (!range?.exists) return null;
+  const prompt = source.slice(range.blockEnd).match(/^user[ \t]*(?=\n|$)/);
+  return prompt ? range.blockEnd + prompt[0].length : null;
 }
 
 function markerSafeId(value) {
@@ -252,6 +261,7 @@ function projectionStatus(eventType, current) {
   if (eventType === "run.completed") return "completed";
   if (eventType === "run.failed") return "failed";
   if (eventType === "run.aborted") return "aborted";
+  if (eventType === "run.waiting") return "waiting";
   return current || "running";
 }
 
@@ -284,6 +294,54 @@ export function projectRunEventsToYDocument(document, {
   projection.reasoningIds = {
     ...(projection.reasoningIds || {})
   };
+  let finalRange;
+  let finalBody = String(projection.projectedBody || "");
+  let modelOutput = String(projection.projectedModelOutput || "");
+  const finalMode = projection.mode === "final";
+  const snapshotMode = finalMode || projection.mode === "live";
+  const terminal = events.some(event =>
+    ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type));
+  if (projection.detached) return false;
+  if (!snapshotMode && typeof projection.projectedBlock === "string") {
+    const source = ytext.toString();
+    const range = assistantBlockRange(source, id);
+    if (!range?.exists || source.slice(range.blockStart, range.answerEnd) !== projection.projectedBlock) {
+      projections.set(id, { ...projection, detached: true, status: "detached" });
+      return false;
+    }
+  }
+  if (snapshotMode) {
+    if (projection.committed && projection.status !== "waiting") return false;
+    if (finalMode && !terminal) return false;
+    if (projection.pendingAnchor) {
+      prepareSnapshotRun(document, { runId: id, documentAnchor: projection.pendingAnchor, mode: projection.mode });
+      projection = { ...projections.get(id) };
+    }
+    const source = ytext.toString();
+    const range = assistantBlockRange(source, id);
+    finalRange = range;
+    const matches = conversationLineRanges(source).filter(line =>
+      !line.literal && line.line.startsWith(assistantBlockHeader(id)));
+    if ((!projection.pendingAnchor || terminal) && (!range?.exists || matches.length !== 1
+      || source.slice(range.blockStart, range.answerEnd) !== projection.projectedBlock)) {
+      projections.set(id, { ...projection, detached: true, status: "detached" });
+      return false;
+    }
+  }
+  const appendOutput = (token) => {
+    if (!snapshotMode) return appendAssistantTokenToYText(ytext, { runId: id, token });
+    finalBody += token;
+    modelOutput += token;
+    return !!token;
+  };
+  const appendMarker = ({ markerId, kind, name }) => {
+    if (!snapshotMode) return appendCardMarkerToYText(ytext, { runId: id, markerId, kind, name });
+    const marker = `<!-- zion-${kind}:id=${markerSafeId(markerId)} -->`;
+    if (finalBody.includes(marker)) return false;
+    const separator = finalBody.endsWith("\n") ? "" : "\n";
+    finalBody += `${separator}${kind === "tool" ? `调用 ${name || "tool"}` : "思考"} ${marker}\n`;
+    return true;
+  };
   let changed = false;
 
   for (const event of events) {
@@ -300,10 +358,7 @@ export function projectRunEventsToYDocument(document, {
     if (event.type === "message.delta") {
       const delta = String(data.delta || "");
       if (delta) {
-        changed = appendAssistantTokenToYText(ytext, {
-          runId: id,
-          token: delta
-        }) || changed;
+        changed = appendOutput(delta) || changed;
         projection.turnCharacters[turnKey] =
           Number(projection.turnCharacters[turnKey] || 0) + delta.length;
       }
@@ -313,10 +368,7 @@ export function projectRunEventsToYDocument(document, {
         content
         && Number(projection.turnCharacters[turnKey] || 0) === 0
       ) {
-        changed = appendAssistantTokenToYText(ytext, {
-          runId: id,
-          token: content
-        }) || changed;
+        changed = appendOutput(content) || changed;
         projection.turnCharacters[turnKey] = content.length;
       }
     } else if (
@@ -338,7 +390,7 @@ export function projectRunEventsToYDocument(document, {
         projection.reasoningCount =
           Math.max(0, Number(projection.reasoningCount || 0)) + 1;
       }
-      changed = appendCardMarkerToYText(ytext, {
+      changed = appendMarker({
         runId: id,
         markerId: cardId,
         kind: "thinking"
@@ -351,10 +403,10 @@ export function projectRunEventsToYDocument(document, {
         runId: id,
         segmentKey,
         assistantBlockId: id,
-        text: String(previousCard?.text || "")
-          + (event.type === "reasoning.delta"
-            ? String(data.delta || "")
-            : ""),
+        text: event.type === "reasoning.completed" && typeof data.content === "string"
+          ? data.content
+          : String(previousCard?.text || "")
+            + (event.type === "reasoning.delta" ? String(data.delta || "") : ""),
         requiresDocumentAnchor: false,
         status: event.type === "reasoning.completed"
           ? "completed"
@@ -364,7 +416,7 @@ export function projectRunEventsToYDocument(document, {
     } else if (event.type === "tool.requested") {
       const callId = String(data.callId || data.id || "");
       const cardId = toolCardId(id, callId);
-      changed = appendCardMarkerToYText(ytext, {
+      changed = appendMarker({
         runId: id,
         markerId: cardId,
         kind: "tool",
@@ -393,7 +445,7 @@ export function projectRunEventsToYDocument(document, {
         .getMap(SESSION_DOCUMENT_CARDS_KEY)
         .get(cardId);
       if (!previousCard) {
-        changed = appendCardMarkerToYText(ytext, {
+        changed = appendMarker({
           runId: id,
           markerId: cardId,
           kind: "tool",
@@ -420,19 +472,119 @@ export function projectRunEventsToYDocument(document, {
       }) || changed;
     }
 
+    if (snapshotMode && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)
+      && typeof data.output === "string" && data.output.startsWith(modelOutput)) {
+      appendOutput(data.output.slice(modelOutput.length));
+    }
     projection.lastSequence = sequence;
     projection.lastEventType = String(event.type || "");
     projection.status = projectionStatus(event.type, projection.status);
   }
 
   projections.set(id, projection);
+  if (snapshotMode && !projection.pendingAnchor) {
+    // Keep unfinished fences from swallowing the untouched suffix. Replace only
+    // changed bytes, preserving CodeMirror selections and existing card widgets.
+    const hasSuffix = finalRange.blockEnd < ytext.length;
+    const closed = hasSuffix ? finalBody + appendUserMessageText(finalBody, "").replace(/user $/, "") : finalBody;
+    const rendered = markdownBlockPrefix(closed) + closed.replace(/\n$/, hasSuffix ? "" : "\n");
+    replaceProjectedBody(ytext, finalRange.headerAnswerStart, finalRange.answerEnd, rendered);
+    // The next input belongs directly after the completed answer. Keep it durable
+    // so background completion/reconnect follows the same rule as the open UI.
+    if (projection.status === "completed" && projection.appendUserPrompt) {
+      const source = ytext.toString();
+      const range = assistantBlockRange(source, id);
+      if (range?.answerEnd === finalRange.headerAnswerStart + rendered.length) {
+        const suffix = source.slice(range.blockEnd);
+        const nextRole = conversationLineRanges(suffix).find((line, index) =>
+          index > 0 && !line.literal && /^(system|user|assistant|tool)(?:\s|$)/.test(line.line));
+        const hasEmptyInput = /^user[ \t]*(?:\n|$)/.test(suffix)
+          && !suffix.slice(4, nextRole?.start ?? suffix.length).trim();
+        if (!hasEmptyInput) {
+          ytext.insert(range.blockEnd,
+            appendUserMessageText(source.slice(0, range.blockEnd), "") + (suffix ? "\n" : ""));
+          changed = true;
+        }
+      }
+    }
+    const source = ytext.toString();
+    const range = assistantBlockRange(source, id);
+    projections.set(id, {
+      ...projection, committed: terminal,
+      projectedBody: finalBody,
+      projectedModelOutput: modelOutput,
+      projectedBlock: range ? source.slice(range.blockStart, range.answerEnd) : "",
+      projectedOutput: range ? source.slice(range.answerStart, range.answerEnd) : ""
+    });
+  } else if (snapshotMode) {
+    projections.set(id, { ...projection, projectedBody: finalBody, projectedModelOutput: modelOutput });
+  } else {
+    const source = ytext.toString();
+    const range = assistantBlockRange(source, id);
+    if (range?.exists) projections.set(id, {
+      ...projection,
+      projectedBlock: source.slice(range.blockStart, range.answerEnd),
+      projectedOutput: source.slice(range.answerStart, range.answerEnd)
+    });
+  }
   return changed;
+}
+
+function replaceProjectedBody(ytext, from, to, next) {
+  const current = ytext.toString().slice(from, to);
+  let prefix = 0;
+  while (prefix < current.length && prefix < next.length && current[prefix] === next[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < current.length - prefix && suffix < next.length - prefix
+    && current[current.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix += 1;
+  const removed = current.length - prefix - suffix;
+  if (removed) ytext.delete(from + prefix, removed);
+  const inserted = next.slice(prefix, next.length - suffix);
+  if (inserted) ytext.insert(from + prefix, inserted);
+}
+
+// Snapshot submission does not reconstruct user text from Runtime history.
+// Its only initial mutation is an owned, empty answer at the captured anchor.
+function prepareSnapshotRun(document, { runId, documentAnchor, mode = "final", appendUserPrompt = false } = {}) {
+  const projections = document.getMap(SESSION_DOCUMENT_RUN_PROJECTION_KEY);
+  const previous = projections.get(runId);
+  if (previous && !previous.pendingAnchor) return false;
+  const ytext = document.getText(SESSION_DOCUMENT_TEXT_KEY);
+  const offset = resolveRunAnchor(document, ytext, documentAnchor);
+  const base = { schemaVersion: 1, runId, lastSequence: 0,
+    turnCharacters: {}, reasoningIds: {}, reasoningCount: 0, status: "running",
+    appendUserPrompt, ...previous, mode };
+  if (offset == null) {
+    projections.set(runId, { ...base, pendingAnchor: documentAnchor || {} });
+    return false;
+  }
+  const source = ytext.toString();
+  // Close a partially selected code fence so the new role is structural, then
+  // restore the fence around the untouched suffix.
+  let fence = null;
+  for (const line of conversationLineRanges(source.slice(0, offset))) {
+    const body = line.line.replace(/^(system|user|assistant|tool)\s+/, "");
+    const match = body.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (!match) continue;
+    if (fence && match[1][0] === fence[0] && match[1].length >= fence.length && !match[2].trim()) fence = null;
+    else if (!fence) fence = match[1];
+  }
+  const header = assistantBlockHeader(runId);
+  const prefix = `${offset && source[offset - 1] !== "\n" ? "\n" : ""}${fence ? `${fence}\n` : ""}`;
+  const suffix = source.slice(offset);
+  const continuation = continuationInsertion(source, offset, runId);
+  ytext.insert(offset, `${prefix}${header}${continuation}${fence && suffix ? `\n${fence}\n` : ""}`);
+  projections.set(runId, { ...base, pendingAnchor: null, projectedBlock: header, projectedOutput: "" });
+  return true;
 }
 
 function continuationInsertion(source, boundary, runId) {
   if (boundary >= source.length) return "";
   const suffix = source.slice(boundary);
-  if (/^(?:\n)*(?:system|user|assistant|tool)\s+/.test(suffix)) return "";
+  if (/^(?:system|user|assistant|tool)\s+/.test(suffix)) return "\n";
+  if (/^\n(?:system|user|assistant|tool)\s+/.test(suffix)) return "";
+  // Preserve extra blank lines in the untouched suffix behind a structural
+  // boundary, rather than making them part of the owned assistant placeholder.
   const marker = continuationBoundaryText(runId);
   if (!marker) return "";
   return `\n${marker}${source.charAt(boundary) === "\n" ? "" : "\n"}`;
@@ -449,8 +601,19 @@ function resolveRunAnchor(document, ytext, anchor = {}) {
         relative,
         document
       );
-      if (absolute?.type === ytext) return absolute.index;
+      if (absolute?.type === ytext) {
+        if (anchor.guard) {
+          const guard = Y.createAbsolutePositionFromRelativePosition(
+            Y.decodeRelativePosition(decodeBase64(anchor.guard)), document
+          );
+          if (guard?.type !== ytext || absolute.index - guard.index !== 1) return null;
+        }
+        return absolute.index;
+      }
     } catch {}
+    // An unresolved relative position belongs to a not-yet-received or deleted
+    // CRDT item. An unrelated substring is never an adequate replacement.
+    return null;
   }
 
   const source = ytext.toString();
@@ -590,25 +753,34 @@ export function applyAssistantOutputToYText(ytext, {
 
 export function reconcileSessionMessagesInYText(ytext, messages = []) {
   const source = Array.isArray(messages) ? messages : [];
+  const projections = ytext.doc?.getMap(SESSION_DOCUMENT_RUN_PROJECTION_KEY);
   let changed = false;
   for (const userMessage of source) {
     if (userMessage?.role !== "user" || !userMessage.runId) continue;
-    if (!assistantBlockRange(ytext.toString(), userMessage.runId)?.exists) {
-      continue;
-    }
+    const projection = projections?.get(userMessage.runId);
+    const text = ytext.toString();
+    const range = assistantBlockRange(text, userMessage.runId);
+    // The editable document is a working copy, not the execution ledger.
+    // Only repair an output whose last projected bytes are still intact.
+    // Legacy documents have no ownership baseline and must be preserved.
+    if (!range?.exists || typeof projection?.projectedOutput !== "string"
+      || projection.detached === true || ["final", "live"].includes(projection.mode)
+      || text.slice(range.answerStart, range.answerEnd) !== projection.projectedOutput) continue;
     const assistantMessage = source.find((message) => (
       message?.role === "assistant"
       && message?.runId === userMessage.runId
     ));
     if (!assistantMessage) continue;
-    changed = prepareRunInYText(ytext, {
-      runId: userMessage.runId,
-      userContent: userMessage.content
-    }) || changed;
     changed = applyAssistantOutputToYText(ytext, {
       runId: userMessage.runId,
       output: assistantMessage.content
     }) || changed;
+    const updated = ytext.toString();
+    const updatedRange = assistantBlockRange(updated, userMessage.runId);
+    if (updatedRange?.exists) projections.set(userMessage.runId, {
+      ...projection,
+      projectedOutput: updated.slice(updatedRange.answerStart, updatedRange.answerEnd)
+    });
   }
   return changed;
 }
@@ -622,15 +794,34 @@ export function createSessionDocumentProjector() {
       runId,
       userContent,
       documentAnchor,
-      forceNewUser
+      forceNewUser,
+      appendUserPrompt,
+      mode
     } = {}) {
+      if (["final", "live"].includes(mode) && forceNewUser) {
+        if (document.getMap(SESSION_DOCUMENT_RUN_PROJECTION_KEY).has(runId)) return false;
+        const text = document.getText(SESSION_DOCUMENT_TEXT_KEY);
+        text.insert(text.length, appendUserMessageText(text.toString(), String(userContent || "")));
+        const source = text.toString();
+        documentAnchor = { fallback: { offset: source.length, before: source.slice(-64), after: "" } };
+      }
+      if (["final", "live"].includes(mode)) return prepareSnapshotRun(document, { runId, documentAnchor, mode, appendUserPrompt });
       const ytext = document.getText(SESSION_DOCUMENT_TEXT_KEY);
-      return prepareRunInYText(ytext, {
+      const changed = prepareRunInYText(ytext, {
         runId,
         userContent,
         forceNewUser,
         insertAt: resolveRunAnchor(document, ytext, documentAnchor)
       });
+      const projections = document.getMap(SESSION_DOCUMENT_RUN_PROJECTION_KEY);
+      const source = ytext.toString();
+      const range = assistantBlockRange(source, runId);
+      if (changed && range?.exists && !projections.has(runId)) projections.set(runId, {
+        runId, lastSequence: 0,
+        projectedBlock: source.slice(range.blockStart, range.answerEnd),
+        projectedOutput: source.slice(range.answerStart, range.answerEnd)
+      });
+      return changed;
     },
     projectRun({
       document,

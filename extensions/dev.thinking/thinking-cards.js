@@ -271,13 +271,17 @@ function scheduleRevealThinkingContent(view, { id, pos } = {}) {
   try {
     const sid = getViewSessionId(view);
     if (!sid) return;
-    const runId = window?.zion?.state?.get?.(`chat.runs.${sid}`)?.runId || "";
+    const run = window?.zion?.state?.get?.(`chat.runs.${sid}`);
+    if (!run?.streaming) return;
+    const runId = run.runId || "";
     scheduleConversationViewportFollow(view, {
       sessionId: sid,
       state: window?.zion?.state,
       cycleId: runId,
       reveal: () => {
         try {
+          const current = window?.zion?.state?.get?.(`chat.runs.${sid}`);
+          if (!current?.streaming || current.runId !== runId || getViewSessionId(view) !== sid) return false;
           const scrollDOM = view?.scrollDOM;
           if (!scrollDOM) return false;
           const selectorId = String(id || "").replace(/"/g, '\\"');
@@ -319,7 +323,7 @@ function fmt(v, max = 1200) {
   return s;
 }
 
-class ThinkingCardWidget extends WidgetType {
+export class ThinkingCardWidget extends WidgetType {
   constructor(id, text) {
     super();
     this.id = id + ":card";
@@ -355,7 +359,7 @@ class ThinkingCardWidget extends WidgetType {
   }
 }
 
-class ThinkingInlineWidget extends WidgetType {
+export class ThinkingInlineWidget extends WidgetType {
   constructor(id) {
     super();
     this.id = id + ":inline";

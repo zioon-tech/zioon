@@ -46,6 +46,53 @@ afterEach(() => {
 });
 
 describe("conversation viewport follow coordinator", () => {
+  it("reveals a completed input once while keeping streaming follow paused", () => {
+    const frames = createFrameHarness();
+    const options = { sessionId: "session-1", state: createStateStore(), cycleId: "run-1" };
+    const view = {};
+    beginConversationViewportFollow(view, options);
+    setConversationViewportFollowing(view, false, options);
+    const reveal = vi.fn(() => true);
+    scheduleConversationViewportFollow(view, { ...options, once: true, reveal });
+    frames.flush();
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(isConversationViewportFollowing(view, options)).toBe(false);
+    expect(scheduleConversationViewportFollow(view, { ...options, reveal })).toBe(false);
+    frames.flush();
+    expect(reveal).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a late card update replace the completed input reveal", () => {
+    const frames = createFrameHarness();
+    const options = { sessionId: "session-1", state: createStateStore(), cycleId: "run-1" };
+    const view = {};
+    beginConversationViewportFollow(view, options);
+    const input = vi.fn(() => true);
+    const card = vi.fn(() => true);
+    scheduleConversationViewportFollow(view, { ...options, once: true, reveal: input });
+    scheduleConversationViewportFollow(view, { ...options, reveal: card });
+    frames.flush();
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(card).not.toHaveBeenCalled();
+  });
+
+  it("never restores the submission position after a token supersedes the initial reveal", () => {
+    const frames = createFrameHarness();
+    const view = { scrollDOM: { scrollTop: 120, scrollHeight: 5_000, clientHeight: 300 } };
+    const options = { sessionId: "session-1", state: createStateStore(), cycleId: "submission-1" };
+    beginConversationViewportFollow(view, options);
+    scheduleConversationViewportFollow(view, { ...options, initial: true, reveal: () => true });
+    scheduleConversationViewportFollow(view, { ...options, reveal: () => {
+      view.scrollDOM.scrollTop = 2_800;
+      return true;
+    } });
+    frames.flush();
+    expect(scheduleConversationViewportFollow(view, { ...options, initial: true, reveal: () => true })).toBe(false);
+    frames.flush();
+    expect(view.scrollDOM.scrollTop).toBe(2_800);
+    expect(restoreConversationViewportStability(view, options)).toBe(false);
+  });
+
   it("coalesces preparing, assistant insertion, and first token into one frame", () => {
     const frames = createFrameHarness();
     const state = createStateStore();

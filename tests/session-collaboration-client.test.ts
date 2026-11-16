@@ -68,6 +68,50 @@ function eventBus() {
 }
 
 describe("Session collaboration client", () => {
+  it("shows final-mode SSE in both views before Yjs and clears only after durable commit", async () => {
+    const events = eventBus();
+    const shared = new Y.Doc();
+    const initial = "user hi\nassistant <!-- zion-assistant:id=r --> ";
+    shared.getText("content").insert(0, initial);
+    const manager = createSessionCollaborationManager({
+      zion: { events, state: { get() {}, set() {} } },
+      clientId: "preview-client",
+      runtimeConfig: { mode: "runtime", enabled: true, baseUrl: "http://runtime.test" },
+      createDocument: () => shared,
+      createProvider(options: any) {
+        queueMicrotask(() => options.onSynced());
+        return { awareness: new Awareness(options.document), destroy() {} };
+      }
+    });
+    const first = editorHarness(initial);
+    const second = editorHarness(initial);
+    const bindings = [manager.bindEditor(first), manager.bindEditor(second)];
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const payload = {
+      sessionId: "session-1", runId: "r", assistantBlockId: "r",
+      backend: "runtime", documentWriter: false, documentProjectionMode: "final",
+      projectionSequence: 2, token: "**streamed** answer"
+    };
+    events.emit("chat/token", payload);
+    for (const editor of [first, second]) {
+      expect(editor.getValue()).toBe(initial);
+      expect(editor.parent.querySelector(".zion-pending-assistant-output strong")?.textContent).toBe("streamed");
+    }
+    shared.getMap("runProjection").set("r", { mode: "final", lastSequence: 2, committed: false });
+    events.emit("chat/runFinished", payload);
+    expect(first.parent.querySelector(".zion-pending-assistant-output")).not.toBeNull();
+    shared.transact(() => {
+      shared.getText("content").insert(shared.getText("content").length, payload.token);
+      shared.getMap("runProjection").set("r", { mode: "final", lastSequence: 3, committed: true });
+    });
+    for (const editor of [first, second]) {
+      expect(editor.getValue()).toBe(initial + payload.token);
+      expect(editor.parent.querySelector(".zion-pending-assistant-output")).toBeNull();
+    }
+    bindings.forEach(binding => binding.dispose());
+    manager.dispose(); first.dispose(); second.dispose();
+  });
+
   it("keeps an already visible pending target stationary during initial reveal", () => {
     const editor = editorHarness("user question");
     const scrollDOM = editor.getView().scrollDOM;
@@ -357,7 +401,7 @@ describe("Session collaboration client", () => {
     editor.dispose();
   });
 
-  it("shows and clears preparation status without writing the shared document", () => {
+  it("shows only the assistant header during preparation without writing the shared document", () => {
     const events = eventBus();
     const manager = createSessionCollaborationManager({
       zion: { events, state: { get() {}, set() {} } },
@@ -374,22 +418,21 @@ describe("Session collaboration client", () => {
         sessionId: "session-1", submissionId: "pending-1",
         status: "assistant preparing", answerAnchorPos: 13
       });
-      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("assistant preparing");
-      expect(editor.parent.querySelector('[role="status"]')?.getAttribute("aria-label"))
-        .toBe("assistant preparing");
+      const header = editor.parent.querySelector(".zion-submitted-assistant");
+      expect(header?.textContent).toBe("assistant");
+      expect(editor.parent.querySelector('[role="status"]')).toBeNull();
       expect(editor.getValue()).toBe("user question");
       events.emit("chat/preparing", {
         sessionId: "session-1", submissionId: "pending-1",
         assistantBlockId: "run-1", status: "waiting"
       });
-      expect(editor.parent.querySelectorAll('[role="status"]')).toHaveLength(1);
-      expect(editor.parent.querySelector('[role="status"]')?.textContent).toBe("waiting");
-      expect(editor.parent.querySelector('[role="status"]')?.getAttribute("aria-label"))
-        .toBe("waiting");
-      events.emit("chat/prepared", { sessionId: "session-2", submissionId: "pending-1" });
-      expect(editor.parent.querySelector('[role="status"]')).not.toBeNull();
-      events.emit("chat/prepared", { sessionId: "session-1", submissionId: "pending-1" });
+      expect(editor.parent.querySelectorAll(".zion-submitted-assistant")).toHaveLength(1);
+      expect(editor.parent.querySelector(".zion-submitted-assistant")).toBe(header);
       expect(editor.parent.querySelector('[role="status"]')).toBeNull();
+      events.emit("chat/prepared", { sessionId: "session-2", submissionId: "pending-1" });
+      expect(editor.parent.querySelector(".zion-submitted-assistant")).toBe(header);
+      events.emit("chat/prepared", { sessionId: "session-1", submissionId: "pending-1" });
+      expect(editor.parent.querySelector(".zion-submitted-assistant")).toBeNull();
       expect(editor.getValue()).toBe("user question");
     } finally {
       binding.dispose();

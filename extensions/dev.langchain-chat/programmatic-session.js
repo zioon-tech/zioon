@@ -149,6 +149,7 @@ export async function projectRunEventToSession(
     panelId,
     requestSource,
     documentWriter,
+    ...(options.documentProjectionMode ? { documentProjectionMode: options.documentProjectionMode } : {}),
     projectionSequence: Number(
       event.data?.projection?.sourceSequenceEnd
       ?? event.sequence
@@ -365,7 +366,7 @@ export async function projectRunEventToSession(
       toolCall: {
         id: event.data?.callId,
         name: event.data?.name,
-        args: event.data?.args || {},
+        args: event.data?.args ?? event.data?.arguments ?? {},
         presentation: event.data?.presentation || null
       },
       presentation: event.data?.presentation || null
@@ -376,8 +377,8 @@ export async function projectRunEventToSession(
     emit("chat/toolResult", {
       ...payload,
       toolCallId: event.data?.callId,
-      result: event.data?.result || event.data?.error || event.data?.reason || "",
-      ok: event.type === "tool.completed" && !event.data?.error,
+      result: event.data?.result ?? event.data?.error ?? event.data?.reason ?? "",
+      ok: event.type === "tool.completed" && event.data?.ok !== false && !event.data?.error,
       presentation: event.data?.presentation || null,
       artifactIds: Array.isArray(event.data?.artifactIds)
         ? event.data.artifactIds

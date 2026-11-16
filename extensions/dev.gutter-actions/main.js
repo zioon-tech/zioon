@@ -48,9 +48,9 @@ export async function activate(ctx) {
       const v = localStorage.getItem("zion.gutterActions");
       if (v === "0" || v === "false") return false;
       if (v === "1" || v === "true") return true;
-      return true; // default ON
+      return false;
     } catch {
-      return true;
+      return false;
     }
   };
 

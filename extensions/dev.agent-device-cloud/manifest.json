@@ -1,12 +1,12 @@
 {
   "name": "dev.agent-device-cloud",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Connect authorized ADC devices, use live tools, and track tasks and approvals.",
   "zion": {
     "manifestVersion": 2,
     "id": "dev.agent-device-cloud",
     "name": "ADC",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "entries": {
       "workbench": "./workbench.mjs",
       "runtime": "./runtime.mjs",

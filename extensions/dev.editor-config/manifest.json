@@ -1,13 +1,13 @@
 {
   "name": "dev.editor-config",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Configure editor appearance, width, line numbers, wrapping, and syntax highlighting.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.editor-config",
     "name": "Editor Config",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "main": "./main.js",
     "presentation": {
       "displayName": {

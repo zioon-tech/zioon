@@ -1,13 +1,13 @@
 {
   "name": "dev.langchain-chat",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Provide chat run, stop, retry, and model configuration capabilities.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.langchain-chat",
     "name": "Chat",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "main": "./main.js",
     "dependencies": {
       "dev.session-manager": "*"
@@ -42,6 +42,12 @@
     "contributes": {
       "commands": [
         {
+          "id": "chat.submit",
+          "title": "Send Message",
+          "titleKey": "dev.langchain-chat.cmd.submit",
+          "categoryKey": "dev.langchain-chat.category.chat"
+        },
+        {
           "id": "chat.runSelection",
           "title": "Run Chat (Selection)",
           "titleKey": "dev.langchain-chat.cmd.runSelection",
@@ -68,7 +74,7 @@
       ],
       "keybindings": [
         {
-          "command": "chat.runSelection",
+          "command": "chat.submit",
           "key": "Mod-Enter",
           "when": "editorFocus"
         },

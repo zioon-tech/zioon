@@ -21,6 +21,8 @@ import { createAgentExecutor } from "../packages/runtime/src/index";
 import {
   createSessionCollaborationManager
 } from "../extensions/dev.session-manager/collaboration-client.js";
+import { createSessionDocumentProjector } from "../extensions/dev.session-manager/session-document-projector.js";
+import { createHttpRuntimeClient } from "../src/runtime/http-runtime-client";
 
 const resources: Array<any> = [];
 let database: any;
@@ -101,7 +103,9 @@ afterEach(async () => {
 });
 
 describe("Workbench collaboration E2E", () => {
-  it("synchronizes two CodeMirror editors through Runtime and PostgreSQL", async () => {
+  it.each([
+    ["final", false], ["live", false], ["final", true], ["live", true]
+  ])("synchronizes two CodeMirror editors through Runtime and PostgreSQL (%s, tail=%s)", async (mode, tail) => {
     const directory = mkdtempSync(join(tmpdir(), "zion-workbench-collab-e2e-"));
     const spaceId = database.nextSpaceId();
     const runs = new PostgresRunStore(database.pool, { spaceId });
@@ -115,14 +119,19 @@ describe("Workbench collaboration E2E", () => {
     });
     const collaboration = createRuntimeCollaborationService({
       store: workbenchState,
+      documentProjector: createSessionDocumentProjector(),
       debounceMs: 25,
       maxDebounceMs: 50
     });
+    let finishModel: () => void;
+    const modelGate = new Promise<void>(resolve => { finishModel = resolve; });
     const executor = createAgentExecutor({
       engine: {
         id: "editor-collaboration",
         async *streamTurn() {
-          yield { type: "message.delta", delta: "unused" };
+          yield { type: "message.delta", delta: "streamed" };
+          await modelGate;
+          yield { type: "message.delta", delta: " answer" };
         }
       },
       tools: {
@@ -134,6 +143,7 @@ describe("Workbench collaboration E2E", () => {
     const server = createRuntimeServer({
       executor,
       runs,
+      sessionDocumentService: collaboration,
       port: 0,
       upgradeHandlers: [collaboration.handleUpgrade]
     });
@@ -229,5 +239,50 @@ describe("Workbench collaboration E2E", () => {
       && editorB.getValue() === ""
       && (await workbenchState.readSession("editor-session")).text === ""
     );
+
+    const source = tail ? "user question" : "user question\nuser later";
+    editorA.setValue(source);
+    await waitFor(() => editorB.getValue() === source);
+    const anchor = managerA.createAnchor("editor-session", 13, {
+      before: "user question", after: tail ? "" : "\nuser later"
+    });
+    const response = await fetch(`${address.url}/v1/runs`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "editor-session",
+        messages: [{ role: "user", content: "question" }],
+        conversationInput: { schemaVersion: 1, mode: "snapshot", clientRequestId: "two-editors" },
+        metadata: { documentProjection: { mode, anchor, appendUserPrompt: true } }
+      })
+    });
+    expect(response.status).toBe(202);
+    const accepted = await response.json();
+    const subscription = new AbortController();
+    const client = createHttpRuntimeClient({ baseUrl: address.url });
+    try {
+      for await (const event of client.subscribe(accepted.runId, { signal: subscription.signal })) {
+        if (event.type === "message.delta") break;
+      }
+      if (mode === "live") {
+        await waitFor(() => editorA.getValue().includes("streamed") && editorB.getValue().includes("streamed"));
+        expect(editorA.getValue()).toContain(tail ? "streamed" : "streamed\nuser later");
+      } else {
+        expect(editorA.getValue()).not.toContain("streamed");
+      }
+      expect(editorA.getValue()).not.toMatch(/\nuser $/);
+      expect(editorA.getValue()).not.toContain("\nuser \n");
+      if (!tail) {
+        editorB.getView().dispatch({ changes: { from: editorB.getValue().length, insert: " edited remotely" } });
+        await waitFor(() => editorA.getValue().endsWith(" edited remotely"));
+      }
+    } finally {
+      subscription.abort();
+      finishModel!();
+    }
+    await waitFor(() => editorA.getValue().includes("streamed answer") && editorA.getValue() === editorB.getValue());
+    expect(editorA.getValue()).toContain(tail ? "streamed answer\nuser " : "streamed answer\nuser \nuser later edited remotely");
+    await waitFor(async () => (await workbenchState.readSession("editor-session")).text === editorA.getValue());
+    expect((await runs.getRunConversationInput(accepted.runId)).messages)
+      .toEqual([{ role: "user", content: "question" }]);
   });
 });

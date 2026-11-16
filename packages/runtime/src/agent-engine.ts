@@ -557,6 +557,14 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
     const completion = new Promise<RunResult>((resolve) => {
       resolveCompletion = resolve;
     });
+    let resolveReady: () => void;
+    let rejectReady: (error: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    // Existing callers may observe completion only.
+    void ready.catch(() => {});
 
     const abort = async (reason = "user") => {
       if (terminal) return;
@@ -638,6 +646,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
         waiting?: RunWait
       ) => {
         terminal = true;
+        rejectReady(new Error(error || terminalReason));
         attemptSpan.setAttribute("zion.run.status", status);
         if (status === "failed") failSpan(attemptSpan, terminalReason === "persistence-failed"
           ? "persistence_error" : "run_error");
@@ -683,11 +692,13 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
             modelOptions: request.modelOptions,
             policy,
             metadata,
+            inputMessages: cloneMessages(initialMessages),
             createdAt,
             updatedAt: createdAt
           });
           persisted = true;
         }
+        resolveReady();
 
         if (request.timeoutMs !== undefined) {
           if (!scheduleTimeout) {
@@ -941,7 +952,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               });
             }
             if (reasoningStarted) {
-              await publish("reasoning.completed", { turn });
+              await publish("reasoning.completed", { turn, content: turnReasoning });
             }
           }
 
@@ -1013,6 +1024,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
               ...(turnReasoning ? { reasoningContent: turnReasoning } : {}),
               toolCalls: assistantToolCalls(calls)
             });
+            await publish("message.completed", { turn, content: turnOutput });
           }
           for (let callIndex = resumedStep?.callIndex || 0; callIndex < calls.length; callIndex += 1) {
             const call = calls[callIndex];
@@ -1256,6 +1268,7 @@ export function createAgentExecutor(dependencies: AgentExecutorDependencies): Ag
     return {
       runId,
       attemptId,
+      ready,
       events: queue,
       completion,
       abort

@@ -53,6 +53,7 @@ import {
   scheduleConversationViewportFollow
 } from "../../src/chat/conversation-viewport.js";
 import { createChatRuntime } from "../../src/chat/runtime";
+import { captureDocumentInput } from "../../src/chat/document-input";
 import { reconstructWidgetHistoryMessages } from "../../src/chat/widget-history";
 import { createToolCardId } from "../../src/chat/tool-card-id";
 import { createProgrammaticExecutor } from "./programmatic-runner.js";
@@ -62,6 +63,7 @@ import {
 } from "./programmatic-session.js";
 import {
   abortInteractiveRuntimeRun,
+  captureInteractiveRuntimeAccount,
   createInteractiveRuntimeHandle,
   includeTerminalContextForRuntime,
   interactiveRuntimeEligibility,
@@ -110,7 +112,8 @@ const I18N_MESSAGES = {
     "category.chat": "聊天",
     "category.models": "模型",
     "cmd.runSelection": "运行聊天（选中内容）",
-    "cmd.run": "运行聊天",
+    "cmd.submit": "发送消息",
+    "cmd.run": "从此处继续对话",
     "cmd.stop": "停止聊天",
     "cmd.retry": "重试聊天",
     "settings.models.title": "模型",
@@ -212,7 +215,8 @@ const I18N_MESSAGES = {
     "category.chat": "Chat",
     "category.models": "Models",
     "cmd.runSelection": "Run Chat (Selection)",
-    "cmd.run": "Run Chat",
+    "cmd.submit": "Send Message",
+    "cmd.run": "Continue Chat from Here",
     "cmd.stop": "Stop Chat",
     "cmd.retry": "Retry Chat",
     "settings.models.title": "Models",
@@ -1593,8 +1597,9 @@ export async function activate(ctx) {
     preparation,
     modelPreparation
   }) => {
-    // Empty input placeholders are local editor affordances, not durable Yjs state.
-    const appendUserPrompt = false;
+    const appendUserPrompt = typeof opts.autoInsertUserPrompt === "boolean"
+      ? opts.autoInsertUserPrompt
+      : window.zion?.state?.get?.("chat.autoInsertUserPrompt") !== false;
     let handle;
     try {
       const contributorContext = {
@@ -1643,6 +1648,7 @@ export async function activate(ctx) {
         selectedModelConfig,
         runtimeCatalog: runtimeProfiles ? { profiles: runtimeProfiles } : undefined,
         signal: preparation?.signal,
+        expectedAccount: preparation?.expectedAccount,
         title: opts?.title || resolveSessionTitleForRun(sid),
         workbenchSessionId: sid,
         projectId: opts?.projectId || opts?.metadata?.projectId,
@@ -1660,6 +1666,7 @@ export async function activate(ctx) {
             ...(opts?.metadata?.skills || {})
           },
           documentProjection: {
+            mode: "live",
             includeReasoning:
               window.zion?.state?.get?.("chat.thinkingVisible") !== false,
             appendUserPrompt: !!appendUserPrompt,
@@ -1737,6 +1744,7 @@ export async function activate(ctx) {
       runtimeRunId: runId,
       runtimeAttemptId: handle.attemptId,
       runtimeModel: handle.model || null,
+      documentProjectionMode: "live",
       assistantBlockId: runAnchorPayload.assistantBlockId
     };
     if (runDisplayName && !runMetadata.displayName) runMetadata.displayName = runDisplayName;
@@ -1810,6 +1818,7 @@ export async function activate(ctx) {
       editorView: ed?.getView?.(),
       followCycleId: preparation?.id || runId,
       documentWriter: false,
+      documentProjectionMode: "live",
       assistantBlockReady: true,
       appendAssistantToken: async () => true
     };
@@ -1830,7 +1839,7 @@ export async function activate(ctx) {
         for await (const event of handle.events) {
           markRuntimeReachable(runtimeConfig.baseUrl);
           if (["reasoning.started", "reasoning.delta", "message.delta", "tool.started", "tool.requested"].includes(event.type)) {
-            preparation?.clearFeedback();
+            preparation?.clearFeedback({ waitForDocument: true });
           }
           if (["reasoning.delta", "message.delta"].includes(event.type)) {
             const key = event.type === "message.delta" ? "firstAnswerReceived" : "firstReasoningReceived";
@@ -1863,6 +1872,7 @@ export async function activate(ctx) {
     const result = await handle.completion;
     await consuming;
     if (result.status === "aborted" && result.reason === "detached") {
+      preparation?.clearFeedback();
       return result;
     }
     if (!terminalProjected) {
@@ -1895,6 +1905,7 @@ export async function activate(ctx) {
       );
     }
 
+    preparation?.clearFeedback({ waitForDocument: result.status === "completed" });
     if (result.status === "waiting") {
       runtime.markWaiting(sid, runId, result.waiting);
       window.zion?.notification?.show?.(`${result.waiting?.reason || "等待回复"}。在输入区填写回复并发送，可用停止按钮取消。`, { type: "info", duration: 12000 });
@@ -1911,26 +1922,6 @@ export async function activate(ctx) {
     }
     runtime.syncGlobalStreamingForActiveSession();
     if (result.status === "completed") {
-      if (
-        appendUserPrompt
-        && autoScrollAssistant
-        && isConversationViewportFollowing(ed?.getView?.(), {
-          sessionId: sid,
-          state: window.zion?.state
-        })
-        && isEditorShowingSession(ed, sid)
-      ) {
-        scheduleConversationViewportFollow(ed?.getView?.(), {
-          sessionId: sid,
-          state: window.zion?.state,
-          cycleId: preparation?.id || runId,
-          reveal: () => ensureTrailingUserPromptVisible(ed, {
-            startLineHint: insertLine,
-            sessionId: sid,
-            traceId: runId
-          })
-        });
-      }
       window.zion.commands.executeCommand("zion.sessions.bumpUpdatedAt", sid);
     } else if (result.status === "failed") {
       window.zion?.notification?.show?.(
@@ -2003,6 +1994,7 @@ export async function activate(ctx) {
         signal: observer.signal,
         onRun: async (remoteRun) => {
           if (deferToSubmitter()) return;
+          metadata.documentProjectionMode = remoteRun.metadata?.documentProjection?.mode || metadata.documentProjectionMode;
           if (!["queued", "running", "waiting"].includes(remoteRun.status)) return;
           window.zion?.runs?.start?.({
             ...runRecord,
@@ -2062,6 +2054,7 @@ export async function activate(ctx) {
             panelId,
             assistantBlockId,
             documentWriter: false,
+            documentProjectionMode: metadata.documentProjectionMode,
             resetProjection: afterSequence === 0,
             replay: true,
             appendAssistantToken: async () => true
@@ -2240,7 +2233,7 @@ export async function activate(ctx) {
 
     // Start independent network reads while the document is being confirmed.
     const toolsPreparation = Promise.resolve().then(() =>
-      window.zion?.commands?.executeCommand?.("tools.syncRuntime")
+      window.zion?.commands?.executeCommand?.("tools.syncRuntime", { preferCached: true })
     ).catch(() => null).then(result => {
       preparation?.mark?.("toolsReadCompleted");
       return result;
@@ -2260,27 +2253,21 @@ export async function activate(ctx) {
     // Attach a rejection handler immediately; the result is consumed below.
     modelPreparation?.catch(() => {});
 
-    if (!skipSessionPersistence && window.zion?.commands?.list?.().includes("zion.sessions.flushCollaboration")) {
-      const confirmed = await window.zion.commands.executeCommand("zion.sessions.flushCollaboration", sid);
-      if (confirmed !== true) throw new Error("会话仍在同步，请稍后发送；当前输入已保留。");
-      preparation?.signal.throwIfAborted();
-    }
-    preparation?.mark?.("documentConfirmed");
+    preparation?.mark?.("documentCaptured");
 
-    // 1. 获取当前光标位置
-    const cursor = ed.getCursor();
-
-    // 2. 组装 messages：从文档开始到光标位置的所有内容
-    const fullDoc = ed.getValue();
+    // The command captures this before any asynchronous configuration or save.
+    const inputSnapshot = preparation?.inputSnapshot || captureDocumentInput(ed, opts);
+    const cursor = inputSnapshot.cursor;
+    const fullDoc = inputSnapshot.documentText;
     // #region debug-point B:document-ready
     if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "B", location: "performRun:document-ready", msg: "[DEBUG] document-ready", ts: Date.now() }) }).catch(() => {});
     // #endregion
     const lines = fullDoc.split("\n");
     const cursorLine = cursor.line;
-    const contentBeforeCursor = lines.slice(0, cursorLine + 1).join("\n");
+    const contentBeforeCursor = inputSnapshot.content;
 
     // 解析角色块
-    let baseMessages = parseMessages(contentBeforeCursor);
+    let baseMessages = structuredClone(inputSnapshot.messages);
     let contextMessages = Array.isArray(opts?.contextMessages) ? opts.contextMessages : [];
     if (!contextMessages.length && (String(panelId || "").startsWith("comments:") || String(sid || "").startsWith("comment:"))) {
       try {
@@ -2295,7 +2282,7 @@ export async function activate(ctx) {
         console.warn("[langchain-chat] comment context fallback failed:", e);
       }
     }
-    if (contextMessages.length) {
+    if (contextMessages.length && !opts?.contextMessages?.length) {
       // 放行重建后的结构化消息：除了普通 string content 外，
       // 还接受 assistant.tool_calls 与 role:"tool"（tool_call_id）这类没有字符串 content 的消息，
       // 以便评论线程能继承父会话的思考/工具调用上下文（见 src/chat/widget-history.ts）。
@@ -2348,15 +2335,13 @@ export async function activate(ctx) {
           providerType: activeCfg?.providerType,
           cfg: activeCfg
         });
-        const annotations = window.zion?.commands?.executeCommand?.(
-          "zion.chatCards.getSessionAnnotations",
-          sid
-        ) || {};
+        const annotations = inputSnapshot.annotations;
         return reconstructWidgetHistoryMessages(
           messages,
           contentBeforeCursor,
           annotations,
           {
+            requireDocumentAnchors: true,
             includeToolHistory,
             includeThinkingHistory,
             preservedThinking: !!activeCfg?.preservedThinking,
@@ -2403,33 +2388,15 @@ export async function activate(ctx) {
       && await shouldUseInteractiveRuntime(interactiveRuntimeConfig)
     ) {
       preparation?.signal.throwIfAborted();
-      try {
-        const [saved, confirmed] = await Promise.all([
-          savePreparation,
-          window.zion?.commands?.list?.().includes("zion.sessions.flushCollaboration")
-            ? window.zion.commands.executeCommand("zion.sessions.flushCollaboration", sid)
-              .then(result => {
-                preparation?.mark?.("finalCollaborationConfirmed");
-                return result;
-              })
-            : Promise.resolve(true)
-        ]);
-        if (saved === false) throw new Error("会话尚未保存，请稍后发送。");
-        if (confirmed !== true) throw new Error("会话仍在同步，请稍后发送；当前输入已保留。");
-      } catch (error) { throw error; }
+      // Input durability belongs to admission. Working-copy saves continue
+      // independently; a later edit must neither change nor cancel this input.
+      void savePreparation;
       preparation?.signal.throwIfAborted();
-      preparation?.mark?.("saveConfirmed");
-      if (ed.getValue() !== fullDoc) {
-        throw new Error("准备发送期间会话内容发生变化，请确认内容后重新发送。");
-      }
       // #region debug-point B:save-ready
       if (window.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "B", location: "performRun:save-ready", msg: "[DEBUG] save-ready", ts: Date.now() }) }).catch(() => {});
       // #endregion
-      const insertionOffset = lines
-        .slice(0, cursorLine)
-        .reduce((total, line) => total + line.length + 1, 0)
-        + String(lines[cursorLine] || "").length;
-      let documentAnchor = {
+      const insertionOffset = inputSnapshot.insertionOffset;
+      let documentAnchor = preparation?.documentAnchor || {
         kind: "y-relative-position-v1",
         fallback: {
           offset: insertionOffset,
@@ -2441,6 +2408,7 @@ export async function activate(ctx) {
         }
       };
       try {
+        if (!preparation?.documentAnchor) {
         documentAnchor = window.zion?.commands?.executeCommand?.(
           "zion.sessions.createCollaborationAnchor",
           {
@@ -2450,6 +2418,7 @@ export async function activate(ctx) {
             after: documentAnchor.fallback.after
           }
         ) || documentAnchor;
+        }
       } catch {}
       const runtimeResult = await runInteractiveThroughRuntime({
         opts,
@@ -3154,12 +3123,25 @@ export async function activate(ctx) {
   const doRun = async (opts = {}) => {
     if (!accountCan("run.execute")) return;
     const ed = getEd(opts);
+    const selection = ed?.getView?.()?.state?.selection?.main;
+    opts = {
+      ...opts,
+      useSelection: typeof opts.useSelection === "boolean"
+        ? opts.useSelection
+        : !!(selection?.to > selection?.from || ed?.getSelection?.())
+    };
     const panelId = opts?.panelId || ed?.panelId || null;
     const sid = getSessionId({ ...opts, panelId });
     if (!ed || !sid || getRunState(sid)?.streaming || interactivePreparations.has(sid)) return;
     const current = getRunState(sid);
     if (current?.waiting?.id && current.runId) {
-      const text = ed.getValue().split("\n").slice(0, ed.getCursor().line + 1).join("\n");
+      let text;
+      try {
+        text = captureDocumentInput(ed, opts).content;
+      } catch (error) {
+        window.zion?.notification?.show?.(error?.message || "请在输入区填写回复。", { type: "error" });
+        return { status: "invalid-input", error };
+      }
       const last = parseMessages(text).filter((message) => message.role === "user").at(-1);
       if (!last?.content?.trim()) throw new Error("请在输入区填写回复。");
       let input = last.content;
@@ -3173,22 +3155,57 @@ export async function activate(ctx) {
         metadata: { ...record?.metadata, backend: "runtime", runtimeBaseUrl: baseUrl }, status: remote.status });
     }
     const id = `preparing-${crypto.randomUUID()}`;
+    const expectedAccount = captureInteractiveRuntimeAccount();
     const controller = new AbortController();
     const submittedAt = Date.now();
-    const timings = { submittedAt, stages: {} };
+    const timings = { submittedAt, clientRequestId: id, stages: {} };
     const mark = (stage) => {
       if (timings.stages[stage] == null) timings.stages[stage] = Date.now() - submittedAt;
     };
     const view = ed.getView?.();
+    let inputSnapshot;
+    try {
+      inputSnapshot = captureDocumentInput(ed, {
+        ...opts,
+        submissionId: id,
+        annotations: window.zion?.commands?.executeCommand?.(
+          "zion.chatCards.getSessionAnnotations", sid
+        ) || {}
+      });
+    } catch (error) {
+      window.zion?.notification?.show?.(
+        error?.message || "无法发送当前内容。", { type: "error" }
+      );
+      return { status: "invalid-input", error };
+    }
+    const insertionOffset = inputSnapshot.insertionOffset;
+    const fallback = {
+      offset: insertionOffset,
+      before: inputSnapshot.documentText.slice(Math.max(0, insertionOffset - 64), insertionOffset),
+      after: inputSnapshot.documentText.slice(insertionOffset, insertionOffset + 64)
+    };
+    const documentAnchor = window.zion?.commands?.executeCommand?.(
+      "zion.sessions.createCollaborationAnchor",
+      { id: sid, index: insertionOffset, before: fallback.before, after: fallback.after }
+    ) || { kind: "y-relative-position-v1", fallback };
+    mark("inputCaptured");
     beginConversationViewportFollow(view, {
       sessionId: sid,
       state: window.zion?.state,
       cycleId: id,
       followLatest: opts?.followLatest !== false
     });
-    const clearFeedback = () => {};
+    let feedbackState = "";
+    const clearFeedback = ({ waitForDocument = false } = {}) => {
+      const next = waitForDocument ? "document" : "cleared";
+      if (feedbackState === "cleared" || feedbackState === next) return;
+      feedbackState = next;
+      window.zion.events.emit("chat/prepared", {
+        sessionId: sid, submissionId: id, waitForDocument
+      });
+    };
     const release = () => {
-      clearFeedback();
+      if (!feedbackState) clearFeedback();
       runtime.clearController(sid, id);
       if (runtime.isRunActive(sid, id)) runtime.markAwaiting(sid, id);
       if (interactivePreparations.get(sid) === id) interactivePreparations.delete(sid);
@@ -3201,6 +3218,11 @@ export async function activate(ctx) {
     };
     interactivePreparations.set(sid, id);
     runtime.beginRun(sid, id);
+    window.zion.events.emit("chat/preparing", {
+      sessionId: sid, submissionId: id, editorView: view,
+      answerAnchorPos: insertionOffset, followCycleId: id
+    });
+    mark("feedbackDispatched");
     runtime.setController(sid, { abort() {
       controller.abort();
       clearFeedback();
@@ -3211,8 +3233,14 @@ export async function activate(ctx) {
         throw new Error("账户或访问权限已变化，请重新进入工作台");
       }
       return await performRun(opts, {
-        id, signal: controller.signal, clearFeedback, release, timings, mark,
+        id, signal: controller.signal, clearFeedback, release, timings, mark, expectedAccount,
+        inputSnapshot, documentAnchor,
         accept(runId) {
+          window.zion.events.emit("chat/preparing", {
+            sessionId: sid, submissionId: id, assistantBlockId: runId,
+            editorView: view, answerAnchorPos: insertionOffset,
+            followCycleId: id
+          });
           // Transfer cancellation ownership without aborting the accepted run.
           runtime.clearController(sid, id);
           interactivePreparations.delete(sid);
@@ -3220,6 +3248,7 @@ export async function activate(ctx) {
         }
       });
     } catch (error) {
+      clearFeedback();
       if (controller.signal.aborted) return { status: "aborted" };
       runtime.markError(sid, error, id);
       window.zion.events.emit("chat/runError", { error, sessionId: sid, panelId });
@@ -3229,8 +3258,9 @@ export async function activate(ctx) {
     }
   };
 
-  // 注册命令（完全复用现有 ID）
+  // 注册命令：默认从光标所在行继续；有选区时只发送选区。
   const cmds = [
+    window.zion.commands.registerCommand("chat.submit", (opts) => doRun(opts || {})),
     window.zion.commands.registerCommand("chat.runSelection", (opts) => doRun({ ...opts, useSelection: true })),
     window.zion.commands.registerCommand("chat.run", (opts) => doRun(opts || {})),
     window.zion.commands.registerCommand("chat.mockCurrentMessages", (opts) => buildMockCurrentMessages(opts || {})),
@@ -3389,7 +3419,7 @@ export async function activate(ctx) {
 
   // 注册快捷键
   const kbs = [
-    window.zion.keybindings.register({ command: "chat.runSelection", key: "Mod-Enter", when: "editorFocus" }),
+    window.zion.keybindings.register({ command: "chat.submit", key: "Mod-Enter", when: "editorFocus" }),
     window.zion.keybindings.register({ command: "chat.stop", key: "Escape", when: "editorFocus" }),
     window.zion.keybindings.register({ command: "models.openSwitcher", key: "Mod-Shift-m", when: "editorFocus" })
   ];
@@ -3815,12 +3845,7 @@ export async function activate(ctx) {
             const streaming = !!window.zion?.state?.get?.("chat.streaming")
               || !!window.zion?.state?.get?.(`chat.runs.${sid}`)?.waiting;
             if (streaming) window.zion.commands.executeCommand("chat.stop");
-            else {
-              const ed = window.zion?.window?.activeEditor;
-              const sel = String(ed?.getSelection?.() || "");
-              if (sel.trim()) window.zion.commands.executeCommand("chat.runSelection");
-              else window.zion.commands.executeCommand("chat.run");
-            }
+            else window.zion.commands.executeCommand("chat.submit");
           } catch {}
         };
       }
@@ -3932,7 +3957,7 @@ export async function activate(ctx) {
           description: t("slash.chat.description", "Run chat with current context"),
           category: t("category.chat", "chat"),
           icon: "$(comment-discussion)",
-          execute: () => window.zion.commands.executeCommand("chat.run")
+          execute: () => window.zion.commands.executeCommand("chat.submit")
         })
       );
 

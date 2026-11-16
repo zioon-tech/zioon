@@ -14,6 +14,8 @@ import {
   shouldUseWorkbenchRuntime
 } from "../../src/runtime/workbench-runtime-config.ts";
 import { normalizeModelLimits } from "./model-limits.js";
+import { submitConversationInput } from "../../src/runtime/conversation-submission.js";
+import { currentAccountSession } from "../../packages/account-ui/src/client";
 
 export const CHAT_RUNTIME_ENABLED_KEY = "zion.chat.runtime.enabled";
 export const CHAT_RUNTIME_BASE_URL_KEY = "zion.chat.runtime.baseUrl";
@@ -774,6 +776,7 @@ async function buildInteractiveRuntimeRequest({
   selectedModelConfig,
   runtimeCatalog,
   signal,
+  expectedAccount,
   title,
   workbenchSessionId,
   projectId,
@@ -809,6 +812,11 @@ async function buildInteractiveRuntimeRequest({
     interactionProfileId,
     title: title || "",
     ...(workbenchSessionId ? { sessionId: String(workbenchSessionId) } : {}),
+    ...(workbenchSessionId ? { conversationInput: {
+      schemaVersion: 1, mode: "snapshot",
+      clientRequestId: metadata?.chatSubmission?.clientRequestId || crypto.randomUUID(),
+      ...(expectedAccount ? { expectedAccount } : {})
+    } } : {}),
     ...((projectId || metadata?.projectId) ? {
       projectId: String(projectId || metadata.projectId)
     } : {}),
@@ -849,6 +857,12 @@ export async function previewInteractiveRuntimeRequest(options) {
   return await client.previewRun(request);
 }
 
+export function captureInteractiveRuntimeAccount() {
+  const account = currentAccountSession();
+  return account?.user?.id && account?.space?.id
+    ? { userId: account.user.id, spaceId: account.space.id } : null;
+}
+
 export async function createInteractiveRuntimeHandle(options) {
   const {
     signal,
@@ -857,7 +871,22 @@ export async function createInteractiveRuntimeHandle(options) {
     workbenchSessionId,
     metadata
   } = options;
-  const { client, request } = await buildInteractiveRuntimeRequest(options);
+  const expectedAccount = options.expectedAccount === undefined
+    ? captureInteractiveRuntimeAccount() : options.expectedAccount;
+  const assertIdentity = () => {
+    const current = captureInteractiveRuntimeAccount();
+    if (globalThis.window?.zion?.state?.get?.("workbench.accessChanged")
+      || current?.userId !== expectedAccount?.userId || current?.spaceId !== expectedAccount?.spaceId) {
+      throw Object.assign(new Error("账户已变化，旧请求已保留；请返回原账户确认。"), {
+        code: "INPUT_SUBMISSION_ACCOUNT_CHANGED"
+      });
+    }
+  };
+  signal?.throwIfAborted();
+  assertIdentity();
+  const { client, request } = await buildInteractiveRuntimeRequest({ ...options, expectedAccount });
+  signal?.throwIfAborted();
+  assertIdentity();
   if (request.metadata?.chatSubmission?.stages) {
     request.metadata.chatSubmission.stages.requestSent =
       Date.now() - request.metadata.chatSubmission.submittedAt;
@@ -865,7 +894,18 @@ export async function createInteractiveRuntimeHandle(options) {
   // #region debug-point D:request-start
   if (globalThis.window?.zion?.state?.get?.("debug.chatSubmitUrl")) void fetch(window.zion.state.get("debug.chatSubmitUrl"), { method: "POST", body: JSON.stringify({ sessionId: "chat-submit-latency", runId: window.zion.state.get("debug.chatSubmitPhase") || "pre-fix", hypothesisId: "D", location: "createInteractiveRuntimeHandle:request-start", msg: "[DEBUG] request-start", ts: Date.now() }) }).catch(() => {});
   // #endregion
-  const handle = await createRemoteRunHandle(client, request, {
+  const submissionClient = request.conversationInput ? {
+    ...client,
+    createRun: (input) => submitConversationInput(client, input, {
+      scope: JSON.stringify([baseUrl, expectedAccount?.userId, expectedAccount?.spaceId]),
+      assertIdentity,
+      signal,
+      onRecover() {
+        globalThis.window?.zion?.notification?.show?.("正在确认上一条发送；当前编辑已保留。", { type: "info" });
+      }
+    })
+  } : client;
+  const handle = await createRemoteRunHandle(submissionClient, request, {
     subscription: {
       ...INTERACTIVE_PROJECTION_OPTIONS
     }

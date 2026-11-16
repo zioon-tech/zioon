@@ -1,13 +1,13 @@
 {
   "name": "dev.gutter-actions",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Provide contextual quick actions in the editor gutter.",
   "author": "Zion Developer",
   "license": "MIT",
   "zion": {
     "id": "dev.gutter-actions",
     "name": "Gutter Actions",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "main": "./main.js",
     "presentation": {
       "displayName": {

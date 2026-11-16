@@ -1,12 +1,45 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hydrateLlmRequestWorkbenchEvent,
+  observeLlmRequestWorkbenchEvent,
   llmRequestPayloadFromWorkbenchEvent,
   preferDetailedLlmRequestRecord,
   registerLlmRequestPayload
 } from "../src/runtime/llm-request-observability";
 
 describe("LLM request observability", () => {
+  it.each([true, false])("does not block event delivery while details load, current=%s", async remainsCurrent => {
+    let finish;
+    let current = true;
+    const host = { events: { emit: vi.fn() } };
+    const event = { type: "llm.request", runId: "run", data: {
+      summaryVersion: 1, detailAvailable: true, rawRunId: "run", rawEventSequence: 1
+    } };
+    expect(observeLlmRequestWorkbenchEvent({
+      event, zion: host, isCurrent: () => current,
+      resolveDetail: () => new Promise(resolve => { finish = resolve; })
+    })).toBeUndefined();
+    expect(host.events.emit).toHaveBeenCalledTimes(1);
+    host.events.emit("run.completed", {});
+    current = remainsCurrent;
+    finish({ type: "model.request", data: { payload: { messages: [{ role: "user", content: "detail" }] } } });
+    await vi.waitFor(() => expect(host.events.emit).toHaveBeenCalledTimes(remainsCurrent ? 3 : 2));
+    expect(host.events.emit.mock.calls[1][0]).toBe("run.completed");
+    if (remainsCurrent) expect(host.events.emit.mock.calls[2][1].payload.messages[0].content).toBe("detail");
+  });
+
+  it("retains the immediate summary when detail retrieval fails", async () => {
+    const host = { events: { emit: vi.fn() } };
+    const onError = vi.fn();
+    observeLlmRequestWorkbenchEvent({
+      event: { type: "llm.request", data: { summaryVersion: 1, detailAvailable: true, rawRunId: "run", rawEventSequence: 1 } },
+      zion: host, resolveDetail: async () => { throw new Error("offline"); }, onError
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(host.events.emit).toHaveBeenCalledTimes(1);
+    expect(host.events.emit.mock.calls[0][1].summaryOnly).toBe(true);
+  });
+
   it("maps Runtime Workbench events to the LLM request panel contract", () => {
     expect(llmRequestPayloadFromWorkbenchEvent({
       sequence: 18,

@@ -5,6 +5,8 @@ import { renderMarkdownInto } from "../../../src/chat/markdown-dom.js";
 import {
   isContinuationBoundaryLine
 } from "../../../src/chat/session-document-format.js";
+import { ToolCallCardWidget, ToolInlineWidget } from "../../dev.tools/tool-calls.js";
+import { ThinkingCardWidget, ThinkingInlineWidget } from "../../dev.thinking/thinking-cards.js";
 
 export const setPendingAssistant = StateEffect.define();
 export const clearPendingAssistant = StateEffect.define();
@@ -33,20 +35,124 @@ export const continuationBoundaryField = StateField.define({
   }
 });
 
-function renderPendingContent(element, text, status = "", plainText = false) {
+function renderActivityBlock(node, block, sessionId, view) {
+  const previous = node.__pendingBlock;
+  if (previous === block) return;
+  node.__pendingBlock = block;
+  if (block.kind === "answer") {
+    node.className = "zion-pending-activity-answer zion-pending-assistant-markdown";
+    renderMarkdownInto(node, block.text);
+    return;
+  }
+  node.className = "zion-pending-activity-card";
+  const reasoning = block.kind === "reasoning";
+  if (!node.__pendingHeader || (reasoning ? previous?.done !== block.done
+    : previous?.done !== block.done || previous?.ok !== block.ok
+      || previous?.args !== block.args || previous?.result !== block.result
+      || previous?.interrupted !== block.interrupted)) {
+    const header = reasoning
+      ? new ThinkingInlineWidget(block.id).toDOM(view)
+      : new ToolInlineWidget(block.id, block.name, block.args, block.ok, block.done, null, block.result, sessionId).toDOM();
+    if (reasoning && !block.done) header.querySelector(".zion-thinking-inline-text").textContent = "思考中…";
+    if (block.interrupted) {
+      const badge = header.querySelector(".zion-tool-call-status");
+      if (badge) {
+        badge.dataset.status = "stopped";
+        badge.textContent = "已停止";
+        badge.setAttribute("aria-label", "工具调用已停止");
+      }
+    }
+    const toggle = () => {
+      node.__pendingExpanded = !node.__pendingExpanded;
+      updateDetails();
+      view?.requestMeasure?.();
+    };
+    header.addEventListener("mousedown", event => event.preventDefault());
+    header.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggle();
+    });
+    if (node.__pendingHeader) node.__pendingHeader.replaceWith(header);
+    else node.appendChild(header);
+    node.__pendingHeader = header;
+  }
+  // Keep the expanded DOM mounted across tokens, including its selection and
+  // scroll position. Only changed tool data needs a new result renderer.
+  function updateDetails() {
+    const current = node.__pendingBlock;
+    const expanded = node.__pendingExpanded === true;
+    node.__pendingHeader.querySelector("button")?.setAttribute("aria-expanded", String(expanded));
+    if (expanded && node.__pendingDetailsBlock !== current) {
+      const widget = reasoning
+        ? new ThinkingCardWidget(current.id, current.text)
+        : new ToolCallCardWidget(current.id, current.name, current.args, current.result, current.ok, sessionId);
+      if (!(reasoning && node.__pendingDetails && widget.updateDOM(node.__pendingDetails))) {
+        const details = widget.toDOM(view);
+        if (node.__pendingDetails) node.__pendingDetails.replaceWith(details);
+        else node.appendChild(details);
+        node.__pendingDetails = details;
+      }
+      node.__pendingDetailsBlock = current;
+    }
+    if (node.__pendingDetails) node.__pendingDetails.hidden = !expanded;
+  }
+  updateDetails();
+}
+
+function renderPendingContent(element, entry, view) {
+  const { text, status = "", plainText = false, blocks = [] } = entry;
+  const role = element.querySelector(".zion-pending-assistant-role");
+  if (role) {
+    role.hidden = !entry.showRole;
+    role.textContent = entry.showRole ? "assistant" : "";
+  }
+  element.classList.toggle("is-separate-message", !!entry.showRole);
   const content = element.querySelector(".zion-pending-assistant-markdown");
   if (!(content instanceof HTMLElement)) return false;
-  element.classList.toggle("is-status", !!status);
+  element.classList.toggle("is-status", !!status && !blocks.length);
   element.classList.toggle("is-plain-stream", plainText && !status);
-  content.classList.toggle("is-status-indicator", !!status);
+  content.classList.toggle("is-status-indicator", !!status && !blocks.length);
+  if (blocks.length) {
+    element.removeAttribute("role");
+    element.removeAttribute("aria-label");
+    content.removeAttribute("role");
+    content.removeAttribute("aria-label");
+    const nodes = element.__pendingBlocks || new Map();
+    if (!element.__pendingBlocks) content.replaceChildren();
+    element.__pendingBlocks = nodes;
+    for (const block of blocks) {
+      let node = nodes.get(block.id);
+      if (!node) {
+        node = document.createElement("span");
+        node.dataset.blockId = block.id;
+        node.dataset.kind = block.kind;
+        nodes.set(block.id, node);
+        content.appendChild(node);
+      }
+      renderActivityBlock(node, block, entry.sessionId, view);
+    }
+    let statusElement = element.querySelector(".zion-pending-activity-status");
+    if (!statusElement) {
+      statusElement = document.createElement("span");
+      statusElement.className = "zion-pending-activity-status";
+      statusElement.setAttribute("role", "status");
+      element.insertBefore(statusElement, element.querySelector(".zion-pending-assistant-tail"));
+    }
+    statusElement.textContent = status;
+    statusElement.hidden = !status;
+    return true;
+  }
   if (status) {
-    element.setAttribute("role", "status");
-    element.setAttribute("aria-label", status);
+    content.setAttribute("role", "status");
+    content.setAttribute("aria-label", status);
     content.textContent = status;
     return true;
   }
   element.removeAttribute("role");
   element.removeAttribute("aria-label");
+  content.removeAttribute("role");
+  content.removeAttribute("aria-label");
   if (plainText) {
     content.textContent = String(text || "");
     return true;
@@ -60,16 +166,35 @@ function renderPendingContent(element, text, status = "", plainText = false) {
 }
 
 class SubmittedAssistantWidget extends WidgetType {
-  eq(other) { return other instanceof SubmittedAssistantWidget; }
+  constructor(runId) {
+    super();
+    this.runId = runId;
+  }
+  eq(other) {
+    return other instanceof SubmittedAssistantWidget && other.runId === this.runId;
+  }
   toDOM() {
     const element = document.createElement("div");
-    element.className = "zion-submitted-assistant";
+    element.className = "zion-submitted-assistant cm-line cm-role-boundary-start";
+    element.dataset.runId = this.runId;
+    const spacer = document.createElement("div");
+    spacer.className = "zion-role-boundary-spacer";
+    spacer.setAttribute("aria-hidden", "true");
     const role = document.createElement("span");
     role.className = "cm-role-token-head cm-role-token-assistant";
     role.textContent = "assistant";
-    element.append(role);
+    element.append(spacer, role);
     return element;
   }
+}
+
+export function hasSubmittedAssistantHeader(source, entry) {
+  if (findAssistantBlockEndOffsetById(source, entry.assistantBlockId) != null) return true;
+  // Before acceptance there is no server run ID. Retain the original header
+  // snapshot so a Yjs update arriving before acceptance can still take over.
+  return entry.assistantBlockId === entry.runId
+    && [...source.matchAll(/<!-- zion-assistant:id=([^\s]+) -->/g)]
+      .some(match => !entry.existingHeaders?.includes(match[1]));
 }
 
 function isCollapsedOriginRect(rect) {
@@ -99,31 +224,36 @@ class PendingAssistantWidget extends WidgetType {
     return other.entry.runId === this.entry.runId
       && other.entry.text === this.entry.text
       && other.entry.status === this.entry.status
+      && other.entry.showRole === this.entry.showRole
+      && other.entry.blocks === this.entry.blocks
       && other.entry.plainText === this.entry.plainText;
   }
 
-  toDOM() {
+  toDOM(view) {
     const element = document.createElement("span");
     element.className = "zion-pending-assistant-output";
     element.dataset.runId = this.entry.runId;
+    const role = document.createElement("span");
+    role.className = "zion-pending-assistant-role cm-role-token-head cm-role-token-assistant";
+    role.textContent = "assistant";
     const content = document.createElement("span");
     content.className = "zion-pending-assistant-markdown";
     const tail = document.createElement("span");
     tail.className = "zion-pending-assistant-tail";
     tail.setAttribute("aria-hidden", "true");
-    element.append(content, tail);
-    renderPendingContent(element, this.entry.text, this.entry.status, this.entry.plainText);
+    element.append(role, content, tail);
+    renderPendingContent(element, this.entry, view);
     return element;
   }
 
-  updateDOM(element) {
+  updateDOM(element, view) {
     if (!(element instanceof HTMLElement)) return false;
     element.dataset.runId = this.entry.runId;
-    return renderPendingContent(element, this.entry.text, this.entry.status, this.entry.plainText);
+    return renderPendingContent(element, this.entry, view);
   }
 
-  ignoreEvent() {
-    return false;
+  ignoreEvent(event) {
+    return !!event.target?.closest?.(".zion-pending-activity-card");
   }
 }
 
@@ -134,7 +264,7 @@ export function revealPendingAssistantInView(view, {
   preserveVisible = false
 } = {}) {
   const pending = Array.from(
-    view?.dom?.querySelectorAll?.(".zion-pending-assistant-output") || []
+    view?.dom?.querySelectorAll?.(".zion-pending-assistant-output, .zion-submitted-assistant") || []
   ).filter((element) =>
     !runId || String(element?.dataset?.runId || "") === String(runId)
   ).at(-1);
@@ -215,13 +345,16 @@ function decorationsFor(state, entries) {
   const ranges = [];
   for (const entry of entries.values()) {
     if (entry.submittedHeader) {
+      // Drop the local header in the very transaction that renders the durable
+      // one, without an intervening blank frame or duplicated assistant row.
+      if (hasSubmittedAssistantHeader(source, entry)) continue;
       const position = Math.max(0, Math.min(state.doc.length, Number(entry.fallbackOffset) || 0));
       ranges.push(Decoration.widget({
-        widget: new SubmittedAssistantWidget(), block: true, side: 1
+        widget: new SubmittedAssistantWidget(entry.runId), block: true, side: 1
       }).range(position));
       continue;
     }
-    if (!entry.text && !entry.status) continue;
+    if (!entry.text && !entry.status && !entry.blocks?.length) continue;
     const blockEnd = findAssistantBlockEndOffsetById(
       source,
       entry.assistantBlockId
@@ -233,7 +366,8 @@ function decorationsFor(state, entries) {
       : state.doc.length;
     const position = blockEnd == null ? fallbackOffset : blockEnd;
     ranges.push(Decoration.widget({
-      widget: new PendingAssistantWidget(entry),
+      widget: new PendingAssistantWidget({ ...entry, showRole: blockEnd == null }),
+      block: blockEnd == null,
       side: 1
     }).range(Math.max(0, Math.min(state.doc.length, position))));
   }
@@ -251,10 +385,21 @@ export const pendingAssistantField = StateField.define({
   update(value, transaction) {
     let entries = value.entries;
     let changed = transaction.docChanged;
+    if (transaction.docChanged) {
+      entries = new Map([...entries].map(([id, entry]) => [id, {
+        ...entry,
+        fallbackOffset: entry.fallbackOffset == null ? null
+          : transaction.changes.mapPos(entry.fallbackOffset, -1)
+      }]));
+    }
     for (const effect of transaction.effects) {
       if (effect.is(setPendingAssistant)) {
         if (entries === value.entries) entries = new Map(entries);
-        entries.set(effect.value.runId, effect.value);
+        const previous = entries.get(effect.value.runId);
+        entries.set(effect.value.runId, {
+          ...effect.value,
+          fallbackOffset: previous?.fallbackOffset ?? effect.value.fallbackOffset
+        });
         changed = true;
       }
       if (effect.is(clearPendingAssistant)) {
@@ -276,6 +421,29 @@ export const pendingAssistantField = StateField.define({
 });
 
 export const pendingAssistantTheme = EditorView.baseTheme({
+  ".zion-pending-assistant-output.is-separate-message": {
+    display: "block",
+    padding: "4px 0"
+  },
+  ".zion-pending-assistant-role": {
+    display: "inline-block",
+    marginRight: "8px"
+  },
+  ".zion-pending-assistant-role[hidden]": {
+    display: "none"
+  },
+  ".zion-pending-activity-card, .zion-pending-activity-answer, .zion-pending-activity-status": {
+    display: "block"
+  },
+  ".zion-pending-activity-card": {
+    margin: "6px 0"
+  },
+  ".zion-pending-activity-card [hidden], .zion-pending-activity-status[hidden]": {
+    display: "none"
+  },
+  ".zion-pending-activity-status": {
+    color: "var(--muted, #687078)"
+  },
   ".zion-pending-assistant-output": {
     whiteSpace: "normal",
     overflowWrap: "anywhere"

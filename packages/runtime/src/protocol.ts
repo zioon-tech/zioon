@@ -200,6 +200,13 @@ export type RunPrincipal = {
 };
 
 export type RunRequest = {
+  conversationInput?: {
+    schemaVersion: 1;
+    mode: "snapshot";
+    clientRequestId: string;
+    parentInputId?: string;
+    expectedAccount?: { userId: string; spaceId: string };
+  };
   principal?: RunPrincipal;
   prompt?: string;
   messages?: TranscriptMessage[];
@@ -240,6 +247,8 @@ export type RunRecord = {
   modelOptions?: ModelRequestOptions;
   policy: CapabilityPolicy;
   metadata: Record<string, unknown>;
+  /** Immutable caller context, before providers prepare the model request. */
+  inputMessages?: TranscriptMessage[];
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -604,6 +613,8 @@ export type TimeoutScheduler = (
 export type RunHandle = {
   runId: string;
   attemptId: string;
+  /** Resolves when admission and the initial durable Run write succeed. */
+  ready?: Promise<void>;
   events: AsyncIterable<RunEvent>;
   completion: Promise<RunResult>;
   abort(reason?: string): Promise<void>;
