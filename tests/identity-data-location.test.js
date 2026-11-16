@@ -31,6 +31,35 @@ async function setup() {
 }
 
 describe("Identity plugin data integration", () => {
+  it("loads one profile batch without reading the project template or exposing raw events", async () => {
+    const files = {
+      identity: "Identity", user: "User", biography: "Cached digest",
+      projects: "Project index", projectsInbox: "Inbox", projectsAttention: "Attention",
+      events: JSON.stringify({ id: "private-event", kind: "lesson",
+        summary: "Retain useful lessons", detail: "raw detail excluded" })
+    };
+    const fileService = {
+      readTextFiles: vi.fn(async ({ files: requested }) => ({
+        fileRoot: "/memory/account", files: Object.fromEntries(Object.keys(requested).map(key => [key, files[key] || ""])),
+        missing: []
+      })),
+      writeTextFiles: vi.fn()
+    };
+    const provider = new RuntimeIdentityContextProvider({
+      state: { get() {}, set() {} }, fileService,
+      dataLocation: { root: "/memory/account", nodeId: "" }, memoryRoot: "/memory/account"
+    });
+    const [context] = await provider.contribute([{ role: "user", content: "hello" }], {
+      runId: "one", request: { policy: { preset: "read-only", fileRoots: [] } }
+    });
+    expect(fileService.readTextFiles).toHaveBeenCalledOnce();
+    expect(fileService.readTextFiles.mock.calls[0][0].files).not.toHaveProperty("template");
+    expect(context.content).toContain("Identity");
+    expect(context.content).toContain("User");
+    expect(context.content).not.toContain("raw detail excluded");
+    expect(fileService.writeTextFiles).not.toHaveBeenCalled();
+  });
+
   it("initializes without terminals and refreshes externally edited files between Runs", async () => {
     const { location, state, fileService } = await setup();
     const provider = new RuntimeIdentityContextProvider({

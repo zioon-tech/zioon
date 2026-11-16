@@ -8,6 +8,40 @@ import { workspaceFileCommand } from "../src/sandbox/workspace-file-command.mjs"
 import { terminalReference } from "../../../packages/node-protocol/src/resource-references.mjs";
 
 describe("plugin file service", () => {
+  it("bounds native file reads and preserves per-file authorization and result order", async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    let active = 0;
+    let maximum = 0;
+    const authorize = vi.fn();
+    const fileClient = { request: vi.fn(async endpoint => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await gate;
+      active -= 1;
+      const path = new URL(endpoint, "http://files.test").searchParams.get("path");
+      return { plugin_data_version: 1, content: path };
+    }) };
+    const service = createPluginFileService({
+      toolHost: { invoke: vi.fn() }, fileClient, authorizeRequest: authorize,
+      dataLocation: { root: "/memory/account", nodeId: "" }
+    });
+    const files = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`file${i}`, `${i}.md`]));
+    const reading = service.readTextFiles({ files, runContext: {
+      principal: { userId: "alice", spaceId: "personal" }, policy: { fileRoots: [] }
+    } });
+    try {
+      await vi.waitFor(() => expect(fileClient.request).toHaveBeenCalledTimes(4));
+      expect(maximum).toBe(4);
+      release();
+      const result = await reading;
+      expect(Object.keys(result.files)).toEqual(Object.keys(files));
+      expect(Object.values(result.files)).toEqual(Object.values(files).map(path => `/memory/account/${path}`));
+      expect(authorize).toHaveBeenCalledTimes(16);
+      expect(result.missing).toEqual([]);
+    } finally { release(); await reading; }
+  });
+
   it("serializes parallel managed file calls and waits only for a proven non-dispatched busy result", async () => {
     let active = 0;
     let maximum = 0;

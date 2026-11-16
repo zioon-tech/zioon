@@ -586,31 +586,42 @@ export function createPluginFileService({
       ({ fileRoot, sessionId, runContext, readFallbacks } =
         await boundRequest(fileRoot, sessionId, runContext, "read"));
       const root = requestRoot(fileRoot, runContext.policy);
-      const out = {};
-      const missing = [];
-      for (const [key, relativePath] of Object.entries(files || {})) {
-        const candidates = [
-          { root, runContext },
-          ...readFallbacks
-        ];
-        let loaded = { content: "", missing: true };
-        for (const candidate of candidates) {
-          loaded = await readTextFileAt({
-            root: candidate.root,
-            relativePath,
-            sessionId,
-            runContext: candidate.runContext,
-            key
-          });
-          if (!loaded.missing) break;
+      const entries = Object.entries(files || {});
+      const results = new Array(entries.length);
+      let cursor = 0;
+      const readNext = async () => {
+        while (cursor < entries.length) {
+          const index = cursor++;
+          const [key, relativePath] = entries[index];
+          const candidates = [
+            { root, runContext },
+            ...readFallbacks
+          ];
+          let loaded = { content: "", missing: true };
+          for (const candidate of candidates) {
+            loaded = await readTextFileAt({
+              root: candidate.root,
+              relativePath,
+              sessionId,
+              runContext: candidate.runContext,
+              key
+            });
+            if (!loaded.missing) break;
+          }
+          results[index] = { key, ...loaded };
         }
-        out[key] = loaded.content;
-        if (loaded.missing) missing.push(key);
-      }
+      };
+      // Native file reads are independent. Managed workspace tools still pass
+      // through their existing serialized invocation queue and authorization.
+      await Promise.all(Array.from(
+        { length: Math.min(fileClient ? 4 : 1, entries.length) }, readNext
+      ));
       return {
         fileRoot: root,
-        files: out,
-        ...(fileClient || dataLocation ? { missing } : {})
+        files: Object.fromEntries(results.map(({ key, content }) => [key, content])),
+        ...(fileClient || dataLocation
+          ? { missing: results.filter((item) => item.missing).map((item) => item.key) }
+          : {})
       };
     },
     async writeTextFile({

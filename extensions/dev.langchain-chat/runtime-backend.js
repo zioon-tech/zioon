@@ -798,7 +798,16 @@ async function buildInteractiveRuntimeRequest({
     // Admission still intersects these workflow tools with the administrator's ceiling.
     policy.allowedTools = Array.from(new Set([...policy.allowedTools, "goalManage", "compressionRecall"]));
   }
-  const client = createHttpRuntimeClient({ baseUrl, fetchImpl });
+  const client = createHttpRuntimeClient({
+    baseUrl, fetchImpl,
+    onTiming({ phase, timestamp }) {
+      const submission = metadata?.chatSubmission;
+      if (submission?.stages && Number.isFinite(submission.submittedAt)
+        && submission.stages[phase] == null) {
+        submission.stages[phase] = timestamp - submission.submittedAt;
+      }
+    }
+  });
   const runtimeModel = await resolveInteractiveRuntimeModel(
     client,
     selectedModel,
@@ -888,7 +897,7 @@ export async function createInteractiveRuntimeHandle(options) {
   signal?.throwIfAborted();
   assertIdentity();
   if (request.metadata?.chatSubmission?.stages) {
-    request.metadata.chatSubmission.stages.requestSent =
+    request.metadata.chatSubmission.stages.submissionReady =
       Date.now() - request.metadata.chatSubmission.submittedAt;
   }
   // #region debug-point D:request-start
@@ -906,6 +915,7 @@ export async function createInteractiveRuntimeHandle(options) {
     })
   } : client;
   const handle = await createRemoteRunHandle(submissionClient, request, {
+    stopAtTerminal: true,
     subscription: {
       ...INTERACTIVE_PROJECTION_OPTIONS
     }

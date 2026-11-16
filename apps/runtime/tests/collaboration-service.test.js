@@ -92,6 +92,39 @@ afterEach(async () => {
 });
 
 describe("Runtime collaboration service", () => {
+  it("queues live text while the previous document flush is blocked", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-live-queue-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({ id: "queue", text: "user question" });
+    const collaboration = createCollaboration({ store: workbenchState });
+    resources.push({ directory, workbenchState, collaboration });
+    await collaboration.prepareRun("queue", { runId: "live", userContent: "question" });
+    let release;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const open = collaboration.hocuspocus.openDirectConnection.bind(collaboration.hocuspocus);
+    const opening = vi.spyOn(collaboration.hocuspocus, "openDirectConnection").mockImplementationOnce(async (...args) => {
+      await blocked;
+      return open(...args);
+    });
+    try {
+      const event = (sequence, type, data = {}) => ({ runId: "live", sequence, type, data });
+      await collaboration.applyRunEvent("queue", event(1, "run.started"), { deferFlush: true });
+      await collaboration.applyRunEvent("queue", event(2, "message.delta", { delta: "answer" }), { deferFlush: true });
+      await collaboration.applyRunEvent("queue", event(3, "message.completed", { content: "answer" }), { deferFlush: true });
+      expect(opening).toHaveBeenCalledOnce();
+      const terminal = collaboration.applyRunEvent("queue", event(4, "run.completed", { output: "answer" }), { deferFlush: true });
+      release();
+      await terminal;
+      await waitFor(async () => (await workbenchState.readSession("queue")).text.includes("answer"));
+      const stored = await workbenchState.readCollaborationDocument("queue");
+      const document = new Y.Doc();
+      Y.applyUpdate(document, stored.state);
+      expect(document.getMap("runProjection").get("live").lastSequence).toBe(4);
+      expect(document.getText("content").toString()).toContain("answer");
+      document.destroy();
+    } finally { release(); opening.mockRestore(); }
+  });
+
   it("requires a resolved snapshot anchor before terminal replay", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-anchor-"));
     const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });

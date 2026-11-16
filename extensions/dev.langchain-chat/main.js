@@ -1862,6 +1862,7 @@ export async function activate(ctx) {
           );
           if (["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)) {
             terminalProjected = true;
+            preparation?.mark?.("terminalApplied");
           }
         }
       } finally {
@@ -1871,6 +1872,8 @@ export async function activate(ctx) {
 
     const result = await handle.completion;
     await consuming;
+    preparation?.mark?.("streamClosed");
+    window.zion?.state?.set?.(`chat.latency.${sid}`, { runId, ...preparation?.timings });
     if (result.status === "aborted" && result.reason === "detached") {
       preparation?.clearFeedback();
       return result;
