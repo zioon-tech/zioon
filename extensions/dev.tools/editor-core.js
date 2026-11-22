@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 const CORE_KEY = "__zionEditorCore";
 const CORE_SCOPES_KEY = "__zionEditorCoreScopes";
 const EXPLORER_WIDTH_KEY = "zion.editorCore.explorerWidth";

@@ -1,3 +1,6 @@
+import { workbenchStorage as localStorage } from "../../../src/runtime/workbench-space.ts";
+import { sharedResourceMarker } from "../../../src/ui/workbench/shared-resource-marker";
+import { isReceivedNode } from "../model/shared-view.js";
 import {
   getSessionRunIndicatorStatus,
   markSessionRunViewed
@@ -932,7 +935,7 @@ export function createSessionsListRendererFactory(deps) {
         let moved = false;
         try {
           for (const item of readDraggedItems(ev)) {
-            if (item.id && item.id !== "root" && moveNode(item.id, "root")) {
+            if (item.id && !isReceivedNode(item.id) && item.id !== "root" && moveNode(item.id, "root")) {
               moved = true;
             }
           }
@@ -1058,11 +1061,26 @@ export function createSessionsListRendererFactory(deps) {
           a.rel = "noopener noreferrer";
           a.click();
         }));
+        if (item.sharing?.received) {
+          menu.appendChild(mkItem("分享详情", () => window.zion?.commands?.executeCommand?.("zion.sharing.manage",
+            { shareId: item.sharing.shareId, direction: "received" })));
+          return menu;
+        }
 
         menu.appendChild(mkItem(t("ui.rename", "Rename"), () => {
           pendingEdit = { id: item.id, type: "session" };
           render();
         }));
+        if (window.zion?.commands?.list?.().includes("zion.sharing.create")) {
+          menu.appendChild(mkItem("分享", () => {
+            window.zion.commands.executeCommand("zion.sharing.create", { kind: "document", sourceId: item.id, name: item.title || item.id });
+          }));
+          menu.appendChild(mkItem("会话隐私", () => {
+            window.zion.commands.executeCommand("zion.sharing.create", {
+              kind: "document", sourceId: item.id, name: item.title || item.id, managePrivacy: true
+            });
+          }));
+        }
         menu.appendChild(mkItem(t("ui.autoRename", "Auto Rename"), async () => {
           try { await window.zion.commands.executeCommand("zion.sessions.autoRename", { id: item.id }); } catch {}
           if (typeof onAfterChange === "function") onAfterChange();
@@ -1111,6 +1129,11 @@ export function createSessionsListRendererFactory(deps) {
           return it;
         };
 
+        if (folder.sharing?.received) {
+          menu.appendChild(mkItem("分享详情", () => window.zion?.commands?.executeCommand?.("zion.sharing.manage",
+            { shareId: folder.sharing.shareId, direction: "received" })));
+          return menu;
+        }
         menu.appendChild(mkItem(t("cmd.new", "New Session"), () => {
           window.zion.commands.executeCommand("zion.sessions.new", { parentId: folder.id });
           if (typeof onAfterChange === "function") onAfterChange();
@@ -1123,6 +1146,11 @@ export function createSessionsListRendererFactory(deps) {
           pendingEdit = { id: folder.id, type: "folder" };
           render();
         }));
+        if (window.zion?.commands?.list?.().includes("zion.sharing.create")) {
+          menu.appendChild(mkItem("分享", () => {
+            window.zion.commands.executeCommand("zion.sharing.create", { kind: "folder", sourceId: folder.id, name: folder.title || folder.id });
+          }));
+        }
         menu.appendChild(mkItem(t("ui.exportFolder", "Export Folder"), () => {
           window.zion.commands.executeCommand("zion.sessions.exportFolder", folder.id);
         }));
@@ -1245,6 +1273,8 @@ export function createSessionsListRendererFactory(deps) {
         row.style.transition = "background 120ms ease";
         row.style.position = "relative";
         row.className = "zion-session-row is-folder";
+        row.dataset.folderId = folder.id;
+        if (folder.sharing?.received) row.dataset.sharing = "received";
         row.style.whiteSpace = "nowrap";
         row.style.borderLeft = `${depth * 12}px solid transparent`;
         row.dataset.depth = String(depth);
@@ -1252,7 +1282,7 @@ export function createSessionsListRendererFactory(deps) {
           row.style.display = "none";
           row.setAttribute("aria-hidden", "true");
         }
-        if (depth >= 0) visibleOrder.push({ id: folder.id, type: "folder" });
+        if (depth >= 0 && !folder.sharing?.received) visibleOrder.push({ id: folder.id, type: "folder" });
 
         const labelWrap = document.createElement("div");
         labelWrap.style.display = "flex";
@@ -1287,6 +1317,7 @@ export function createSessionsListRendererFactory(deps) {
         labelWrap.appendChild(chevron);
         labelWrap.appendChild(folderIcon);
         labelWrap.appendChild(ttl);
+        if (folder.sharing?.received) labelWrap.appendChild(sharedResourceMarker(folder.sharing.providerName));
 
         const btns = document.createElement("div");
         btns.style.display = "flex";
@@ -1335,6 +1366,7 @@ export function createSessionsListRendererFactory(deps) {
         row.addEventListener("click", () => { folderMenu.style.display = "none"; });
         row.addEventListener("contextmenu", (ev) => {
           if (depth < 0) return;
+          if (folder.sharing?.received) { showContextMenu(folderMenu, ev); return; }
           try { window.zion.state.set("sessions.selectedFolderId", folder.id); } catch {}
           if (getSelection().length > 1 && isInSelection(folder.id)) {
             if (selectionContextMenu) showContextMenu(selectionContextMenu, ev);
@@ -1348,8 +1380,9 @@ export function createSessionsListRendererFactory(deps) {
         });
 
         // drag folder
-        row.setAttribute("draggable", "true");
+        row.setAttribute("draggable", String(!folder.sharing?.received));
         row.addEventListener("dragstart", (ev) => {
+          if (folder.sharing?.received) { ev.preventDefault(); ev.stopPropagation(); return; }
           try {
             const sel = getSelection();
             let items = sel.length ? sel : [{ id: folder.id, type: "folder" }];
@@ -1361,11 +1394,16 @@ export function createSessionsListRendererFactory(deps) {
             setSmallDragImage(ev, label);
           } catch {}
         });
-        row.addEventListener("dragenter", (ev) => { ev.preventDefault(); row.classList.add("is-drop-target"); });
-        row.addEventListener("dragover", (ev) => { ev.preventDefault(); row.classList.add("is-drop-target"); });
+        row.addEventListener("dragenter", (ev) => { ev.preventDefault(); if (!folder.sharing?.received) row.classList.add("is-drop-target"); });
+        row.addEventListener("dragover", (ev) => {
+          ev.preventDefault();
+          if (folder.sharing?.received) { ev.stopPropagation(); if (ev.dataTransfer) ev.dataTransfer.dropEffect = "none"; return; }
+          row.classList.add("is-drop-target");
+        });
         row.addEventListener("dragleave", () => { row.classList.remove("is-drop-target"); });
         row.addEventListener("drop", (ev) => {
           ev.preventDefault();
+          if (folder.sharing?.received) { ev.stopPropagation(); return; }
           try {
             const rawMulti = ev.dataTransfer?.getData("application/zion-nodes") || "";
             const rawSingle = ev.dataTransfer?.getData("application/zion-node") || "";
@@ -1379,7 +1417,7 @@ export function createSessionsListRendererFactory(deps) {
             }
             let moved = false;
             for (const it of items) {
-              if (it.id && it.id !== folder.id) {
+              if (it.id && !isReceivedNode(it.id) && it.id !== folder.id) {
                 if (moveNode(it.id, folder.id)) moved = true;
               }
             }
@@ -1394,8 +1432,10 @@ export function createSessionsListRendererFactory(deps) {
           }
         });
 
-        btns.appendChild(bNewSession);
-        btns.appendChild(bNewFolder);
+        if (!folder.sharing?.received) {
+          btns.appendChild(bNewSession);
+          btns.appendChild(bNewFolder);
+        }
         btns.appendChild(bMore);
         btns.style.pointerEvents = "none";
         bNewSession.style.opacity = "0";
@@ -1442,6 +1482,9 @@ export function createSessionsListRendererFactory(deps) {
           if (t && btns.contains(t)) return;
           if (isConfirming(folder.id, "folder")) return;
           if (bMore.contains(ev.target) || folderMenu.contains(ev.target)) return;
+          if (folder.sharing?.received) {
+            setFolderOpen(folder.id, !isFolderOpen(folder.id)); render(); return;
+          }
           const anchorId = getLastSelectedId();
           if (ev.shiftKey) {
             if (anchorId) {
@@ -1596,12 +1639,14 @@ export function createSessionsListRendererFactory(deps) {
               srow.style.paddingLeft = `${10 + ((depth + 1) * 12)}px`;
               srow.dataset.depth = String(depth + 1);
               srow.dataset.sessionId = String(ch.id || "");
-              visibleOrder.push({ id: ch.id, type: "session" });
+              if (!ch.sharing?.received) visibleOrder.push({ id: ch.id, type: "session" });
+              if (ch.sharing?.received) srow.dataset.sharing = "received";
                 if (ch.id) visibleStatusSessionIds.add(String(ch.id));
 
               // drag session
-              srow.setAttribute("draggable", "true");
+              srow.setAttribute("draggable", String(!ch.sharing?.received));
               srow.addEventListener("dragstart", (ev) => {
+                if (ch.sharing?.received) { ev.preventDefault(); ev.stopPropagation(); return; }
                 try {
                   const sel = getSelection();
                   let items = sel.length ? sel : [{ id: ch.id, type: "session" }];
@@ -1676,6 +1721,7 @@ export function createSessionsListRendererFactory(deps) {
               ttl2.style.overflow = "hidden";
               ttl2.style.textOverflow = "ellipsis";
               titleLine.appendChild(ttl2);
+              if (ch.sharing?.received) titleLine.appendChild(sharedResourceMarker(ch.sharing.providerName));
 
               srow.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
 
@@ -1743,6 +1789,7 @@ export function createSessionsListRendererFactory(deps) {
               );
               bMore2.style.opacity = "0";
               srow.addEventListener("contextmenu", (ev) => {
+                if (ch.sharing?.received) { showContextMenu(sMenu, ev); return; }
                 if (getSelection().length > 1 && isInSelection(ch.id)) {
                   if (selectionContextMenu) showContextMenu(selectionContextMenu, ev);
                   return;
@@ -1829,6 +1876,10 @@ export function createSessionsListRendererFactory(deps) {
               }
 
               srow.addEventListener("keydown", (ev) => {
+                if (ch.sharing?.received) {
+                  if (ev.key === "Enter") { ev.preventDefault(); switchSession(ch.id); }
+                  return;
+                }
                 if (isConfirming(ch.id, "session")) {
                   if (ev.key === "Escape") {
                     ev.preventDefault();
@@ -1888,6 +1939,7 @@ export function createSessionsListRendererFactory(deps) {
                 if (t && rightWrap.contains(t)) return;
                 if (isConfirming(ch.id, "session")) return;
                 if (bMore2.contains(ev.target) || sMenu.contains(ev.target)) return;
+                if (ch.sharing?.received) { clearSelection(); switchSession(ch.id); return; }
                 const anchorId = getLastSelectedId();
                 if (ev.shiftKey) {
                   if (anchorId) {

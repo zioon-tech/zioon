@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../runtime/workbench-space";
 import { activityBarRuntime, auxiliaryBarRuntime, bottomPanelRuntime, getInspectorTextSessionId, inspectorRuntime, responsiveRuntime, sideBarRuntime } from "./runtime";
 import { createZionIcon, createZionIconFromCodicon, hasZionIcon, setZionIconOnly, zionIconName } from "../icons";
 import { applyInspectorMarkdownCommentRanges, createInspectorMarkdownPreviewView, createInspectorTextView, getInspectorMarkdownSelection, openInspectorSearch, renderInspectorMarkdown, setInspectorLineWrapping } from "./inspectorContent";

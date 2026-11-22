@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -242,7 +243,7 @@ function markPending(client, state) {
 // replace the view. No selection delta may be inferred from unverified storage.
 export function captureSkillsSnapshotEdits({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   snapshot = skillsSnapshotFromState(state),
   sources = true,
   scannedSources = []
@@ -350,7 +351,7 @@ function acknowledgeSnapshot(client, state, snapshot, sentSources = [], sentEnab
 
 export function loadSkillsSnapshotFromRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const client = runtimeClient(state, storage);
@@ -372,7 +373,7 @@ export function loadSkillsSnapshotFromRuntime({
 export async function syncSkillsSnapshotToRuntime({
   snapshot,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const client = runtimeClient(state, storage);
@@ -434,7 +435,7 @@ export async function syncSkillsSnapshotToRuntime({
 export async function persistSkillsSnapshot({
   snapshot,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const value = normalizeSkillsSnapshot(

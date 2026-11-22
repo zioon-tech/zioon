@@ -1,0 +1,50 @@
+.public-reader {
+  margin: 0; height: 100dvh; overflow: hidden; background: var(--bg); color: var(--fg);
+  font-family: var(--font-sans); font-size: var(--editor-font-size, 13px);
+  font-weight: 400; line-height: var(--editor-line-height, 1.62);
+}
+.public-reader [hidden] { display: none !important; }
+.public-reader *, .public-reader *::before, .public-reader *::after { box-sizing: border-box; }
+#public-reader, .public-reader-shell { height: 100%; min-height: 0; }
+.public-reader-shell { display: flex; flex-direction: column; }
+.public-reader-header { display: flex; align-items: center; flex: 0 0 auto; gap: 14px; min-height: 44px; padding: 8px 18px; border-bottom: 1px solid var(--border-subtle); }
+.public-reader-brand { display: flex; align-items: center; gap: 7px; text-decoration: none; color: var(--fg); font-weight: 600; }
+.public-reader-brand svg { width: 24px; height: 24px; flex-shrink: 0; }
+.public-reader-workspace { flex: 1 1 auto; min-height: 0; }
+.public-reader-mode, .public-reader-document-updated { font-size: 11px; color: var(--fg-muted); }
+.public-reader-workbench { margin-left: auto; color: var(--accent); text-decoration: none; font-size: 12px; }
+.public-reader-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.public-reader-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+.public-reader .zion-editor-host { position: relative; min-width: 0; }
+.public-reader-outline { display: none; flex: 0 0 268px; width: 268px; min-height: 0; flex-direction: column; padding: 0 8px; }
+.outline-open .public-reader-outline { display: flex; }
+.public-reader-outline-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 0 8px; flex-shrink: 0; }
+.public-reader-outline-toolbar button:last-child { margin-left: auto; }
+.public-reader-outline .zion-toc-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; font: 13px/1.5 var(--font-sans); }
+.public-reader-canvas .cm-editor { flex: 1 1 auto; width: 0; min-width: 0; height: 100%; outline: none; }
+.public-reader-canvas .cm-scroller { overflow: auto; }
+.public-reader-canvas .cm-editor:not([data-vim-enabled="true"]) .cm-cursor { display: none; }
+.public-reader-canvas .cm-content { caret-color: transparent; }
+.public-recorded-card { max-width: 720px; padding: 0; }
+.public-recorded-card .zion-tool-call-inline, .public-recorded-card .zion-thinking-inline { cursor: pointer; }
+.public-recorded-card .zion-tool-call-card, .public-recorded-card .zion-thinking-card { margin: 8px 0 10px; }
+.public-recorded-card .zion-thinking-card-body { max-height: 480px; overflow: auto; }
+.public-card-empty { padding: 12px; color: var(--fg-muted); font-size: 12px; }
+.public-reader-notice:empty { display: none; }
+.public-reader-notice { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 40; padding: 10px 18px; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 12px; box-shadow: var(--elevation-2); }
+.public-reader button { cursor: pointer; }
+.zion-editor-display-menu { position:absolute; top:36px; right:8px; z-index:102; display:flex; flex-direction:column; gap:4px; width:260px; max-height:min(620px,80vh); overflow:auto; padding:8px; background:var(--panel); border:1px solid var(--border); border-radius:6px; box-shadow:var(--elevation-2); }
+.zion-editor-display-menu button { text-align:left; padding:5px 8px; border:0; background:transparent; color:var(--fg); font:12px/1.5 var(--font-sans); }
+.zion-editor-display-menu button:hover { background:var(--hover-bg,var(--border)); }
+.zion-editor-display-menu label { display:flex; align-items:center; gap:8px; padding:4px 8px; font-size:12px; }
+.zion-editor-display-menu input,.zion-editor-display-menu select { min-width:0; width:130px; margin-left:auto; background:var(--input-bg,var(--panel)); color:var(--fg); border:1px solid var(--border); border-radius:4px; padding:4px; }
+.public-reader button:disabled { cursor: default; opacity: .5; }
+.public-reader button:focus-visible, .public-reader a:focus-visible, .public-reader input:focus-visible, .public-reader textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 850px) {
+  .outline-open .public-reader-outline { position: absolute; inset: 0 auto 0 0; z-index: 30; width: min(268px, 85%); background: var(--editor-bg); box-shadow: var(--elevation-2); }
+}
+@media (max-width: 600px) {
+  .public-reader-header { padding: 8px 12px; gap: 10px; }
+  .public-reader-document-updated { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .public-reader * { scroll-behavior: auto !important; transition: none !important; } }

@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { normalizeModelDescription } from "./model-config-fields.js";
 
 const CONFIG_FIELDS = [
@@ -82,7 +83,7 @@ export function compactProviderConfig(value) {
 }
 
 export function loadProviderConfig(storageKey, {
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   try {
     const raw = storage?.getItem?.(storageKey);
@@ -98,7 +99,7 @@ function quotaError(error) {
 }
 
 export function saveProviderConfig(storageKey, value, {
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   const config = compactProviderConfig(value);
   const serialized = JSON.stringify(config);

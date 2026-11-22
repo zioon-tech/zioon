@@ -75,7 +75,7 @@ function byteRange(value, byteLength) {
   return { start, end: Math.min(end, byteLength - 1) };
 }
 
-export function createAssetHttpHandler({ assets }) {
+export function createAssetHttpHandler({ assets, bindContentAsset }) {
   if (!assets?.createImage || !assets?.openRead) {
     throw new Error("Asset HTTP handler requires an AssetService");
   }
@@ -88,6 +88,10 @@ export function createAssetHttpHandler({ assets }) {
         originalName: decodedFileName(request.headers["x-zion-file-name"]),
         declaredBytes: request.headers["content-length"]
       });
+      if (request.zionPrincipal?.contentScope) {
+        if (!bindContentAsset) throw Object.assign(new Error("content_upload_unavailable"), { statusCode: 403 });
+        await bindContentAsset(request.zionPrincipal, asset);
+      }
       json(response, 201, { asset: publicAsset(asset) });
       return true;
     }

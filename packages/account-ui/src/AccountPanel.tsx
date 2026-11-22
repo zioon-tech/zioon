@@ -67,6 +67,7 @@ export function AccountPanel({
   const [busy, setBusy] = useState(false);
   const [invitation, setInvitation] = useState(pendingInvitation);
   const [inviteRole, setInviteRole] = useState("member");
+  const [inviteRecipient, setInviteRecipient] = useState("");
   const [inviteResult, setInviteResult] = useState<{ url: string; expiresAt: number } | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [sessions, setSessions] = useState<Login[]>([]);
@@ -259,11 +260,16 @@ export function AccountPanel({
             "invitations/accept",
             { token: invitation }
           );
-          if (accepted.space) await request("spaces/select", { spaceId: accepted.space.id });
           clearInvitation();
           setInvitation("");
           setNotice("邀请已接受");
-          if (accepted.space) location.reload();
+          if (accepted.space) {
+            const url = new URL(location.href);
+            url.searchParams.set("space", accepted.space.id);
+            for (const key of ["session", "zionSession"]) url.searchParams.delete(key);
+            url.hash = "";
+            location.assign(url);
+          }
         })}>
           <Check size={15} aria-hidden="true" />
           接受
@@ -364,13 +370,17 @@ export function AccountPanel({
         <div className="zion-account-section-heading">
           <div><h2>团队成员</h2><p>{members.length} 位成员</p></div>
           <div className="zion-account-invite-controls">
+            <input aria-label="联系人代码或已验证邮箱" placeholder="联系人代码或已验证邮箱" value={inviteRecipient}
+              disabled={busy} onChange={event => setInviteRecipient(event.target.value)} />
             <select value={inviteRole} disabled={busy} aria-label="邀请角色"
               onChange={event => setInviteRole(event.target.value)}>
-              {Object.entries(roles).filter(([role]) => role !== "owner").map(([value, label]) =>
+              {Object.entries(roles).filter(([role]) => role !== "owner" && (role !== "admin" || me.membership?.role === "owner")).map(([value, label]) =>
                 <option key={value} value={value}>{label}</option>)}
             </select>
-            <button className="zion-account-button" disabled={busy} onClick={() => void perform(async () => {
-              setInviteResult(await request("invitations", { role: inviteRole }));
+            <button className="zion-account-button" disabled={busy || !inviteRecipient.trim()} onClick={() => void perform(async () => {
+              const recipient = inviteRecipient.trim();
+              setInviteResult(await request("invitations", { role: inviteRole,
+                ...(recipient.includes("@") ? { email: recipient } : { userId: recipient }) }));
             })}>
               <UserPlus size={15} aria-hidden="true" />
               邀请

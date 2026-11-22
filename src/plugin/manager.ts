@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../runtime/workbench-space";
 /**
  * 插件管理器
  * 负责插件的安装、卸载、启用、禁用等管理功能

@@ -138,11 +138,13 @@ export async function rebuildModelCatalog({ forceRuntime = false } = {}) {
 
   // Installed account model providers have no browser network client. Their
   // immutable profiles are selected through the same Runtime dialog.
-  for (const profile of (runtimeProfiles || []).filter((p) => p.metadata?.source === "account-extension")) {
+  for (const profile of (runtimeProfiles || []).filter((p) => ["account-extension", "account-share"].includes(p.metadata?.source))) {
     const config = mergeRuntimeModelProfileConfig(null, profile);
     models.push(applyModelAvailability({
       providerId: profile.providerId, id: profile.model, label: profile.label || profile.model,
-      runtimeProfileId: profile.id, accountExtension: true, stream: profile.supportsStreaming,
+      runtimeProfileId: profile.id, accountExtension: profile.metadata?.source === "account-extension",
+      sharedModel: profile.metadata?.source === "account-share", providerName: profile.metadata?.providerName || "",
+      stream: profile.supportsStreaming,
       credentialConfigured: profile.credentialConfigured === true,
       requiresConfig: profile.credentialConfigured !== true,
       configReason: profile.credentialConfigured === true ? "" : "connection_required",

@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage, sharedWorkbenchDocument, sharedDocumentEditable } from "../../src/runtime/workbench-space";
 import { ChangeSet, Compartment, EditorState, Prec, Transaction } from "@codemirror/state";
 import { diffChars } from "diff";
 import { EditorView } from "@codemirror/view";
@@ -36,13 +37,20 @@ const COLLABORATION_RUN_PROJECTION_KEY = "runProjection";
 const COLLABORATION_PROTOCOL = "6";
 const PENDING_COMMIT_GRACE_MS = 5_000;
 
-function websocketUrl(baseUrl, clientId) {
+function websocketUrl(baseUrl, clientId, sessionId) {
   const url = new globalThis.URL(String(baseUrl || ""));
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/v1/collaboration";
   url.search = "";
   url.searchParams.set("client_id", String(clientId || ""));
   url.searchParams.set("protocol", COLLABORATION_PROTOCOL);
+  const spaceId = currentAccountSession()?.space?.id;
+  if (spaceId) url.searchParams.set("space", spaceId);
+  const document = sharedWorkbenchDocument(sessionId);
+  if (document) {
+    url.searchParams.set("content_space", document.originSpaceId);
+    url.searchParams.set("content_document", document.documentId);
+  }
   return url.toString();
 }
 
@@ -123,7 +131,7 @@ export function createSessionCollaborationManager({
   clientId = "",
   runtimeConfig = readWorkbenchRuntimeConfig({
     state: zion?.state,
-    storage: globalThis.localStorage
+    storage: localStorage
   }),
   createDocument = () => new Y.Doc(),
   createProvider,
@@ -708,6 +716,7 @@ export function createSessionCollaborationManager({
       record.runProjections.unobserve(record.onRunProjectionChange);
     } catch {}
     try { record.provider.destroy(); } catch {}
+    zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
     try { record.persistence?.destroy?.(); } catch {}
     try { record.document.destroy(); } catch {}
     for (const view of record.views) cancelConversationViewportFollow(view);
@@ -744,19 +753,42 @@ export function createSessionCollaborationManager({
     const providerSynced = new Promise((resolve) => {
       resolveProviderSynced = resolve;
     });
+    let awarenessPeers = "";
+    let authorizedScope, authenticationFailed = false, connected = false;
+    const requiresAccountAuthorization = !!currentAccountSession() || !!sharedWorkbenchDocument(sessionId);
+    const isEditable = () => sharedDocumentEditable(sessionId) && !authenticationFailed
+      && (!requiresAccountAuthorization || connected && authorizedScope === "read-write");
+    const applyCapability = () => {
+      for (const view of record?.views || []) view.dispatch({
+        effects: record.readonlyCompartments?.get(view)?.reconfigure([
+          EditorState.readOnly.of(!isEditable()), EditorView.editable.of(isEditable())
+        ]) || []
+      });
+    };
     const provider = providerFactory({
-      url: websocketUrl(runtimeConfig.baseUrl, clientId),
-      name: sessionId,
+      url: websocketUrl(runtimeConfig.baseUrl, clientId, sessionId),
+      name: sharedWorkbenchDocument(sessionId)?.documentId || sessionId,
       document,
       token: "",
       flushDelay: 25,
       onStatus({ status }) {
-        if (record) record.connected = status === "connected";
+        zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
+        connected = status === "connected";
+        if (!connected) authorizedScope = undefined;
+        if (record) record.connected = connected;
+        applyCapability();
         collaborationState(zion, sessionId, {
           connected: status === "connected",
           ...(status === "connected" ? {} : { synced: false }),
           status
         });
+      },
+      onAuthenticated({ scope }) {
+        authorizedScope = scope;
+        authenticationFailed = false;
+        connected = true;
+        if (record) record.connected = true;
+        applyCapability();
       },
       onUnsyncedChanges({ number }) {
         collaborationState(zion, sessionId, { pendingChanges: Number(number) || 0 });
@@ -766,15 +798,31 @@ export function createSessionCollaborationManager({
         });
       },
       onSynced() {
-        if (record) record.connected = true;
+        zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
+        if (authenticationFailed) return;
+        if (!requiresAccountAuthorization) connected = true;
+        if (record) record.connected = connected;
+        applyCapability();
         resolveProviderSynced();
         collaborationState(zion, sessionId, {
-          connected: true,
+          connected,
           synced: record?.ready === true,
           error: null
         });
       },
+      onAwarenessChange({ states = [] }) {
+        // Cursor movement is frequent; only membership changes invalidate the header.
+        const next = states.map(state => state.clientId).sort((a, b) => a - b).join(",");
+        if (awarenessPeers !== next) {
+          awarenessPeers = next;
+          zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
+        }
+      },
       onAuthenticationFailed({ reason }) {
+        zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
+        authenticationFailed = true; connected = false; authorizedScope = undefined;
+        if (record) record.connected = false;
+        applyCapability();
         collaborationState(zion, sessionId, {
           connected: false,
           synced: false,
@@ -812,6 +860,7 @@ export function createSessionCollaborationManager({
       cards,
       runProjections,
       provider,
+      isEditable,
       persistence,
       providerSynced,
       onTextChange,
@@ -821,7 +870,7 @@ export function createSessionCollaborationManager({
       draftCleanups: new Set(),
       appliedDrafts: new Set(),
       ready: false,
-      connected: true,
+      connected,
       references: 1
     };
     records.set(sessionId, record);
@@ -864,6 +913,13 @@ export function createSessionCollaborationManager({
       )
     );
     const record = acquire(sessionId);
+    record.readonlyCompartments ||= new Map();
+    const readonly = new Compartment();
+    record.readonlyCompartments.set(view, readonly);
+    editor.addVisualExtension?.(readonly.of([
+      EditorState.readOnly.of(!record.isEditable()),
+      EditorView.editable.of(record.isEditable())
+    ]));
     record.views.add(view);
     initializeConversationViewport(view, {
       sessionId,
@@ -884,7 +940,7 @@ export function createSessionCollaborationManager({
     } catch {}
     const draftKey = `zion.collaboration.draft:${encodeURIComponent(runtimeConfig.baseUrl)}:${identity?.user?.id || "local"}:${identity?.space?.id || "local"}:${encodeURIComponent(sessionId)}:${draftClientId}`;
     try {
-      const saved = JSON.parse(globalThis.localStorage?.getItem(draftKey) || "null");
+      const saved = JSON.parse(localStorage?.getItem(draftKey) || "null");
       if (saved?.text && saved.text !== baseline) {
         restoreDraft = saved;
         zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, saved);
@@ -900,14 +956,14 @@ export function createSessionCollaborationManager({
     const saveDraft = () => {
       const draft = { baseline, text: view.state.doc.toString(), savedAt: Date.now() };
       zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, draft);
-      try { globalThis.localStorage?.setItem(draftKey, JSON.stringify(draft)); } catch {}
+      try { localStorage?.setItem(draftKey, JSON.stringify(draft)); } catch {}
     };
     const clearAcknowledgedDraft = () => {
       if (disposed || !bound || restoreDraft || view.state.doc.toString() !== record.text.toString()) return;
       try {
-        const saved = JSON.parse(globalThis.localStorage?.getItem(draftKey) || "null");
+        const saved = JSON.parse(localStorage?.getItem(draftKey) || "null");
         if (saved?.text !== record.text.toString()) return;
-        globalThis.localStorage?.removeItem(draftKey);
+        localStorage?.removeItem(draftKey);
         zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, undefined);
       } catch {}
     };
@@ -1020,7 +1076,7 @@ export function createSessionCollaborationManager({
       bound = true;
       delete view.dom.dataset.zionCollaborationPending;
       if (pendingChanges.empty && !restoreDraft) {
-        try { globalThis.localStorage?.removeItem(draftKey); } catch {}
+        try { localStorage?.removeItem(draftKey); } catch {}
       }
       try { view.dom.dataset.zionCollaborationBound = "true"; } catch {}
       view.dispatch({
@@ -1035,7 +1091,7 @@ export function createSessionCollaborationManager({
         )
       });
       record.ready = true;
-      if (!record.runProjections.size && !zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming) {
+      if (record.isEditable() && !record.runProjections.size && !zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming) {
         appendConversationDraft(view);
       }
       zion?.state?.set?.(`sessions.doc.${sessionId}`, record.text.toString());
@@ -1047,8 +1103,8 @@ export function createSessionCollaborationManager({
         }
       }
       record.provider.awareness?.setLocalStateField?.("user", {
-        id: clientId,
-        name: "Workbench"
+        id: currentAccountSession()?.user?.id || clientId,
+        name: currentAccountSession()?.user?.name || "Workbench"
       });
       collaborationState(zion, sessionId, {
         connected: true,

@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 /**
  * Terminal Enhanced Panel with PTY WebSocket + xterm.js
  */

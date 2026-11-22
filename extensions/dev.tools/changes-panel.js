@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   buildDiffRows,
   normalizeToolArgs,
@@ -845,7 +846,7 @@ function formatDiffCount(value) {
 
 function loadChangesPreference(key, fallback) {
   try {
-    const raw = window.localStorage?.getItem?.(`zion:changes:${key}`);
+    const raw = localStorage?.getItem?.(`zion:changes:${key}`);
     if (raw == null) return fallback;
     return raw === "true";
   } catch {
@@ -854,7 +855,7 @@ function loadChangesPreference(key, fallback) {
 }
 
 function saveChangesPreference(key, value) {
-  try { window.localStorage?.setItem?.(`zion:changes:${key}`, value ? "true" : "false"); } catch {}
+  try { localStorage?.setItem?.(`zion:changes:${key}`, value ? "true" : "false"); } catch {}
 }
 
 function menuButton(label, onClick, tone = "") {

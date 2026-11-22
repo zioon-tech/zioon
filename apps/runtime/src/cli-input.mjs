@@ -31,6 +31,10 @@ export const CHAT_COMMANDS = [
   ["/attach", "Follow the current or a specific Run"],
   ["/resume", "Resume an interrupted Run"],
   ["/status", "Connection and model"],
+  ["/share", "Create a viewer|editor invitation for this conversation"],
+  ["/shares", "Received shares; /shares sent shows invitations and access"],
+  ["/accept", "Accept an invitation link after reviewing it"],
+  ["/shared", "Open shared content: /shared <share-id> [document-id]"],
   ["/exit", "Leave chat"]
 ];
 const MAX_INPUT = 64 * 1024;

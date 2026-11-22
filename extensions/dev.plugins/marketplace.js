@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { readWorkbenchRuntimeConfig } from "../../src/runtime/workbench-runtime-config.ts";
 import { createExtensionsClient } from "../../packages/runtime-client/src/extensions.mjs";
 

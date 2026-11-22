@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../../src/runtime/workbench-space";
 export function createSessionTreeModel(opts) {
   const warnStorageIssue = opts?.warnStorageIssue;
   const onPersist = opts?.onPersist;

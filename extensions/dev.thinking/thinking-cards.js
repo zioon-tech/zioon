@@ -16,6 +16,7 @@ import {
   scheduleConversationViewportFollow
 } from "../../src/chat/conversation-viewport.js";
 import { inlineWidgetSourceFacet } from "../../src/editor/inlineWidgets";
+import { zionIconHtml } from "../../src/ui/icons";
 
 function t(key, fallback, values) {
   const fullKey = `dev.thinking.${key}`;
@@ -23,7 +24,8 @@ function t(key, fallback, values) {
     const translated = window.zion?.i18n?.t?.(fullKey, values);
     if (translated && translated !== fullKey) return translated;
   } catch {}
-  return fallback;
+  return String(fallback).replace(/\{(\w+)\}/g, (token, name) =>
+    values?.[name] == null ? token : String(values[name]));
 }
 
 /**
@@ -324,18 +326,19 @@ function fmt(v, max = 1200) {
 }
 
 export class ThinkingCardWidget extends WidgetType {
-  constructor(id, text) {
+  constructor(id, text, options = {}) {
     super();
     this.id = id + ":card";
     this.text = text || "";
+    this.maxLength = options.readOnly ? Infinity : 5000;
   }
   eq(other) {
-    return other.id === this.id && other.text === this.text;
+    return other.id === this.id && other.text === this.text && other.maxLength === this.maxLength;
   }
   updateDOM(dom) {
     try {
       const pre = dom?.querySelector?.("pre");
-      if (pre) pre.textContent = fmt(this.text, 5000);
+      if (pre) pre.textContent = fmt(this.text, this.maxLength);
       return true;
     } catch {
       return false;
@@ -348,24 +351,25 @@ export class ThinkingCardWidget extends WidgetType {
 
       const header = document.createElement("div");
       header.className = "zion-thinking-card-header";
-      header.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span><span>${t("ui.thinking", "思考")}</span>`;
+      header.innerHTML = `${zionIconHtml("chevron-down", "", 14)}<span>${t("ui.thinking", "思考")}</span>`;
       wrap.appendChild(header);
 
     const body = document.createElement("pre");
     body.className = "zion-thinking-card-body";
-    body.textContent = fmt(this.text, 5000);
+    body.textContent = fmt(this.text, this.maxLength);
     wrap.appendChild(body);
     return wrap;
   }
 }
 
 export class ThinkingInlineWidget extends WidgetType {
-  constructor(id) {
+  constructor(id, options = {}) {
     super();
     this.id = id + ":inline";
+    this.readOnly = !!options.readOnly;
   }
   eq(other) {
-    return other.id === this.id;
+    return other.id === this.id && other.readOnly === this.readOnly;
   }
   toDOM(view) {
     const span = document.createElement("span");
@@ -380,7 +384,7 @@ export class ThinkingInlineWidget extends WidgetType {
     btn.type = "button";
     btn.title = t("ui.toggleContent", "展开/收起思考内容");
     btn.setAttribute("aria-label", t("ui.toggleContent", "展开/收起思考内容"));
-    btn.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span>`;
+    btn.innerHTML = zionIconHtml("chevron-down", "", 14);
     span.appendChild(btn);
 
     const txt = document.createElement("span");
@@ -389,7 +393,7 @@ export class ThinkingInlineWidget extends WidgetType {
     span.appendChild(txt);
 
     const renderedAt = Date.now();
-    const sessionId = getViewSessionId(view);
+    const sessionId = this.readOnly ? null : getViewSessionId(view);
     const state = window?.zion?.state;
     const latency = sessionId ? state?.get?.(`chat.latency.${sessionId}`) : null;
     if (latency?.runId && thinkingId.startsWith(`thinking:${latency.runId}:`)) {

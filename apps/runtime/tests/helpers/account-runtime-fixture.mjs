@@ -71,6 +71,22 @@ export async function startAccountRuntimeFixture({ directory, spaceId, idp, web 
       if (exited) throw new Error(`Runtime fixture exited:\n${output}`);
       const healthy = await fetch(`${url}/health`).then(response => response.ok).catch(() => false);
       if (healthy) {
+        const personal = await accounts.personalSpace(owner.id);
+        const credential = await accounts.createSession(owner.id, { activeSpaceId: spaceId });
+        const headers = { authorization: `Bearer ${credential.token}`, "x-zioon-space-id": spaceId,
+          "content-type": "application/json" };
+        const shared = await fetch(`${url}/v1/spaces/${encodeURIComponent(spaceId)}/capabilities`, {
+          method: "POST", headers, body: JSON.stringify({
+            kind: "model", originSpaceId: personal.id, originResourceId: "echo",
+            name: "Shared fixture model", transferApproved: true, audienceMode: "space"
+          })
+        });
+        if (!shared.ok) throw new Error(`Fixture model share failed: ${await shared.text()}\n${output}`);
+        const { capability } = await shared.json();
+        const selected = await fetch(`${url}/v1/spaces/${encodeURIComponent(spaceId)}`, {
+          method: "PATCH", headers, body: JSON.stringify({ expectedRevision: 1, defaultBindingId: capability.id })
+        });
+        if (!selected.ok) throw new Error(`Fixture default model failed: ${await selected.text()}`);
         return {
           url,
           accounts,

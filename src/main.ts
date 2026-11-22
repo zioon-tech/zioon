@@ -2,6 +2,9 @@ import "katex/dist/katex.min.css";
 // Vite: eagerly bundle extension CSS (extracted from src/styles.css)
 import.meta.glob(["/extensions/**/styles.css", "!/extensions/dev.identity/styles.css"], { eager: true });
 import { EditorCore, type VimOperationalMode } from "./editor/EditorCore";
+import { applyEditorCorePreferences, createEditorPanelSurface } from "./editor/editor-panel-surface";
+import { applyDisplayPresentation, readDisplayPreference, DISPLAY_STATE_KEYS, subscribeDisplayPreferences } from "./editor/display-preferences";
+import { subscribeVimOperationalMode } from "./editor/vim-coordination";
 import "./pwa-test";
 import { attachEditor, detachEditor, listAttachedEditorCores, setActiveEditorPanel } from "./ext/registry";
 import type { Disposable } from "./types/zion";
@@ -20,6 +23,9 @@ import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { installZionIcons, zionIconHtml } from "./ui/icons";
+import { mountEditorHeaderOutlineButton, mountEditorHeaderSplitMenu } from "./ui/editor-header";
+import { mountEditorHeaderMenu, type EditorHeaderMenuItem } from "./ui/editor-header-menu";
+import { editorCoreMenuItems } from "./ui/editor-display-contributions.js";
 import { reconcileKeyedElements } from "./ui/keyed-elements";
 import { createRunLogViewDefinition } from "./ui/run-log-view";
 import {
@@ -28,6 +34,7 @@ import {
 } from "./settings/serviceBaseUrl";
 import { registerRemoteAccessSettings } from "./settings/RemoteAccessSettings";
 import { registerAccountSettings } from "./settings/AccountSettings";
+import { createEditorAppearancePage } from "./settings/editor-appearance";
 import { PanelManager, SessionSync, createPanelDomShell } from "./panel";
 import { createChatAnnotationsApi } from "./chat/annotations";
 import { parseMessages } from "./chat/doc";
@@ -37,6 +44,10 @@ import { createThemeManager } from "./theme/themeManager";
 import { createI18nManager } from "./i18n/i18nManager";
 import { ensureWorkbenchRuntimeAccess } from "./runtime/workbench-access";
 import { accountCan } from "../packages/account-ui/src/client";
+import { workbenchStorage as localStorage } from "./runtime/workbench-space";
+import { mountSharingWorkbench } from "./ui/workbench/SharingWorkbench";
+import { mountEditorParticipants } from "./ui/workbench/EditorParticipants";
+import { mountSharedDocument } from "./ui/workbench/SharedDocument";
 import {
   readWorkbenchRuntimeConfig,
   runtimeDeviceServiceBaseUrl
@@ -65,6 +76,11 @@ const STORAGE_KEY = 'zion.autosave';
 const PANEL_WORKSPACE_STORAGE_KEY = "zion.panelWorkspace.v1";
 const EDITOR_PATH_RENAME_FALLBACK_KEY = "__fallback__";
 const editorPathInlineRenameHandlers = new Map<string, (opts?: any) => boolean>();
+const editorParticipants = new Map<string, ReturnType<typeof mountEditorParticipants>>();
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  for (const mounted of editorParticipants.values()) mounted.dispose();
+  editorParticipants.clear();
+});
 
 /** 读回上次的内容 */
 function loadLastDoc(): string {
@@ -756,27 +772,8 @@ function mountEditorHeaderNewSessionButton(pathEl: HTMLElement) {
 
 function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
   try {
-    const headerEl = pathEl.parentElement;
-    if (!headerEl) return;
-
-    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-toc-button='1']");
-    const isNew = !btn;
-    if (!btn) {
-      btn = document.createElement("button");
-      btn.type = "button";
-    }
-
-    // 应用与 session-manager 一致的按钮样式
-    btn.className = "zion-editor-header-action is-icon zion-editor-toc-button";
-    btn.innerHTML = zionIconHtml("list-tree");
-    btn.title = "目录";
-    btn.setAttribute("aria-label", "目录");
-    btn.setAttribute("data-zion-editor-toc-button", "1");
-    
-    btn.onclick = (e) => {
-      try {
-        e.stopPropagation();
-      } catch {}
+    if (!pathEl.parentElement) return;
+    mountEditorHeaderOutlineButton(pathEl, () => {
       try {
         const panelId = pathEl.closest("[data-panel-id]")?.getAttribute("data-panel-id") || null;
         if (panelId) {
@@ -784,9 +781,7 @@ function mountEditorHeaderTOCButton(pathEl: HTMLElement) {
         }
         window.zion.commands.executeCommand("toc.show");
       } catch {}
-    };
-
-    if (isNew) headerEl.insertBefore(btn, pathEl);
+    });
   } catch {}
 }
 
@@ -1590,18 +1585,6 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
   } catch {}
 }
 
-type EditorHeaderMenuItem = {
-  id: string;
-  title?: string;
-  section?: string;
-  order?: number;
-  kind?: "action" | "toggle" | "separator";
-  command?: string;
-  args?: any[];
-  onClick?: () => void;
-  getChecked?: () => boolean;
-};
-
 function getEditorHeaderMenuRegistry() {
   const z = window.zion as any;
   if (z.__editorHeaderMenuRegistry) return z.__editorHeaderMenuRegistry as {
@@ -1639,224 +1622,13 @@ function exposeEditorHeaderMenuApi() {
   } catch {}
 }
 
-function mountEditorHeaderSettingsMenu(pathEl: HTMLElement) {
-  try {
-    const headerEl = pathEl.parentElement;
-    if (!headerEl) return;
-
-    const registry = getEditorHeaderMenuRegistry();
-
-    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-settings-menu-button='1']");
-    const isNew = !btn;
-    if (!btn) {
-      btn = document.createElement("button");
-      btn.type = "button";
-    }
-
-    btn.className = "zion-editor-header-action is-icon zion-editor-settings-menu-button";
-    btn.innerHTML = zionIconHtml("more-horizontal");
-    btn.title = "设置";
-    btn.setAttribute("aria-label", "设置");
-    btn.setAttribute("data-zion-editor-settings-menu-button", "1");
-    btn.style.marginRight = "0";
-
-    let menuEl: HTMLDivElement | null = null;
-    let cleanup: (() => void) | null = null;
-    let collapsedSections: Record<string, boolean> = {};
-    const COLLAPSE_KEY = "zion.editorHeaderMenu.collapsedSections";
-
-    const closeMenu = () => {
-      try { cleanup?.(); } catch {}
-      cleanup = null;
-      try { menuEl?.remove(); } catch {}
-      menuEl = null;
-    };
-
-    const loadCollapsed = () => {
-      try {
-        const raw = localStorage.getItem(COLLAPSE_KEY);
-        if (!raw) return;
-        const v = JSON.parse(raw);
-        if (v && typeof v === "object") collapsedSections = v;
-      } catch {}
-    };
-
-    const persistCollapsed = () => {
-      try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedSections)); } catch {}
-    };
-
-    const positionMenu = () => {
-      if (!menuEl) return;
-      const r = btn!.getBoundingClientRect();
-      const mw = menuEl.offsetWidth || 200;
-      const mh = menuEl.offsetHeight || 120;
-      const pad = 8;
-      const vw = window.innerWidth || 0;
-      const vh = window.innerHeight || 0;
-      let left = Math.round(r.right - mw);
-      let top = Math.round(r.bottom + 6);
-      left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
-      if (top + mh + pad > vh) {
-        const above = Math.round(r.top - 6 - mh);
-        if (above >= pad) top = above;
-      }
-      top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
-      menuEl.style.left = `${left}px`;
-      menuEl.style.top = `${top}px`;
-    };
-
-    const renderMenu = () => {
-      if (!menuEl) return;
-      menuEl.innerHTML = "";
-      const items = registry.list();
-      if (items.length === 0) {
-        const row = document.createElement("div");
-        row.className = "zion-context-menu-row";
-        const it = document.createElement("button");
-        it.className = "zion-context-menu-item";
-        it.type = "button";
-        it.textContent = "暂无设置项";
-        it.style.opacity = "0.7";
-        it.style.cursor = "default";
-        row.appendChild(it);
-        menuEl.appendChild(row);
-        return;
-      }
-
-      const filtered = items.filter(it => it && it.kind !== "separator");
-
-      const groups = new Map<string, EditorHeaderMenuItem[]>();
-      for (const it of filtered) {
-        const sec = String(it.section || "Other").trim() || "Other";
-        if (!groups.has(sec)) groups.set(sec, []);
-        groups.get(sec)!.push(it);
-      }
-
-      const sectionOrderHint = ["Editor", "Layout", "Chat", "Export", "Other"];
-      const sections = Array.from(groups.keys()).sort((a, b) => {
-        const ai = sectionOrderHint.indexOf(a);
-        const bi = sectionOrderHint.indexOf(b);
-        if (ai !== -1 || bi !== -1) {
-          if (ai === -1) return 1;
-          if (bi === -1) return -1;
-          return ai - bi;
-        }
-        return a.localeCompare(b);
-      });
-
-      for (const sec of sections) {
-        const secItems = (groups.get(sec) || []).slice().sort((a, b) => {
-          const ao = typeof a.order === "number" ? a.order : 50;
-          const bo = typeof b.order === "number" ? b.order : 50;
-          if (ao !== bo) return ao - bo;
-          return String(a.id).localeCompare(String(b.id));
-        });
-
-        const collapsed = !!collapsedSections[sec];
-        const secRow = document.createElement("div");
-        secRow.className = "zion-context-menu-row";
-        const secBtn = document.createElement("button");
-        secBtn.className = "zion-context-menu-item zion-editor-header-menu-section";
-        secBtn.type = "button";
-        secBtn.title = sec;
-        secBtn.innerHTML = `<span class="zion-editor-header-menu-section-content">${zionIconHtml(collapsed ? "chevron-right" : "chevron-down", "zion-editor-header-menu-chevron zion-icon-sm")}<span class="zion-editor-header-menu-section-title">${sec}</span></span>`;
-        secBtn.onclick = (e) => {
-          try { e.stopPropagation(); } catch {}
-          collapsedSections[sec] = !collapsed;
-          persistCollapsed();
-          try { renderMenu(); positionMenu(); } catch {}
-        };
-        secRow.appendChild(secBtn);
-        menuEl.appendChild(secRow);
-
-        if (collapsed) continue;
-
-        for (const item of secItems) {
-          const checked = item.kind === "toggle" ? !!item.getChecked?.() : false;
-
-          const row = document.createElement("div");
-          row.className = "zion-context-menu-row";
-          const it = document.createElement("button");
-          it.className = "zion-context-menu-item zion-editor-header-menu-item";
-          it.type = "button";
-
-          const label = String(item.title || item.id);
-          it.title = label;
-          const boxClass =
-            item.kind === "toggle"
-              ? `is-toggle${checked ? " is-checked" : ""}`
-              : "is-placeholder";
-          it.innerHTML = `<span class="zion-editor-header-menu-item-content"><span class="zion-editor-header-menu-item-left"><span class="zion-editor-header-menu-item-title">${label}</span></span><span class="zion-editor-header-menu-item-state ${boxClass}">${zionIconHtml("check", "zion-icon-sm")}</span></span>`;
-
-          it.onclick = (e) => {
-            try { e.stopPropagation(); } catch {}
-            try {
-              if (typeof item.onClick === "function") item.onClick();
-              else if (item.command) window.zion.commands.executeCommand(item.command, ...(Array.isArray(item.args) ? item.args : []));
-            } catch {}
-            try { renderMenu(); positionMenu(); } catch {}
-          };
-          row.appendChild(it);
-          menuEl.appendChild(row);
-        }
-      }
-    };
-
-    const openMenu = () => {
-      if (menuEl) return;
-      loadCollapsed();
-      const menu = document.createElement("div");
-      menu.className = "zion-context-menu zion-editor-header-menu";
-      menu.style.position = "fixed";
-      menu.style.zIndex = "99999";
-      menu.style.maxWidth = "280px";
-      menu.style.width = "min(280px, calc(100vw - 16px))";
-      menu.style.maxHeight = "70vh";
-      menu.style.overflowY = "auto";
-      document.body.appendChild(menu);
-      menuEl = menu;
-      renderMenu();
-      positionMenu();
-
-      const escHandler = (ev: KeyboardEvent) => {
-        if (ev.key === "Escape") closeMenu();
-      };
-      const clickAway = (ev: MouseEvent) => {
-        try {
-          const t = ev.target as Node | null;
-          if (!t) return closeMenu();
-          if (menuEl && menuEl.contains(t)) return;
-          if (btn && btn.contains(t)) return;
-          closeMenu();
-        } catch {
-          closeMenu();
-        }
-      };
-      const resizeHandler = () => {
-        try { renderMenu(); positionMenu(); } catch {}
-      };
-
-      document.addEventListener("keydown", escHandler);
-      document.addEventListener("mousedown", clickAway, true);
-      window.addEventListener("resize", resizeHandler, { passive: true });
-
-      cleanup = () => {
-        document.removeEventListener("keydown", escHandler);
-        document.removeEventListener("mousedown", clickAway, true);
-        window.removeEventListener("resize", resizeHandler as any);
-      };
-    };
-
-    btn.onclick = (e) => {
-      try { e.stopPropagation(); } catch {}
-      if (menuEl) closeMenu();
-      else openMenu();
-    };
-
-    if (isNew) {
-      headerEl.appendChild(btn);
-    }
-  } catch {}
+function mountEditorHeaderSettingsMenu(pathEl: HTMLElement, panelId = "panel-0") {
+  if (!pathEl.parentElement) return;
+  return mountEditorHeaderMenu(pathEl.parentElement, {
+    list: () => getEditorHeaderMenuRegistry().list(),
+    context: () => ({ panelId, sessionId: window.zion?.panels?.list?.().find(panel => panel.id === panelId)?.activeTabId || "" }),
+    execute: (command, ...args) => window.zion.commands.executeCommand(command, ...args)
+  });
 }
 
 function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement, panelId?: string | null) {
@@ -1999,25 +1771,7 @@ function mountEditorHeaderSessionRenameButton(pathEl: HTMLElement, panelId?: str
 
 function mountEditorHeaderSplitMenuButton(pathEl: HTMLElement) {
   try {
-    const headerEl = pathEl.parentElement;
-    if (!headerEl) return;
-
-    let btn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-split-menu-button='1']");
-    const isNew = !btn;
-    if (!btn) {
-      btn = document.createElement("button");
-      btn.type = "button";
-    }
-
-    btn.className = "zion-editor-header-action is-icon zion-editor-split-menu-button";
-    btn.innerHTML = zionIconHtml("columns-2");
-    btn.title = "分屏";
-    btn.setAttribute("aria-label", "分屏");
-    btn.setAttribute("data-zion-editor-split-menu-button", "1");
-
-    let menuEl: HTMLDivElement | null = null;
-    let cleanup: (() => void) | null = null;
-
+    if (!pathEl.parentElement) return;
     const resolvePanelId = () => {
       try {
         return pathEl.closest("[data-panel-id]")?.getAttribute("data-panel-id")
@@ -2028,114 +1782,11 @@ function mountEditorHeaderSplitMenuButton(pathEl: HTMLElement) {
       }
     };
 
-    const closeMenu = () => {
-      try { cleanup?.(); } catch {}
-      cleanup = null;
-      try { menuEl?.remove(); } catch {}
-      menuEl = null;
-    };
-
-    const positionMenu = () => {
-      if (!menuEl) return;
-      const r = btn!.getBoundingClientRect();
-      const mw = menuEl.offsetWidth || 180;
-      const mh = menuEl.offsetHeight || 96;
-      const pad = 8;
-      const vw = window.innerWidth || 0;
-      const vh = window.innerHeight || 0;
-      let left = Math.round(r.right - mw);
-      let top = Math.round(r.bottom + 6);
-      left = Math.max(pad, Math.min(left, Math.max(pad, vw - mw - pad)));
-      if (top + mh + pad > vh) {
-        const above = Math.round(r.top - 6 - mh);
-        if (above >= pad) top = above;
-      }
-      top = Math.max(pad, Math.min(top, Math.max(pad, vh - mh - pad)));
-      menuEl.style.left = `${left}px`;
-      menuEl.style.top = `${top}px`;
-    };
-
-    const split = (direction: "horizontal" | "vertical") => {
+    mountEditorHeaderSplitMenu(pathEl, direction => {
       const panelId = resolvePanelId();
       try { window.zion?.panels?.focus?.(panelId); } catch {}
       try { window.zion?.panels?.split?.(direction, panelId); } catch {}
-    };
-
-    const openMenu = () => {
-      if (menuEl) return;
-      const menu = document.createElement("div");
-      menu.className = "zion-context-menu zion-editor-header-session-menu zion-editor-header-split-menu";
-      menu.style.position = "fixed";
-      menu.style.zIndex = "99999";
-      menu.style.minWidth = "180px";
-      document.body.appendChild(menu);
-      menuEl = menu;
-
-      const addItem = (label: string, title: string, onClick: () => void) => {
-        const row = document.createElement("div");
-        row.className = "zion-context-menu-row";
-        const it = document.createElement("button");
-        it.className = "zion-context-menu-item";
-        it.type = "button";
-        it.textContent = label;
-        it.title = title;
-        it.onclick = (e) => {
-          try { e.stopPropagation(); } catch {}
-          try { onClick(); } catch {}
-          closeMenu();
-        };
-        row.appendChild(it);
-        menu.appendChild(row);
-      };
-
-      addItem("向右分屏", "在右侧打开当前会话的新分屏", () => split("horizontal"));
-      addItem("向下分屏", "在下方打开当前会话的新分屏", () => split("vertical"));
-
-      positionMenu();
-
-      const escHandler = (ev: KeyboardEvent) => {
-        if (ev.key === "Escape") closeMenu();
-      };
-      const clickAway = (ev: MouseEvent) => {
-        try {
-          const t = ev.target as Node | null;
-          if (!t) return closeMenu();
-          if (menuEl && menuEl.contains(t)) return;
-          if (btn && btn.contains(t)) return;
-          closeMenu();
-        } catch {
-          closeMenu();
-        }
-      };
-      const resizeHandler = () => {
-        try { positionMenu(); } catch {}
-      };
-
-      document.addEventListener("keydown", escHandler);
-      document.addEventListener("mousedown", clickAway, true);
-      window.addEventListener("resize", resizeHandler, { passive: true });
-
-      cleanup = () => {
-        document.removeEventListener("keydown", escHandler);
-        document.removeEventListener("mousedown", clickAway, true);
-        window.removeEventListener("resize", resizeHandler as any);
-      };
-    };
-
-    btn.onclick = (e) => {
-      try {
-        e.stopPropagation();
-        e.preventDefault();
-      } catch {}
-      if (menuEl) closeMenu();
-      else openMenu();
-    };
-
-    if (isNew) {
-      const settingsBtn = headerEl.querySelector<HTMLButtonElement>("button[data-zion-editor-settings-menu-button='1']");
-      if (settingsBtn) headerEl.insertBefore(btn, settingsBtn);
-      else headerEl.appendChild(btn);
-    }
+    });
   } catch {}
 }
 
@@ -3430,6 +3081,7 @@ function mountPanelSessionTabsBar(
 async function bootstrap() {
   const host = document.getElementById("app")!;
   host.innerHTML = "";
+  if (mountSharedDocument(host)) return;
   await ensureWorkbenchRuntimeAccess(host);
   host.innerHTML = "";
   const runtimeHostedWorkbench =
@@ -3699,7 +3351,7 @@ async function bootstrap() {
       : loadLastDoc();
   const initialDoc = cached || "";
 
-  const core = new EditorCore(editorContainer, initialDoc, "panel-0");
+  const core = createEditorPanelSurface(editorContainer, initialDoc, "panel-0").core;
   try { core.setSessionId(initialSessionId); } catch {}
   panelCores.set("panel-0", core);
   const initialProxy = attachEditor(core, "panel-0");
@@ -3966,7 +3618,7 @@ async function bootstrap() {
     }
     const hostEl = createEditorSlotHost(panelId, sessionId);
     panel.editorHostEl.appendChild(hostEl);
-    const slotCore = new EditorCore(hostEl, "", panelId);
+    const slotCore = createEditorPanelSurface(hostEl, "", panelId).core;
     try { slotCore.setSessionId(sessionId); } catch {}
     const proxy = attachEditor(slotCore, panelId);
     const slot = registerEditorSlot(panelId, sessionId, slotCore, proxy, hostEl, false);
@@ -4421,7 +4073,7 @@ async function bootstrap() {
       if (slotHost) panel.editorHostEl.appendChild(slotHost);
     } catch {}
     const editorInitialText = activeSessionId && seedText ? "" : seedText;
-    const nextCore = new EditorCore(slotHost || panel.editorHostEl, editorInitialText, panelId);
+    const nextCore = createEditorPanelSurface(slotHost || panel.editorHostEl, editorInitialText, panelId).core;
     try { nextCore.setSessionId(activeSessionId); } catch {}
     panelCores.set(panelId, nextCore);
     const nextProxy = attachEditor(nextCore, panelId);
@@ -4460,8 +4112,15 @@ async function bootstrap() {
     mountEditorHeaderTOCButton(panel.pathEl);
     mountEditorHeaderSessionRenameButton(panel.pathEl, panelId);
     mountEditorHeaderSplitMenuButton(panel.pathEl);
-    mountEditorHeaderSettingsMenu(panel.pathEl);
+    mountEditorHeaderSettingsMenu(panel.pathEl, panelId);
     mountPanelHeaderRunStopButton(panel.pathEl, panelId, () => panelManager.getEditor(panelId));
+    editorParticipants.set(panelId, mountEditorParticipants(panel.pathEl.parentElement!, {
+      sessionId: () => panelManager.getPanel(panelId)?.activeTabId,
+      subscribe: refresh => [
+        panelManager.on("panel/tabActivated", event => { if (event.panelId === panelId) refresh(); }),
+        window.zion.events.on("sessions/currentChanged", refresh)
+      ]
+    }));
     attachPanelScrollPersistence(panelId);
     if (!restoringPanelWorkspace) {
       try { nextProxy.focus(); } catch {}
@@ -4470,6 +4129,8 @@ async function bootstrap() {
     schedulePanelWorkspacePersist();
   });
   panelManager.on("panel/closed", ({ panelId }) => {
+    editorParticipants.get(panelId)?.dispose();
+    editorParticipants.delete(panelId);
     const closingCore = panelCores.get(panelId);
     const closingSlots = panelEditorSlots.get(panelId);
     if (closingSlots) {
@@ -4594,6 +4255,13 @@ async function bootstrap() {
   mountEditorHeaderSplitMenuButton(editorHeaderPathEl);
   mountEditorHeaderSettingsMenu(editorHeaderPathEl);
   mountPanelHeaderRunStopButton(editorHeaderPathEl, "panel-0", () => panelManager.getEditor("panel-0"));
+  editorParticipants.set("panel-0", mountEditorParticipants(editorHeaderPathEl.parentElement!, {
+    sessionId: () => panelManager.getPanel("panel-0")?.activeTabId,
+    subscribe: refresh => [
+      panelManager.on("panel/tabActivated", event => { if (event.panelId === "panel-0") refresh(); }),
+      window.zion.events.on("sessions/currentChanged", refresh)
+    ]
+  }));
   restorePanelWorkspaceWhenReady();
 
   try {
@@ -4907,33 +4575,14 @@ async function bootstrap() {
   } catch {}
 
   // WYSIWYG init + commands + status
-  let wysiwygEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.wysiwyg");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return true; // default ON
-    } catch {
-      return true;
-    }
-  })();
-  let wysiwygKeepActiveLineRendered: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.wysiwyg.keepActiveLineRendered");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return true; // default ON: focusing a line keeps rendered Markdown.
-    } catch {
-      return true;
-    }
-  })();
+  let wysiwygEnabled = !!readDisplayPreference("zion.wysiwyg");
+  let wysiwygKeepActiveLineRendered = !!readDisplayPreference("zion.wysiwyg.keepActiveLineRendered");
 
   const applyWysiwyg = (enabled: boolean) => {
     wysiwygEnabled = enabled;
     try {
       localStorage.setItem("zion.wysiwyg", enabled ? "1" : "0");
     } catch {}
-    forEachPanelCore((targetCore) => targetCore.setWysiwygEnabled(enabled));
     window.zion.state.set("ui.wysiwyg", enabled);
   };
   const applyWysiwygKeepActiveLineRendered = (enabled: boolean) => {
@@ -4941,7 +4590,6 @@ async function bootstrap() {
     try {
       localStorage.setItem("zion.wysiwyg.keepActiveLineRendered", enabled ? "1" : "0");
     } catch {}
-    forEachPanelCore((targetCore) => targetCore.setWysiwygKeepActiveLineRendered(enabled));
     window.zion.state.set("ui.wysiwyg.keepActiveLineRendered", enabled);
   };
 
@@ -4953,251 +4601,29 @@ async function bootstrap() {
   applyWysiwygKeepActiveLineRendered(wysiwygKeepActiveLineRendered);
   try {
     const reg = getEditorHeaderMenuRegistry();
-    reg.register({
-      id: "core.wysiwyg.headerMenu",
-      title: "WYSIWYG",
-      section: "Editor",
-      order: 16,
-      kind: "toggle",
-      getChecked: () => !!window.zion.state.get("ui.wysiwyg"),
-      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwyg")
-    });
-    reg.register({
-      id: "core.wysiwyg.keepActiveLineRendered.headerMenu",
-      title: "Keep Focused Line Rendered",
-      section: "Editor",
-      order: 16.1,
-      kind: "toggle",
-      getChecked: () => !!window.zion.state.get("ui.wysiwyg.keepActiveLineRendered"),
-      onClick: () => window.zion.commands.executeCommand("zion.toggleWysiwygKeepActiveLineRendered")
-    });
+    reg.register(editorCoreMenuItems(window.zion).find(item => item.id === "core.wysiwyg.headerMenu")!);;
+    reg.register(editorCoreMenuItems(window.zion).find(item => item.id === "core.wysiwyg.keepActiveLineRendered.headerMenu")!);;
   } catch {}
 
   // Editor runtime feature toggles (line numbers, active-line highlight, syntax highlight, auto-indent, folding)
-  let lineNumbersEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.lineNumbers");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return false;
-    } catch {
-      return false;
-    }
-  })();
-
-  let activeLineHighlightEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.activeLineHighlight");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return false;
-    } catch {
-      return false;
-    }
-  })();
-
-  let syntaxHighlightEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.syntaxHighlight");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return true;
-    } catch {
-      return true;
-    }
-  })();
-
-  let autoIndentEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.autoIndent");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return true;
-    } catch {
-      return true;
-    }
-  })();
-
-  let foldingEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.folding");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return false;
-    } catch {
-      return false;
-    }
-  })();
-
-  let lineWrapEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.lineWrap");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return true;
-    } catch {
-      return true;
-    }
-  })();
-
-  let vimModeEnabled: boolean = (() => {
-    try {
-      const v = localStorage.getItem("zion.vimMode");
-      if (v === "0" || v === "false") return false;
-      if (v === "1" || v === "true") return true;
-      return false;
-    } catch {
-      return false;
-    }
-  })();
+  let lineNumbersEnabled = !!readDisplayPreference("zion.lineNumbers");
+  let activeLineHighlightEnabled = !!readDisplayPreference("zion.activeLineHighlight");
+  let syntaxHighlightEnabled = !!readDisplayPreference("zion.syntaxHighlight");
+  let autoIndentEnabled = !!readDisplayPreference("zion.autoIndent");
+  let foldingEnabled = !!readDisplayPreference("zion.folding");
+  let lineWrapEnabled = !!readDisplayPreference("zion.lineWrap");
+  let vimModeEnabled = !!readDisplayPreference("zion.vimMode");
   let vimOperationalMode: VimOperationalMode = "normal";
-  const vimOperationalModeDisposers = new WeakMap<EditorCore, Disposable>();
-  let applyingGlobalVimOperationalMode = false;
-
-  type EditorFontFamilyPreset = "system-sans" | "system-mono" | "serif" | "custom";
-  const EDITOR_FONT_FAMILY_PRESETS = new Set<EditorFontFamilyPreset>(["system-sans", "system-mono", "serif", "custom"]);
-  const EDITOR_APPEARANCE_DEFAULTS = {
-    fontFamilyPreset: "system-sans" as EditorFontFamilyPreset,
-    customFontFamily: "",
-    fontSize: 13,
-    lineHeight: 1.6,
-    textColor: ""
-  };
-
-  const readStoredString = (key: string, fallback: string) => {
-    try {
-      const value = localStorage.getItem(key);
-      return value == null ? fallback : value;
-    } catch {
-      return fallback;
-    }
-  };
-
-  const parseNumberPreference = (value: unknown, fallback: number, min: number, max: number) => {
-    const n = typeof value === "number" ? value : Number(String(value ?? "").trim());
-    if (!Number.isFinite(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
-  };
-
-  const sanitizeFontFamily = (value: unknown) => {
-    const raw = String(value ?? "").trim().slice(0, 180);
-    if (!raw || /[;{}<>]/.test(raw) || /[\r\n]/.test(raw)) return "";
-    return raw;
-  };
-
-  const normalizeOptionalColor = (value: unknown) => String(value ?? "").trim().slice(0, 80);
-
-  const validateOptionalColor = (value: unknown) => {
-    const color = normalizeOptionalColor(value);
-    if (!color) return null;
-    try {
-      if (CSS.supports?.("color", color)) return null;
-    } catch {}
-    return "请输入有效的 CSS 颜色，例如 #d1d5db、rgb(209 213 219)；留空则跟随主题。";
-  };
-
-  const validateFontFamily = (value: unknown) => {
-    const raw = String(value ?? "");
-    if (!raw.trim()) return null;
-    if (raw.length > 180 || /[;{}<>]/.test(raw) || /[\r\n]/.test(raw)) {
-      return "字体名称只能包含字体族列表，不能包含 CSS 语句或换行。";
-    }
-    return null;
-  };
-
-  const validateNumberRange = (value: unknown, min: number, max: number, unitLabel: string) => {
-    const n = Number(String(value ?? "").trim());
-    if (!Number.isFinite(n)) return `请输入有效数字。`;
-    if (n < min || n > max) return `请输入 ${min} 到 ${max} ${unitLabel}之间的数值。`;
-    return null;
-  };
-
-  const normalizeFontFamilyPreset = (value: unknown): EditorFontFamilyPreset => {
-    const raw = String(value ?? "");
-    return EDITOR_FONT_FAMILY_PRESETS.has(raw as EditorFontFamilyPreset)
-      ? raw as EditorFontFamilyPreset
-      : EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset;
-  };
-
-  let editorFontFamilyPreset = normalizeFontFamilyPreset(readStoredString("zion.editor.fontFamilyPreset", EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset));
-  let editorCustomFontFamily = sanitizeFontFamily(readStoredString("zion.editor.customFontFamily", EDITOR_APPEARANCE_DEFAULTS.customFontFamily));
-  let editorFontSize = parseNumberPreference(readStoredString("zion.editor.fontSize", String(EDITOR_APPEARANCE_DEFAULTS.fontSize)), EDITOR_APPEARANCE_DEFAULTS.fontSize, 10, 24);
-  let editorLineHeight = parseNumberPreference(readStoredString("zion.editor.lineHeight", String(EDITOR_APPEARANCE_DEFAULTS.lineHeight)), EDITOR_APPEARANCE_DEFAULTS.lineHeight, 1.2, 2.4);
-  let editorTextColor = normalizeOptionalColor(readStoredString("zion.editor.textColor", EDITOR_APPEARANCE_DEFAULTS.textColor));
-
-  const getEditorFontFamilyCss = () => {
-    if (editorFontFamilyPreset === "system-mono") return "var(--font-mono)";
-    if (editorFontFamilyPreset === "serif") return "Georgia, 'Times New Roman', 'Noto Serif SC', 'Songti SC', serif";
-    if (editorFontFamilyPreset === "custom") return editorCustomFontFamily || "var(--font-sans)";
-    return "var(--font-sans)";
-  };
+  subscribeVimOperationalMode(mode => {
+    vimOperationalMode = mode;
+    window.zion.state.set("ui.editor.vimOperationalMode", mode);
+  });
 
   const applyEditorAppearancePreferences = () => {
-    const root = document.documentElement;
-    root.style.setProperty("--editor-content-font-family", getEditorFontFamilyCss());
-    root.style.setProperty("--editor-content-font-size", `${editorFontSize}px`);
-    root.style.setProperty("--editor-content-line-height", String(editorLineHeight));
-    if (editorTextColor) root.style.setProperty("--editor-text-fg", editorTextColor);
-    else root.style.removeProperty("--editor-text-fg");
-    try {
-      window.zion.state.set("ui.editorAppearance", {
-        fontFamilyPreset: editorFontFamilyPreset,
-        customFontFamily: editorCustomFontFamily,
-        fontSize: editorFontSize,
-        lineHeight: editorLineHeight,
-        textColor: editorTextColor
-      });
-    } catch {}
-  };
-
-  const setEditorFontFamilyPreset = (value: unknown) => {
-    editorFontFamilyPreset = normalizeFontFamilyPreset(value);
-    try { localStorage.setItem("zion.editor.fontFamilyPreset", editorFontFamilyPreset); } catch {}
-    applyEditorAppearancePreferences();
-  };
-
-  const setEditorCustomFontFamily = (value: unknown) => {
-    editorCustomFontFamily = sanitizeFontFamily(value);
-    try { localStorage.setItem("zion.editor.customFontFamily", editorCustomFontFamily); } catch {}
-    applyEditorAppearancePreferences();
-  };
-
-  const setEditorFontSize = (value: unknown) => {
-    editorFontSize = parseNumberPreference(value, EDITOR_APPEARANCE_DEFAULTS.fontSize, 10, 24);
-    try { localStorage.setItem("zion.editor.fontSize", String(editorFontSize)); } catch {}
-    applyEditorAppearancePreferences();
-  };
-
-  const setEditorLineHeight = (value: unknown) => {
-    editorLineHeight = parseNumberPreference(value, EDITOR_APPEARANCE_DEFAULTS.lineHeight, 1.2, 2.4);
-    try { localStorage.setItem("zion.editor.lineHeight", String(editorLineHeight)); } catch {}
-    applyEditorAppearancePreferences();
-  };
-
-  const setEditorTextColor = (value: unknown) => {
-    editorTextColor = normalizeOptionalColor(value);
-    try { localStorage.setItem("zion.editor.textColor", editorTextColor); } catch {}
-    applyEditorAppearancePreferences();
-  };
-
-  const resetEditorAppearanceSetting = (key: "fontFamilyPreset" | "customFontFamily" | "fontSize" | "lineHeight" | "textColor") => {
-    if (key === "fontFamilyPreset") {
-      editorFontFamilyPreset = EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset;
-      try { localStorage.removeItem("zion.editor.fontFamilyPreset"); } catch {}
-    } else if (key === "customFontFamily") {
-      editorCustomFontFamily = EDITOR_APPEARANCE_DEFAULTS.customFontFamily;
-      try { localStorage.removeItem("zion.editor.customFontFamily"); } catch {}
-    } else if (key === "fontSize") {
-      editorFontSize = EDITOR_APPEARANCE_DEFAULTS.fontSize;
-      try { localStorage.removeItem("zion.editor.fontSize"); } catch {}
-    } else if (key === "lineHeight") {
-      editorLineHeight = EDITOR_APPEARANCE_DEFAULTS.lineHeight;
-      try { localStorage.removeItem("zion.editor.lineHeight"); } catch {}
-    } else {
-      editorTextColor = EDITOR_APPEARANCE_DEFAULTS.textColor;
-      try { localStorage.removeItem("zion.editor.textColor"); } catch {}
-    }
-    applyEditorAppearancePreferences();
+    applyDisplayPresentation(document.documentElement);
+    window.zion.state.set("ui.editorAppearance", Object.fromEntries(
+      ["fontFamilyPreset", "customFontFamily", "fontSize", "lineHeight", "textColor"].map(key =>
+        [key, readDisplayPreference(`zion.editor.${key}` as any)])));
   };
 
   function forEachPanelCore(fn: (targetCore: EditorCore) => void) {
@@ -5226,82 +4652,39 @@ async function bootstrap() {
     } catch {}
   }
 
-  function isFocusedEditorCore(targetCore: EditorCore | null | undefined): boolean {
-    try {
-      const active = document.activeElement;
-      return !!active && !!targetCore?.view?.dom?.contains?.(active);
-    } catch {
-      return false;
-    }
-  }
-
-  function applyVimOperationalModeToAll(mode: VimOperationalMode) {
-    if (!vimModeEnabled) return;
-    applyingGlobalVimOperationalMode = true;
-    try {
-      forEachAttachedEditorCore((targetCore) => {
-        targetCore.setVimOperationalMode(mode, { preserveViewState: !isFocusedEditorCore(targetCore) });
-      });
-    } finally {
-      applyingGlobalVimOperationalMode = false;
-    }
-  }
-
-  function registerVimOperationalModeSync(targetCore: EditorCore | null | undefined) {
-    if (!targetCore || vimOperationalModeDisposers.has(targetCore)) return;
-    try {
-      vimOperationalModeDisposers.set(targetCore, targetCore.onVimOperationalModeChange((mode) => {
-        if (applyingGlobalVimOperationalMode || !vimModeEnabled) return;
-        vimOperationalMode = mode;
-        try { window.zion.state.set("ui.editor.vimOperationalMode", mode); } catch {}
-        applyVimOperationalModeToAll(mode);
-      }));
-    } catch {}
-  }
-
-  function registerAllVimOperationalModeSync() {
-    forEachAttachedEditorCore(registerVimOperationalModeSync);
-  }
-
   const applyLineNumbers = (enabled: boolean) => {
     lineNumbersEnabled = enabled;
     try { localStorage.setItem("zion.lineNumbers", enabled ? "1" : "0"); } catch {}
-      forEachAttachedEditorCore((targetCore) => targetCore.setLineNumbersEnabled(enabled));
     window.zion.state.set("ui.lineNumbers", enabled);
   };
 
   const applyActiveLineHighlight = (enabled: boolean) => {
     activeLineHighlightEnabled = enabled;
     try { localStorage.setItem("zion.activeLineHighlight", enabled ? "1" : "0"); } catch {}
-      forEachAttachedEditorCore((targetCore) => targetCore.setActiveLineHighlightEnabled(enabled));
     window.zion.state.set("ui.activeLineHighlight", enabled);
   };
 
   const applySyntaxHighlight = (enabled: boolean) => {
     syntaxHighlightEnabled = enabled;
     try { localStorage.setItem("zion.syntaxHighlight", enabled ? "1" : "0"); } catch {}
-      forEachAttachedEditorCore((targetCore) => targetCore.setSyntaxHighlightEnabled(enabled));
     window.zion.state.set("ui.syntaxHighlight", enabled);
   };
 
   const applyAutoIndent = (enabled: boolean) => {
     autoIndentEnabled = enabled;
     try { localStorage.setItem("zion.autoIndent", enabled ? "1" : "0"); } catch {}
-      forEachAttachedEditorCore((targetCore) => targetCore.setAutoIndentEnabled(enabled));
     window.zion.state.set("ui.autoIndent", enabled);
   };
 
   const applyFolding = (enabled: boolean) => {
     foldingEnabled = enabled;
     try { localStorage.setItem("zion.folding", enabled ? "1" : "0"); } catch {}
-      forEachAttachedEditorCore((targetCore) => targetCore.setFoldingEnabled(enabled));
     window.zion.state.set("ui.folding", enabled);
   };
 
   const applyLineWrap = (enabled: boolean) => {
     lineWrapEnabled = enabled;
     try { localStorage.setItem("zion.lineWrap", enabled ? "1" : "0"); } catch {}
-      forEachAttachedEditorCore((targetCore) => targetCore.setLineWrapEnabled(enabled));
     window.zion.state.set("ui.lineWrap", enabled);
   };
 
@@ -5309,9 +4692,7 @@ async function bootstrap() {
     vimModeEnabled = enabled;
     try { localStorage.setItem("zion.vimMode", enabled ? "1" : "0"); } catch {}
     forEachAttachedEditorCore((targetCore) => {
-      registerVimOperationalModeSync(targetCore);
       targetCore.setVimModeEnabled(enabled);
-      if (enabled) targetCore.setVimOperationalMode(vimOperationalMode, { preserveViewState: !isFocusedEditorCore(targetCore) });
     });
     window.zion.state.set("ui.editor.vimMode", enabled);
     window.zion.state.set("ui.editor.vimOperationalMode", enabled ? vimOperationalMode : "normal");
@@ -5319,17 +4700,7 @@ async function bootstrap() {
 
   function applyEditorPreferences(targetCore: EditorCore) {
     targetCore.setTheme(themeManager.getResolvedTheme());
-    targetCore.setWysiwygEnabled(wysiwygEnabled);
-    targetCore.setWysiwygKeepActiveLineRendered(wysiwygKeepActiveLineRendered);
-    targetCore.setLineNumbersEnabled(lineNumbersEnabled);
-    targetCore.setActiveLineHighlightEnabled(activeLineHighlightEnabled);
-    targetCore.setSyntaxHighlightEnabled(syntaxHighlightEnabled);
-    targetCore.setAutoIndentEnabled(autoIndentEnabled);
-    targetCore.setFoldingEnabled(foldingEnabled);
-    targetCore.setLineWrapEnabled(lineWrapEnabled);
-    targetCore.setMinimapEnabled(!!window.zion.state.get("ui.minimapEnabled"));
-    targetCore.setSelectionHighlightEnabled(!!window.zion.state.get("ui.selectionHighlight"));
-    targetCore.setVimModeEnabled(vimModeEnabled);
+    applyEditorCorePreferences(targetCore);
   }
 
   // register commands to control these features
@@ -5352,10 +4723,8 @@ async function bootstrap() {
     window.zion.events.on("editor/attached", (payload: any) => {
       const targetCore = payload?.core;
       if (!targetCore) return;
-      registerVimOperationalModeSync(targetCore);
         applyEditorPreferences(targetCore);
       targetCore.setVimModeEnabled(vimModeEnabled);
-      if (vimModeEnabled) targetCore.setVimOperationalMode(vimOperationalMode, { preserveViewState: !isFocusedEditorCore(targetCore) });
     });
   } catch {}
 
@@ -5367,119 +4736,34 @@ async function bootstrap() {
   applyAutoIndent(autoIndentEnabled);
   applyFolding(foldingEnabled);
   applyLineWrap(lineWrapEnabled);
-  registerAllVimOperationalModeSync();
   applyVimMode(vimModeEnabled);
+  subscribeDisplayPreferences(key => {
+    wysiwygEnabled = !!readDisplayPreference("zion.wysiwyg");
+    wysiwygKeepActiveLineRendered = !!readDisplayPreference("zion.wysiwyg.keepActiveLineRendered");
+    lineNumbersEnabled = !!readDisplayPreference("zion.lineNumbers");
+    activeLineHighlightEnabled = !!readDisplayPreference("zion.activeLineHighlight");
+    syntaxHighlightEnabled = !!readDisplayPreference("zion.syntaxHighlight");
+    autoIndentEnabled = !!readDisplayPreference("zion.autoIndent");
+    foldingEnabled = !!readDisplayPreference("zion.folding");
+    lineWrapEnabled = !!readDisplayPreference("zion.lineWrap");
+    vimModeEnabled = !!readDisplayPreference("zion.vimMode");
+    for (const [preference, stateKey] of Object.entries(DISPLAY_STATE_KEYS)) {
+      if (key === "*" || key === preference) window.zion.state.set(stateKey!, readDisplayPreference(preference as any));
+    }
+    if (key.startsWith("zion.editor.") || key === "*") applyEditorAppearancePreferences();
+    if (key.startsWith("zion.theme")) themeManager.refresh();
+  });
 
   try {
     window.zion.keybindings.register({ command: "zion.toggleVimMode", key: "Alt-Shift-v", when: "editorFocus" });
   } catch {}
   try {
     const reg = getEditorHeaderMenuRegistry();
-    reg.register({
-      id: "core.vimMode.headerMenu",
-      title: "Vim Mode",
-      section: "Editor",
-      order: 17,
-      kind: "toggle",
-      getChecked: () => !!window.zion.state.get("ui.editor.vimMode"),
-      onClick: () => window.zion.commands.executeCommand("zion.toggleVimMode")
-    });
+    reg.register(editorCoreMenuItems(window.zion).find(item => item.id === "core.vimMode.headerMenu")!);;
   } catch {}
 
   try {
-    (window as any).zion.settings.registerPage({
-      id: "editor.appearance",
-      title: "Editor Appearance",
-      category: "editor",
-      order: 10,
-      keywords: ["editor", "appearance", "font", "color", "typography", "编辑器", "字体", "颜色"],
-      sections: [
-        {
-          id: "editor.appearance.typography",
-          title: "Typography",
-          description: "默认跟随主题；这些设置只覆盖编辑器正文区域。",
-          settings: [
-            {
-              id: "editor.appearance.fontFamilyPreset",
-              label: "字体族",
-              description: "选择编辑器正文使用的字体族。默认使用系统无衬线字体，适合 Markdown 阅读和编辑。",
-              kind: "select",
-              scope: "application",
-              defaultValue: EDITOR_APPEARANCE_DEFAULTS.fontFamilyPreset,
-              enumOptions: [
-                { label: "系统无衬线（默认）", value: "system-sans" },
-                { label: "系统等宽", value: "system-mono" },
-                { label: "衬线", value: "serif" },
-                { label: "自定义字体族", value: "custom" }
-              ],
-              getValue: () => editorFontFamilyPreset,
-              setValue: setEditorFontFamilyPreset,
-              reset: () => resetEditorAppearanceSetting("fontFamilyPreset")
-            },
-            {
-              id: "editor.appearance.customFontFamily",
-              label: "自定义字体族",
-              description: "当字体族选择“自定义”时生效，例如 \"LXGW WenKai\", \"PingFang SC\", sans-serif。",
-              kind: "string",
-              scope: "application",
-              controlLayout: "wide",
-              defaultValue: EDITOR_APPEARANCE_DEFAULTS.customFontFamily,
-              placeholder: "\"LXGW WenKai\", \"PingFang SC\", sans-serif",
-              getValue: () => editorCustomFontFamily,
-              setValue: setEditorCustomFontFamily,
-              validate: validateFontFamily,
-              reset: () => resetEditorAppearanceSetting("customFontFamily")
-            },
-            {
-              id: "editor.appearance.fontSize",
-              label: "字号",
-              description: "编辑器正文基础字号，单位 px。",
-              kind: "number",
-              inputMode: "decimal",
-              scope: "application",
-              defaultValue: EDITOR_APPEARANCE_DEFAULTS.fontSize,
-              getValue: () => editorFontSize,
-              setValue: setEditorFontSize,
-              validate: (value: unknown) => validateNumberRange(value, 10, 24, "px "),
-              reset: () => resetEditorAppearanceSetting("fontSize")
-            },
-            {
-              id: "editor.appearance.lineHeight",
-              label: "行高",
-              description: "编辑器正文行高倍率。Markdown 阅读编辑建议保持在 1.5 到 1.8 之间。",
-              kind: "number",
-              inputMode: "decimal",
-              scope: "application",
-              defaultValue: EDITOR_APPEARANCE_DEFAULTS.lineHeight,
-              getValue: () => editorLineHeight,
-              setValue: setEditorLineHeight,
-              validate: (value: unknown) => validateNumberRange(value, 1.2, 2.4, ""),
-              reset: () => resetEditorAppearanceSetting("lineHeight")
-            }
-          ]
-        },
-        {
-          id: "editor.appearance.colors",
-          title: "Colors",
-          description: "颜色默认跟随当前主题；只有填写自定义值时才覆盖主题。",
-          settings: [
-            {
-              id: "editor.appearance.textColor",
-              label: "正文颜色",
-              description: "留空则跟随主题正文色。支持 CSS 颜色值，例如 #d1d5db 或 rgb(209 213 219)。",
-              kind: "string",
-              scope: "application",
-              defaultValue: EDITOR_APPEARANCE_DEFAULTS.textColor,
-              placeholder: "留空跟随主题",
-              getValue: () => editorTextColor,
-              setValue: setEditorTextColor,
-              validate: validateOptionalColor,
-              reset: () => resetEditorAppearanceSetting("textColor")
-            }
-          ]
-        }
-      ]
-    });
+    (window as any).zion.settings.registerPage(createEditorAppearancePage());;
   } catch (e) {
     console.warn("[zion] failed to register editor appearance settings", e);
   }
@@ -5610,6 +4894,10 @@ async function bootstrap() {
   } catch (error) {
     console.error('[PluginManager] 插件系统初始化失败:', error);
   }
+
+  const sharingWorkbench = mountSharingWorkbench(host);
+  window.addEventListener("pagehide", event => { if (!event.persisted) sharingWorkbench?.dispose(); });
+  if (import.meta.hot) import.meta.hot.dispose(() => sharingWorkbench?.dispose());
 
   try {
     initCommandPalette();

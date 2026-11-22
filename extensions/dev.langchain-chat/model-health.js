@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 export const MODEL_AVAILABILITY_STATUSES = [
   "available",
   "degraded",

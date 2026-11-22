@@ -10,7 +10,8 @@ import { normalizeExtensionPackage } from "../../../packages/runtime-client/src/
 const cleanup = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const api = (origin, login, path, body, method = body === undefined ? "GET" : "POST") =>
-  fetch(origin + path, { method, headers: { cookie: login.cookie, origin, "content-type": "application/json" },
+  fetch(origin + path, { method, headers: { cookie: login.cookie, origin, "content-type": "application/json",
+    ...(login.spaceId ? { "x-zioon-space-id": login.spaceId } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 
 describe("account model selection across independent authenticated clients", () => {
@@ -23,6 +24,8 @@ describe("account model selection across independent authenticated clients", () 
     cleanup.push(runtime.close);
     const first = await browserAccountLogin(runtime.url);
     const second = await browserAccountLogin(runtime.url);
+    const identity = await (await api(runtime.url, first, "/v1/account/me")).json();
+    first.spaceId = second.spaceId = (await runtime.accounts.personalSpace(identity.user.id)).id;
     const initial = await (await api(runtime.url, first, "/v1/models")).json();
     const builtin = initial.activeProfileId;
     const artifact = normalizeExtensionPackage({ schemaVersion: 1, kind: "plugin",
@@ -49,6 +52,7 @@ describe("account model selection across independent authenticated clients", () 
     });
     // A fresh browser session sees the durable preference rather than its own local storage.
     const fresh = await browserAccountLogin(runtime.url);
+    fresh.spaceId = first.spaceId;
     expect(await (await api(runtime.url, fresh, "/v1/models")).json()).toMatchObject({ selectedProfileId: extension.id });
     const started = await api(runtime.url, fresh, "/v1/runs", { prompt: "use account default" });
     expect(started.status).toBe(202);
@@ -74,16 +78,14 @@ describe("account model selection across independent authenticated clients", () 
     expect((await (await api(runtime.url, fresh, `/v1/runs/${accepted.runId}`)).json()).run.model.profileId).toBe(extension.id);
     idp.setSubject("test-member");
     const member = await browserAccountLogin(runtime.url);
-    const invite = await (await api(runtime.url, first, "/v1/account/invitations", { role: "member" })).json();
-    const joined = await (await api(runtime.url, member, "/v1/account/invitations/accept", { token: invite.token })).json();
-    await api(runtime.url, member, "/v1/account/spaces/select", { spaceId: joined.space.id });
+    member.spaceId = (await (await api(runtime.url, member, "/v1/account/me")).json()).space.id;
     const otherCatalog = await (await api(runtime.url, member, "/v1/models")).json();
     expect(otherCatalog.selectedProfileId).toBeNull();
     expect(otherCatalog.profiles.some((profile) => profile.id === extension.id)).toBe(false);
     expect((await api(runtime.url, member, "/v1/models/selection", { profileId: extension.id }, "PUT")).status).toBe(422);
     expect((await api(runtime.url, member, "/v1/models/selection", { profileId: builtin }, "PUT")).status).toBe(200);
     expect((await api(runtime.url, member, "/v1/interaction-profiles/interactive.default",
-      { modelProfileId: builtin }, "PATCH")).status).toBe(403);
+      { modelProfileId: builtin }, "PATCH")).status).toBe(200);
     expect((await api(runtime.url, first, "/v1/models/selection", { profileId: null }, "PUT")).status).toBe(200);
     expect(await (await api(runtime.url, second, "/v1/models")).json()).toMatchObject({ selectedProfileId: null, activeProfileId: builtin });
   }, 30000);

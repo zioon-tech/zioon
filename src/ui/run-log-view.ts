@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../runtime/workbench-space";
 import {
   filterRunLogGroups,
   projectRunLogGroups,

@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 export async function activate(ctx) {
   const I18N_NS = "dev.gutter-actions";
   const I18N_MESSAGES = {

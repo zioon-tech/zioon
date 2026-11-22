@@ -82,7 +82,8 @@ async function resolveUpdatePatch(service, args = {}) {
 }
 
 export function activateRuntimePlugin(context) {
-  const service = requireSessionService(context);
+  const baseService = requireSessionService(context);
+  const scoped = async meta => baseService.forContext ? baseService.forContext(meta) : baseService;
   const documentProjectorRegistration = context.documents.registerProjector(
     createSessionDocumentProjector()
   );
@@ -98,7 +99,8 @@ export function activateRuntimePlugin(context) {
     inputSchema: listDefinition.inputSchema,
     execution: { effect: "read" },
     policy: { minimumPreset: "read-only" },
-    async invoke(args = {}) {
+    async invoke(args = {}, meta) {
+      const service = await scoped(meta);
       const result = listSessionsFromSnapshot(await service.readSnapshot(), args);
       if (!result.ok) {
         return {
@@ -120,7 +122,8 @@ export function activateRuntimePlugin(context) {
     inputSchema: getDefinition.inputSchema,
     execution: { effect: "read" },
     policy: { minimumPreset: "read-only" },
-    async invoke(args = {}) {
+    async invoke(args = {}, meta) {
+      const service = await scoped(meta);
       const id = String(args.id || "").trim();
       if (!id) {
         return { ok: false, content: "Missing id", error: "Missing id" };
@@ -145,7 +148,8 @@ export function activateRuntimePlugin(context) {
     inputSchema: createDefinition.inputSchema,
     execution: { effect: "write" },
     policy: { minimumPreset: "workspace-write" },
-    async invoke(args = {}) {
+    async invoke(args = {}, meta) {
+      const service = await scoped(meta);
       const result = await service.createSession({
         id: args.id,
         title: args.title,
@@ -169,7 +173,8 @@ export function activateRuntimePlugin(context) {
     inputSchema: updateDefinition.inputSchema,
     execution: { effect: "write" },
     policy: { minimumPreset: "workspace-write" },
-    async invoke(args = {}) {
+    async invoke(args = {}, meta) {
+      const service = await scoped(meta);
       const id = String(args.id || "").trim();
       if (!id) return { ok: false, content: "Missing id", error: "Missing id" };
       const result = await service.updateSession(
@@ -191,7 +196,8 @@ export function activateRuntimePlugin(context) {
     inputSchema: deleteDefinition.inputSchema,
     execution: { effect: "write" },
     policy: { minimumPreset: "workspace-write" },
-    async invoke(args = {}) {
+    async invoke(args = {}, meta) {
+      const service = await scoped(meta);
       const id = String(args.id || "").trim();
       if (!id) return { ok: false, content: "Missing id", error: "Missing id" };
       if (args.confirm !== true) {

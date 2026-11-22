@@ -56,4 +56,24 @@ export class PostgresAssetStore {
     );
     return assetRow(result.rows[0]);
   }
+
+  async withBlobLock(sha256, action) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+        [`asset-blob:${this.spaceId}:${sha256}`]);
+      const result = await action(new PostgresAssetStore(client, { spaceId: this.spaceId }));
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async isBlobReferenced(key) {
+    return (await this.pool.query("SELECT 1 FROM runtime_assets WHERE space_id=$1 AND blob_key=$2 LIMIT 1",
+      [this.spaceId, key])).rowCount > 0;
+  }
 }

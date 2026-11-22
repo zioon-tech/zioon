@@ -8,6 +8,8 @@
     "./sse": "./src/sse.mjs",
     "./run-stream": "./src/run-stream.mjs",
     "./runs": "./src/runs.mjs",
+    "./spaces": "./src/spaces.mjs",
+    "./sharing": "./src/sharing.mjs",
     "./extensions": "./src/extensions.mjs",
     "./plugin-development": "./src/plugin-development.mjs",
     "./extension-package": "./src/extension-package.mjs",

@@ -46,6 +46,9 @@ import {
   subscribeRunStream
 } from "../../../packages/runtime-client/src/run-stream.mjs";
 import { createActivityFeed } from "./cli-activity-feed.mjs";
+import { runSpacesCli, SPACES_USAGE } from "./spaces-cli.mjs";
+import { createSpacesClient } from "../../../packages/runtime-client/src/spaces.mjs";
+import { runSharingCli, SHARING_USAGE } from "./sharing-cli.mjs";
 
 const USAGE = `zioon — conversations in your terminal
 
@@ -85,6 +88,7 @@ Commands:
   auth status [profile]        Show sanitized credential status
   auth logout [profile]        Delete the profile credential
   extensions <action>          Create, upload and manage account extensions
+  share <action>               Share models, conversations and folders by link
   device connect               Run this CLI as an outbound Device Tool Host
 
 Options:
@@ -121,6 +125,9 @@ Options:
 `;
 
 const VALUE_OPTIONS = new Set([
+  "--space", "--from", "--recipient", "--role", "--kind", "--resource", "--root", "--document",
+  "--destination", "--markdown", "--access-file", "--budget-scope", "--hard-limit", "--mode",
+  "--shared", "--invitation", "--invite-days", "--claims", "--duration-days",
   "--url",
   "--runtime-profile",
   "--session",
@@ -271,6 +278,9 @@ export function resolveRuntimeCliTarget({
     throw new Error("Authenticated profile URL cannot be overridden with a different origin");
   }
   const headers = {};
+  const spaceId = String(readArg(argv, "--space", environment.ZIOON_SPACE_ID || profile?.spaceId || "")).trim();
+  if (spaceId && (spaceId.length > 256 || /[\x00-\x20]/.test(spaceId))) throw new Error("Invalid --space");
+  if (spaceId) headers["x-zioon-space-id"] = spaceId;
   if (profile?.auth?.type === "bearer" || profile?.auth?.type === "workload") {
     const envName = String(profile.auth.env || "").trim();
     const tokenFileEnv = String(profile.auth.tokenFileEnv || "").trim();
@@ -296,6 +306,7 @@ export function resolveRuntimeCliTarget({
   }
   return {
     baseUrl,
+    spaceId,
     profileName: String(profileName || ""),
     headers,
     auth: argv.includes("--account") ? { type: "account" } : profile?.auth && typeof profile.auth === "object"
@@ -571,6 +582,7 @@ export function createRuntimeControlClient({
     listSessions: async (limit = 100) => (
       await request(`/v1/sessions?limit=${Math.max(1, Number(limit) || 100)}`)
     ).sessions,
+    createSession: body => request("/v1/sessions", { method: "POST", body }),
     getSession: async (sessionId) => (
       await request(`/v1/sessions/${encodeURIComponent(sessionId)}`)
     ).session,
@@ -751,12 +763,14 @@ export async function runRuntimeCli({
     });
   }
   if (argv.includes("--help") || argv.includes("-h")) {
-    output.write(argv[0] === "extensions" ? EXTENSIONS_USAGE : USAGE);
+    output.write(argv[0] === "extensions" ? EXTENSIONS_USAGE : argv[0] === "share" ? SHARING_USAGE :
+      ["space", "contact"].includes(argv[0]) ? SPACES_USAGE : `${USAGE}\n${SHARING_USAGE}`);
     return null;
   }
 
   const command = argv[0];
   const args = argv.slice(1);
+  if (args.includes("--shared")) throw new Error("Use: zioon chat --shared <share-id> [--document <id>]");
   const extensions = command === "extensions" ? parseExtensionsArgs(args) : null;
   if (extensions && LOCAL_EXTENSION_ACTIONS.has(extensions.action)) {
     return runExtensionsCli({ parsed: extensions, output });
@@ -911,6 +925,25 @@ export async function runRuntimeCli({
   }
 
   const requestHeaders = await resolveRuntimeCliHeaders(target, { credentialStore, fetchImpl });
+  let accountIdentity;
+  if (target.auth?.type === "account") {
+    accountIdentity = await createSpacesClient({ baseUrl, headers: requestHeaders, spaceId: target.spaceId, fetchImpl, signal }).identity();
+    const personal = accountIdentity.spaces?.find(s => s.kind === "personal");
+    if (!target.spaceId && personal && personal.id !== accountIdentity.space.id) {
+      accountIdentity = await createSpacesClient({ baseUrl, headers: requestHeaders, spaceId: personal.id, fetchImpl, signal }).identity();
+    }
+  }
+  if (accountIdentity && !target.spaceId) {
+    const identity = accountIdentity;
+    requestHeaders["x-zioon-space-id"] = identity.space.id;
+    target.spaceId = identity.space.id;
+  }
+  if (command === "share" && !args.includes("--destination") && !["publish", "knowledge", "retry"].includes(positionals[0])) {
+    return runSharingCli({ args, target, headers: requestHeaders, output, fetchImpl, signal });
+  }
+  if (["space", "contact", "share"].includes(command)) return runSpacesCli({
+    command, args, target, headers: requestHeaders, output, environment, fetchImpl, signal
+  });
   const client = createRuntimeControlClient({
     baseUrl,
     fetchImpl,
@@ -941,11 +974,20 @@ export async function runRuntimeCli({
       ? ""
       : String(profileArg).trim();
     const modelProfileId = readArg(args, "--model-profile", "");
+    let sessionId = readArg(args, "--session");
+    if (!sessionId && accountIdentity?.space?.kind === "team") {
+      const created = await client.createSession({
+        title: readArg(args, "--title", prompt.slice(0, 80)),
+        ...(profile ? { interactionProfileId: profile } : {}),
+        ...(modelProfileId ? { model: { profileId: modelProfileId } } : {})
+      });
+      sessionId = created.session.id;
+    }
     const accepted = await client.createRun({
       prompt,
       title: readArg(args, "--title", prompt.slice(0, 80)),
       ...(profile ? { interactionProfileId: profile } : {}),
-      ...(readArg(args, "--session") ? { sessionId: readArg(args, "--session") } : {}),
+      ...(sessionId ? { sessionId } : {}),
       ...(readArg(args, "--project") ? { projectId: readArg(args, "--project") } : {}),
       ...(modelProfileId ? { model: { profileId: modelProfileId } } : {}),
       ...(runPolicy(args) ? { policy: runPolicy(args) } : {}),

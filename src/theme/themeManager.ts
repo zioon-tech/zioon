@@ -22,6 +22,7 @@ type ThemeableEditor = {
 
 type ThemeManagerOptions = {
   getEditorCores(): Iterable<ThemeableEditor>;
+  standalone?: boolean;
 };
 
 const THEME_PREFERENCE_KEY = "zion.themePreference";
@@ -80,8 +81,10 @@ export class ThemeManager {
     this.mediaQuery = window.matchMedia?.("(prefers-color-scheme: light)") || null;
     try { this.mediaQuery?.addEventListener?.("change", this.systemHandler); } catch {}
     try { this.mediaQuery?.addListener?.(this.systemHandler); } catch {}
-    this.exposeApi();
-    this.registerCommands();
+    if (!this.opts.standalone) {
+      this.exposeApi();
+      this.registerCommands();
+    }
     this.apply("init", { force: true });
   }
 
@@ -148,6 +151,8 @@ export class ThemeManager {
   }
 
   refresh(): void {
+    this.preference = readStoredPreference().preference;
+    this.variant = readStoredVariant();
     this.apply("refresh", { force: true });
   }
 
@@ -235,6 +240,7 @@ export class ThemeManager {
     });
     updatePwaThemeColor(nextResolved);
 
+    if (this.opts.standalone) return;
     try { window.zion.state.set("ui.themePreference", this.preference); } catch {}
     try { window.zion.state.set("ui.themeVariant", nextVariant); } catch {}
     try { window.zion.state.set("ui.theme", nextResolved); } catch {}

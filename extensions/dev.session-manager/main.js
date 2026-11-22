@@ -1,3 +1,5 @@
+import { workbenchStorage as localStorage, spaceScopedName, isSharedWorkbenchDocument, sharedDocumentEditable } from "../../src/runtime/workbench-space";
+import { currentAccountSession } from "../../packages/account-ui/src/client";
 import { registerSessionTools } from "./session-tools.js";
 import {
   clearMigratedBrowserSessions,
@@ -34,6 +36,7 @@ import {
 import { normalizeTagPath, validateCatalog } from "./model/tag-catalog.js";
 import { createSessionUrlModel } from "./model/url.js";
 import { createSessionTreeModel } from "./model/tree.js";
+import { createSharedSessionView, isReceivedNode } from "./model/shared-view.js";
 import { createSessionUIStateModel } from "./model/ui-state.js";
 import { createAnnotationsLifecycle } from "./features/annotations-lifecycle.js";
 import { applyAnnotationsForSessionImpl } from "./features/annotations-apply.js";
@@ -452,7 +455,7 @@ function warnStorageIssue(where, error) {
 }
 
 /** ======== Durable Workbench session storage (Zion Runtime PostgreSQL) ======== */
-const DB_NAME = "zion.sessions.db";
+const DB_NAME = spaceScopedName("zion.sessions.db");
 let remoteSnapshotQueue = Promise.resolve();
 let remoteStorageOnline = false;
 let remoteSyncTimer = 0;
@@ -586,6 +589,7 @@ function flushPendingSessionTagDocs() {
 }
 
 function scheduleSessionTagIndexUpdate(id, text) {
+  if (isSharedWorkbenchDocument(id)) return;
   const sessionId = String(id || "").trim();
   if (!sessionTagIndexReady || !sessionId) return;
   pendingSessionTagDocs.set(sessionId, String(text || ""));
@@ -807,6 +811,9 @@ function enqueueRemoteMutation(mutation) {
 }
 
 function scheduleRemoteSnapshot(kind, id, value) {
+  if (isSharedWorkbenchDocument(id)) {
+    if (kind === "meta" || !sharedDocumentEditable(id)) return Promise.resolve(true);
+  }
   if (kind === "doc" || kind === "meta") {
     return enqueueRemoteMutation({
       type: "session",
@@ -1260,7 +1267,7 @@ function hasBrowserSessionCandidate(candidate) {
 /** Recover browser-era data once, then use Runtime as the only session source. */
 async function initSessionsStorage() {
   try {
-    const candidate = await readBrowserSessionCandidate(DB_NAME);
+    const candidate = currentAccountSession() ? null : await readBrowserSessionCandidate(DB_NAME);
     if (hasBrowserSessionCandidate(candidate)) {
       const report = await migrateBrowserSessionStorage(
         candidate.sourceId,
@@ -1688,11 +1695,12 @@ function ensureInitialSession() {
 /** 从索引查会话条目 */
 function findInIndex(id) {
   const index = getIndex();
-  return index.find(s => s.id === id) || null;
+  return index.find(s => s.id === id) || sharedSessionView.entry(id) || null;
 }
 
 /** 更新索引条目（无则追加） */
 function upsertIndexEntry(entry) {
+  if (isSharedWorkbenchDocument(entry.id)) return getIndex();
   const idx = getIndex();
   const i = idx.findIndex(s => s.id === entry.id);
   if (i >= 0) {
@@ -1722,7 +1730,7 @@ let bc = null;
 function getChannel() {
   if (bc) return bc;
   try {
-    bc = new BroadcastChannel("zion.sessions");
+    bc = new BroadcastChannel(spaceScopedName("zion.sessions"));
   } catch {
     bc = null;
   }
@@ -1911,33 +1919,37 @@ function openModalConfirm({ title, message, okText, cancelText }) {
   });
 }
 
+const sharedSessionView = createSharedSessionView({
+  loadTree, getIndex, loadMeta,
+  onChange: () => { refreshSessionsSidebarViewIfOpen(); refreshSessionsOverlayIfOpen(); }
+});
 const createSessionsListRenderer = createSessionsListRendererFactory({
-  loadTree,
+  loadTree: () => sharedSessionView.tree(),
   ensureInitialTree,
-  getIndex,
-  loadMeta,
+  getIndex: () => sharedSessionView.index(),
+  loadMeta: id => sharedSessionView.meta(id),
   buildSessionURL,
   truncate,
   setSmallDragImage,
   fmtTime,
   now,
-  getSelection,
-  setSelection,
+  getSelection: () => getSelection().filter(node => !isReceivedNode(node.id)),
+  setSelection: nodes => setSelection(nodes.filter(node => !isReceivedNode(node.id))),
   clearSelection,
   isSelected,
-  toggleSelection,
+  toggleSelection: node => { if (!isReceivedNode(node.id)) toggleSelection(node); },
   getLastSelectedId,
   setLastSelectedId,
   isFolderOpen,
   setFolderOpen,
-  moveNode
+  moveNode: (id, parent) => !isReceivedNode(id) && !isReceivedNode(parent) && moveNode(id, parent)
 });
 
 const __panelManager = createSessionsPanelManager({
   zion: window.zion,
-  getIndex,
+  getIndex: () => sharedSessionView.index(),
   createSessionsListRenderer,
-  openAncestors,
+  openAncestors: id => { if (!sharedSessionView.openAncestors(id, setFolderOpen)) openAncestors(id); },
   openModalInput,
   refreshSessionsSidebarViewIfOpen
 });
@@ -1953,9 +1965,10 @@ function refreshSessionsOverlayIfOpen() {
 const __sidebarViewManager = createSessionsSidebarViewManager({
   zion: window.zion,
   createSessionsListRenderer,
-  openAncestors,
-  getIndex,
-  loadMeta,
+  openAncestors: id => { if (!sharedSessionView.openAncestors(id, setFolderOpen)) openAncestors(id); },
+  getIndex: () => sharedSessionView.index(),
+  loadMeta: id => sharedSessionView.meta(id),
+  sharingView: sharedSessionView,
   dbName: DB_NAME,
   loadTagCatalog: async () => validateCatalog(
     remoteSessionKV.get("sessions.tagCatalog") || []
@@ -2347,6 +2360,8 @@ export async function activate(ctx) {
   // 初始化树/索引/会话
   ensureInitialTree();
   rebuildIndexFromTree();
+  ctx.subscriptions.push(sharedSessionView.start(window.zion));
+  await sharedSessionView.refresh();
   // 注册会话相关工具（供大模型使用）
   try { registerSessionTools(); } catch {}
   const shouldStartEmpty = window.zion?.state?.get?.("sessions.startEmpty") === true;

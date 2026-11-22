@@ -30,7 +30,8 @@ function displayTitle(session, messages) {
 export function createMobileHttpHandler({
   sessions,
   activeRunForSession,
-  presentationForSession
+  presentationForSession,
+  allowedSessionIds = null
 } = {}) {
   if (!sessions?.listSessions || !sessions?.getSessionMessages) {
     throw new Error("Mobile HTTP handler requires a Session store");
@@ -53,7 +54,8 @@ export function createMobileHttpHandler({
         .toLowerCase();
       const records = await sessions.listSessions({
         limit: query ? 100 : limit,
-        offset: query ? 0 : offset
+        offset: query ? 0 : offset,
+        ...(allowedSessionIds ? { allowedSessionIds: await allowedSessionIds(request.zionPrincipal) } : {})
       });
       const visibleRecords = records.filter((session) => (
         session?.metadata?.source !== "scheduled-task"

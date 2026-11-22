@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -40,7 +41,7 @@ function writeJson(storage, key, value) {
 }
 
 export function memorySnapshotFromStorage({
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   const items = readJson(storage, MEMORY_ITEMS_STORAGE_KEY, []);
   const settings = readJson(storage, MEMORY_SETTINGS_STORAGE_KEY, {});
@@ -59,7 +60,7 @@ export function memorySnapshotFromStorage({
 }
 
 export function applyMemorySnapshotToStorage(snapshot, {
-  storage = globalThis.localStorage,
+  storage = localStorage,
   state = globalThis.window?.zion?.state
 } = {}) {
   const value = normalizeMemorySnapshot(snapshot);
@@ -83,7 +84,7 @@ function runtimeConfigForMemory(state, storage) {
 
 export async function loadMemorySnapshotFromRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForMemory(state, storage);
@@ -103,7 +104,7 @@ export async function loadMemorySnapshotFromRuntime({
 export async function syncMemorySnapshotToRuntime({
   snapshot,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForMemory(state, storage);

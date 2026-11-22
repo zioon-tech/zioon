@@ -1,22 +1,23 @@
 {
-  "name": "Zion",
-  "short_name": "Zion",
-  "description": "Zion AI Workbench",
+  "name": "Zioon",
+  "short_name": "Zioon",
+  "description": "Zioon AI Workbench",
   "lang": "zh-CN",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#1e1e2e",
   "theme_color": "#222233",
   "orientation": "any",
   "icons": [
     {
-      "src": "/icon-192-v2.png",
+      "src": "/zioon-icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icon-512-v2.png",
+      "src": "/zioon-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
@@ -30,7 +31,7 @@
       "short_name": "New",
       "description": "Create a new file",
       "url": "/?action=new",
-      "icons": [{ "src": "/icon-192-v2.png", "sizes": "192x192" }]
+      "icons": [{ "src": "/zioon-icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   createHttpRuntimeClient,
   createRemoteRunHandle
@@ -32,7 +33,7 @@ export const RUNTIME_SCHEDULER_TOOLS = new Set([
 
 export function readSchedulerRuntimeConfig({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   const config = readWorkbenchRuntimeConfig({
     state,

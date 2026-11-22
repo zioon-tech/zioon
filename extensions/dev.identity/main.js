@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage, spaceScopedName, currentWorkbenchSpace, currentWorkbenchDocument, isSharedWorkbenchContent } from "../../src/runtime/workbench-space.ts";
 import {
   buildBiographyDigest,
   buildBiographyFacets,
@@ -50,7 +51,7 @@ import { dataLocationContext, normalizeDataLocation } from "../../packages/plugi
 
 const MEMORY_ROOT_DISPLAY = "/memory/dev.identity";
 const BIOGRAPHY_VIEW_ID = "dev.identity.biography";
-const BIOGRAPHY_CACHE_DB = "zion.identity-cache";
+const BIOGRAPHY_CACHE_DB = spaceScopedName("zion.identity-cache");
 const BIOGRAPHY_CACHE_STORE = "biography-events";
 const BIOGRAPHY_CACHE_VERSION = 1;
 const BIOGRAPHY_RENDER_PAGE_SIZE = 80;
@@ -221,6 +222,8 @@ function relativeIdentityPath(pathValue, rootValue) {
 }
 
 async function identityFileTarget(endpoint, path, params = {}) {
+  const currentId = currentWorkbenchDocument();
+  const documentId = currentWorkbenchSpace()?.kind === "team" || isSharedWorkbenchContent(currentId) ? currentId : "";
   const data = await identityDataLocation();
   const runtimeBase = getIdentityFilesBase();
   if (!runtimeBase) {
@@ -236,7 +239,16 @@ async function identityFileTarget(endpoint, path, params = {}) {
     if (value == null || value === "") continue;
     url.searchParams.set(key, String(value));
   }
-  return { url: url.toString(), requestPath };
+  if (documentId) url.searchParams.set("document", documentId);
+  return { url: url.toString(), requestPath, documentId, hashKey: `${documentId}|${path}` };
+}
+
+async function identityFetch(target, options) {
+  const response = await fetch(target.url, options);
+  if (!target.documentId) return response;
+  const raw = await response.arrayBuffer();
+  if (currentWorkbenchDocument() !== target.documentId) throw new Error("会话已切换，请重新读取记忆");
+  return new Response(raw, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
 async function resolveMemoryRoot() {
@@ -288,14 +300,14 @@ function isMissingFile(status, data, raw) {
 
 async function readLocalFileState(path) {
   const target = await identityFileTarget("/files/read", path);
-  const response = await fetch(target.url, { method: "GET" });
+  const response = await identityFetch(target, { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (!response.ok || data?.error) {
     if (isMissingFile(response.status, data, raw)) return { exists: false, content: "" };
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
-  if (data.content_hash) fileHashes.set(path, data.content_hash);
+  if (data.content_hash) fileHashes.set(target.hashKey, data.content_hash);
   return {
     exists: true,
     content: typeof data?.content === "string" ? data.content : ""
@@ -312,8 +324,8 @@ async function readLocalDirectoryEntries(path) {
     path,
     { max_depth: 1 }
   );
-  const response = await fetch(
-    target.url,
+  const response = await identityFetch(
+    target,
     { method: "GET" }
   );
   const raw = await response.text().catch(() => "");
@@ -349,7 +361,7 @@ async function readBiographyEventsPage(path, options = {}) {
     ...(options.tail ? { tail: Math.max(1, Number(options.tail)) } : {}),
     ...(!options.tail && options.offset ? { offset: Math.max(1, Number(options.offset)) } : {})
   });
-  const response = await fetch(target.url, { method: "GET" });
+  const response = await identityFetch(target, { method: "GET" });
   const raw = await response.text().catch(() => "");
   const data = parseResponseBody(raw);
   if (response.status === 404) return null;
@@ -372,8 +384,8 @@ async function readBiographyEventsPage(path, options = {}) {
 
 async function writeLocalFile(path, content, options = {}) {
   const target = await identityFileTarget("/files/write", path);
-  const hash = fileHashes.get(path);
-  const response = await fetch(target.url, {
+  const hash = fileHashes.get(target.hashKey);
+  const response = await identityFetch(target, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -388,13 +400,13 @@ async function writeLocalFile(path, content, options = {}) {
   if (!response.ok || data?.error) {
     throw new Error(String(data?.error || data?.detail || raw || `HTTP ${response.status}`));
   }
-  if (data.content_hash) fileHashes.set(path, data.content_hash);
+  if (data.content_hash) fileHashes.set(target.hashKey, data.content_hash);
   return true;
 }
 
 async function appendLocalJsonl(path, records) {
   const target = await identityFileTarget("/files/append-jsonl", path);
-  const response = await fetch(target.url, {
+  const response = await identityFetch(target, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -476,8 +488,9 @@ function openBiographyCacheDb() {
 }
 
 async function readBiographyEventsCache(key) {
+  if (currentWorkbenchSpace()?.kind === "team") return null;
   const location = await identityDataLocation();
-  key = `${getIdentityFilesBase()}|${location.root}|${key}`;
+  key = `${getIdentityFilesBase()}|${location.root}|${currentWorkbenchSpace()?.kind === "team" ? currentWorkbenchDocument() : ""}|${key}`;
   const db = await openBiographyCacheDb();
   if (!db) return null;
   return new Promise((resolve) => {
@@ -512,8 +525,9 @@ async function readBiographyEventsCache(key) {
 }
 
 async function writeBiographyEventsCache(key, events, complete = true) {
+  if (currentWorkbenchSpace()?.kind === "team") return false;
   const location = await identityDataLocation();
-  key = `${getIdentityFilesBase()}|${location.root}|${key}`;
+  key = `${getIdentityFilesBase()}|${location.root}|${currentWorkbenchSpace()?.kind === "team" ? currentWorkbenchDocument() : ""}|${key}`;
   const db = await openBiographyCacheDb();
   if (!db || !Array.isArray(events)) return false;
   return new Promise((resolve) => {
@@ -632,6 +646,7 @@ function getStoredIdentitySnapshot(meta) {
 
 async function writeSessionIdentitySnapshot(sessionId, snapshot) {
   const id = normalizeSessionId(sessionId);
+  if (isSharedWorkbenchContent(id)) return null;
   if (!id || !snapshot?.content) return null;
   try {
     const next = await window.zion?.commands?.executeCommand?.("zion.sessions.patchMeta", {
@@ -673,6 +688,14 @@ async function buildFreshIdentitySnapshot(sessionId) {
 
 async function loadIdentityContextForSession(sessionId, options = {}) {
   const id = normalizeSessionId(sessionId);
+  if (isSharedWorkbenchContent(id)) {
+    if (currentWorkbenchDocument() !== id) return "";
+    return loadIdentityContext();
+  }
+  if (currentWorkbenchSpace()?.kind === "team") {
+    if (!id) return "";
+    return (await refreshIdentityContextInRuntime({ sessionId: id }))?.content || "";
+  }
   if (!id) return loadIdentityContext();
 
   if (!options.force) {
@@ -3535,7 +3558,7 @@ export async function activate(ctx) {
         return { ok: false, error: "missing sessionId" };
       }
       try {
-        const runtimeSnapshot = await refreshIdentityContextInRuntime({ sessionId });
+        const runtimeSnapshot = isSharedWorkbenchContent(sessionId) ? null : await refreshIdentityContextInRuntime({ sessionId });
         if (runtimeSnapshot) await writeSessionIdentitySnapshot(sessionId, runtimeSnapshot);
         const content = runtimeSnapshot?.content
           ?? await loadIdentityContextForSession(sessionId, { force: true });
@@ -3570,6 +3593,7 @@ export async function activate(ctx) {
   } catch {}
 
   const runFinished = window.zion?.events?.on?.("chat/runFinished", (payload = {}) => {
+    if (isSharedWorkbenchContent(payload.sessionId) || isSharedWorkbenchContent(currentWorkbenchDocument())) return;
     if (String(payload.backend || "") === "runtime") {
       void reconcileProjectAutomationRuntimeState({ emit: true }).catch(() => {});
     }
@@ -3585,6 +3609,7 @@ export async function activate(ctx) {
     biographyQueue = biographyQueue
       .catch(() => {})
       .then(async () => {
+        if (isSharedWorkbenchContent(currentWorkbenchDocument())) return;
         const documentText = await documentPromise;
         if (disposed || !documentText.trim()) return;
         const exchange = extractLatestExchange(parseSessionMessages(documentText));
@@ -3616,6 +3641,7 @@ export async function activate(ctx) {
           });
           return;
         }
+        if (isSharedWorkbenchContent(currentWorkbenchDocument())) return;
         const written = await updateBiography(distilled, payload);
         console.info("[dev.identity] biography updated", {
           sessionId: payload.sessionId,

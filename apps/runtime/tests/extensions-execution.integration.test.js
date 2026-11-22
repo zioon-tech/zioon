@@ -26,20 +26,21 @@ import { createHash } from "node:crypto";
 
 const exec = promisify(execFile);
 describe("account code plugins and MCP through normal Runs and Node dispatch", () => {
-  let db, market, runs, root, owner, bob, grant, access, nodes, tools, service, server, url, headers, running, worker, dispatched;
+  let db, market, runs, root, owner, bob, grant, access, nodes, tools, service, server, url, headers, running, worker, dispatched, spaceId;
   let dependencyPrepared = false;
   const policy = () => ({ preset: "trusted-automation", allowedTools: ["extensionsCall", "write", "Bash"],
     fileRoots: [root], allowedCommandPrefixes: [], allowedTerminalSessionIds: [], maxToolCalls: 10 });
   beforeAll(async () => {
     db = await createPostgresTestDatabase("extension_execution");
     owner = await provisionTestTeam(db, { spaceId: "space:extension-execution" });
+    spaceId = (await db.accounts.personalSpace(owner.id)).id;
     bob = await db.accounts.resolveIdentity({ issuer: "https://identity.test", subject: "bob" });
     root = await realpath(await mkdtemp(join(tmpdir(), "zioon-extension-node-")));
     market = await new MarketplaceService({ pool: db.pool, artifactStore: createMemoryArtifactStore(),
       defaultExecutionConfig: async () => ({ nodeId: "node:fixture", workspaceRoot: root }) }).initialize();
-    runs = new PostgresRunStore(db.pool, { spaceId: "space:extension-execution" });
-    access = new AccountAccessControl({ accounts: db.accounts, store: new PostgresAccessStore(db.pool, { spaceId: "space:extension-execution" }),
-      servedSpaceId: "space:extension-execution", publicBaseUrl: "https://runtime.test", oidc: { secureCookies: true } });
+    runs = new PostgresRunStore(db.pool, { spaceId });
+    access = new AccountAccessControl({ accounts: db.accounts, store: new PostgresAccessStore(db.pool, { spaceId }),
+      servedSpaceId: spaceId, publicBaseUrl: "https://runtime.test", oidc: { secureCookies: true } });
     nodes = new NodeBroker();
     nodes.registerNode({ protocolVersion: 1, nodeId: "node:fixture", instanceId: "instance:fixture", label: "Test execution Node", platform: "darwin",
       capabilities: ["write", "Bash"].map((name) => ({ name, version: "1", inputSchema: { type: "object", additionalProperties: true }, hostKind: "local-tools", execution: { effect: name === "Bash" ? "process" : "write" } })),
@@ -60,7 +61,7 @@ describe("account code plugins and MCP through normal Runs and Node dispatch", (
       pluginCommands: async (id, args, context) => context.invokeToolRun(await service.commandOperation(id, args, context.principal)),
       serviceHttpHandlers: [createMarketplaceHttpHandler({ service: market })], pollIntervalMs: 5 });
     url = (await server.start()).url;
-    const session = await db.accounts.createSession(owner.id, { activeSpaceId: "space:extension-execution" });
+    const session = await db.accounts.createSession(owner.id, { activeSpaceId: spaceId });
     headers = { authorization: `Bearer ${session.token}` };
     running = true;
     dispatched = [];
@@ -94,7 +95,7 @@ describe("account code plugins and MCP through normal Runs and Node dispatch", (
   }, 30000);
   beforeEach(async () => {
     await db.pool.query("TRUNCATE marketplace_accounts,marketplace_private_releases");
-    grant = await db.accounts.issueGrant(owner.id, policy(), { spaceId: "space:extension-execution" });
+    grant = await db.accounts.issueGrant(owner.id, policy(), { spaceId });
   });
   afterAll(async () => {
     running = false; await worker; nodes?.close(); await server?.close(); await db?.close();

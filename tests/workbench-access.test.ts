@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ensureWorkbenchRuntimeAccess
-} from "../src/runtime/workbench-access";
+let ensureWorkbenchRuntimeAccess: typeof import("../src/runtime/workbench-access").ensureWorkbenchRuntimeAccess;
 import {
   WORKBENCH_RUNTIME_BASE_URL_STORAGE_KEY,
   WORKBENCH_RUNTIME_MODE_STORAGE_KEY
@@ -10,7 +8,8 @@ import {
   registerRemoteAccessSettings
 } from "../src/settings/RemoteAccessSettings";
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
   document.body.innerHTML = '<div id="app"></div>';
   (window as any).zion = undefined;
   localStorage.clear();
@@ -20,6 +19,7 @@ beforeEach(() => {
   );
   window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
+  ({ ensureWorkbenchRuntimeAccess } = await import("../src/runtime/workbench-access"));
 });
 
 describe("Workbench remote access bootstrap", () => {

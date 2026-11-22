@@ -335,7 +335,9 @@ export class RuntimeIdentityContextProvider {
     resolveDataLocation = null,
     contextStore = null,
     bindingKey = "",
-    scopeMode = "legacy"
+    scopeMode = "legacy",
+    spaceKind = "personal",
+    authorizeContext = null
   }) {
     this.id = "dev.identity.context";
     this.stage = "pre";
@@ -348,6 +350,8 @@ export class RuntimeIdentityContextProvider {
     this.accountScoped = scopeMode === "account";
     this.contextStore = contextStore;
     this.bindingKey = bindingKey;
+    this.spaceKind = spaceKind;
+    this.authorizeContext = authorizeContext;
     this.runSnapshots = new Map();
     this.scopedSessionSnapshots = new Map();
     this.scopedLatestSnapshots = new Map();
@@ -355,6 +359,7 @@ export class RuntimeIdentityContextProvider {
   }
 
   async locationFor(runContext = {}, access = "read") {
+    await this.authorizeContext?.(runContext, access);
     if (this.resolveDataLocation) {
       return await this.resolveDataLocation(runContext, { access });
     }
@@ -367,6 +372,15 @@ export class RuntimeIdentityContextProvider {
     const userId = principal?.userId || principal?.user?.id;
     const spaceId = principal?.spaceId || principal?.space?.id;
     if (!userId || !spaceId) throw new Error("Identity cache requires an authenticated account");
+    if (principal.contentScope) {
+      return JSON.stringify(["shared-v1", principal.contentScope.originSpaceId, "document",
+        principal.contentScope.documentId, sourceRoot, this.bindingKey]);
+    }
+    if (this.spaceKind === "team") {
+      const documentId = runContext.request?.sessionId || runContext.sessionId || principal.documentId;
+      return JSON.stringify(["shared-v1", spaceId, documentId ? "document" : "space",
+        documentId || "", sourceRoot, this.bindingKey]);
+    }
     return JSON.stringify([spaceId, userId, sourceRoot, this.bindingKey]);
   }
 
@@ -659,7 +673,9 @@ export function activateRuntimePlugin(context) {
     resolveDataLocation,
     contextStore: context.config?.contextStore,
     bindingKey: context.config?.contextBindingKey || "",
-    scopeMode
+    scopeMode,
+    spaceKind: context.config?.spaceKind,
+    authorizeContext: context.config?.authorizeContext
   });
   const postProcessorDisposables = [];
   if (

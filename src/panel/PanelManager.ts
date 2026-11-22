@@ -59,6 +59,20 @@ export class PanelManager {
     return [...this.panels.values()];
   }
 
+  dispose(): void {
+    this.hostResizeObserver?.disconnect();
+    this.hostResizeObserver = null;
+    if (this.pendingMaximizedFocusRender != null) clearTimeout(this.pendingMaximizedFocusRender);
+    if (this.pendingActivePanelReveal != null) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.pendingActivePanelReveal as number);
+      clearTimeout(this.pendingActivePanelReveal);
+    }
+    this.pendingMaximizedFocusRender = null; this.pendingActivePanelReveal = null;
+    this.listeners.clear(); this.panels.clear();
+    this.root = null; this.activePanelId = null;
+    this.host.replaceChildren();
+  }
+
   getPanel(panelId: PanelId): PanelRecord | null {
     return this.panels.get(panelId) || null;
   }

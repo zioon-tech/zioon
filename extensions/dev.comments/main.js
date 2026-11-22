@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { EditorState, Prec, Transaction } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import { addCursorAbove, addCursorBelow, copyLineDown, copyLineUp, moveLineDown, moveLineUp } from "@codemirror/commands";

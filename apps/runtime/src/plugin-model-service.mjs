@@ -55,12 +55,13 @@ export function createPluginModelService({
         controller.signal.throwIfCancelled();
         await authorizeRequest?.(runContext);
         const requestedModel = typeof resolveModel === "function"
-          ? resolveModel(model || null)
+          ? await resolveModel(model || runContext.request?.model || runContext.model || null,
+            runContext.principal || runContext.request?.principal)
           : model;
         for await (const event of engine.streamTurn({
           runId: runContext.runId,
           attemptId: runContext.attemptId,
-          principal: runContext.principal,
+          principal: runContext.principal || runContext.request?.principal,
           messages: normalizeMessages(messages),
           tools: [],
           model: requestedModel,

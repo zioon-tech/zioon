@@ -3,6 +3,9 @@ import {
 } from "../access-control.mjs";
 import { accountError, roleScopes, intersectAccountPolicy } from "./account-policy.mjs";
 import { verifyMemoryDelegation } from "./memory-delegation.mjs";
+import { resolveMemoryScope } from "../spaces/memory-scope.mjs";
+import { authorizeContentScope, contentSpaceId, assertContentRun } from "../sharing/content-scope.mjs";
+import { SHARED_DOCUMENT_SAFE_TOOLS } from "../spaces/space-runtime.mjs";
 
 const writeMethod = (method) => !["GET", "HEAD", "OPTIONS"].includes(method);
 
@@ -37,11 +40,13 @@ export function accountRequestScope(method, pathname) {
 
 export class AccountAccessControl extends RuntimeAccessControl {
   constructor({ accounts, oidc, resolveProfile = null, servedSpaceId = "", memoryBridgeSecret = "",
-    memoryEnabled = !!memoryBridgeSecret, adcOrigin = "", sharedAccountIssuer = "", ...options }) {
+    memoryEnabled = !!memoryBridgeSecret, adcOrigin = "", sharedAccountIssuer = "", sharedSpaces = null, sharing = null, ...options }) {
     super(options);
     this.memoryBridgeSecret = memoryBridgeSecret;
     this.memoryEnabled = memoryEnabled;
     this.accounts = accounts;
+    this.sharedSpaces = sharedSpaces;
+    this.sharing = sharing;
     this.oidc = oidc;
     this.adcOrigin = adcOrigin ? new URL(adcOrigin).origin : "";
     this.sharedAccountIssuer = sharedAccountIssuer ? new URL(sharedAccountIssuer).origin : "";
@@ -54,10 +59,14 @@ export class AccountAccessControl extends RuntimeAccessControl {
   }
 
   // Account cookies are never shared with the pairing credential namespace.
-  async authenticateHeaders(headers, token = "") {
+  async authenticateHeaders(headers, token = "", { spaceId = "", allowGuest = false } = {}) {
     const bearer = token || bearerToken(headers);
     const credential = bearer || cookieValue(headers, this.sessionCookie);
-    const account = await this.accounts.authenticate(credential);
+    const explicitSpace = spaceId || headerValue(headers, "x-zioon-space-id");
+    if (explicitSpace && (explicitSpace.length > 256 || /[\x00-\x20]/.test(explicitSpace))) {
+      throw accountError(400, "invalid_space_scope");
+    }
+    const account = await this.accounts.authenticate(credential, { spaceId: explicitSpace, allowGuest });
     if (account) {
       try { await this.oidc.validateSession?.(account, {
         browser: !bearer, cookies: headerValue(headers, "cookie") || ""
@@ -75,6 +84,20 @@ export class AccountAccessControl extends RuntimeAccessControl {
     return resource?.device?.kind === "resource" ? resource : null;
   }
 
+  async authenticateRequest(request) {
+    const url = new URL(request.url || "/", this.publicBaseUrl);
+    const match = url.pathname.match(/^\/v1\/spaces\/([^/]+)(?:\/|$)/);
+    const pathSpace = match ? decodeURIComponent(match[1]) : "";
+    const headerSpace = headerValue(request.headers, "x-zioon-space-id");
+    const socketSpace = url.pathname === "/v1/collaboration" ? url.searchParams.get("space") || "" : "";
+    const spaceId = pathSpace || headerSpace || socketSpace;
+    if ((pathSpace && headerSpace && pathSpace !== headerSpace) || (socketSpace && headerSpace && socketSpace !== headerSpace)) {
+      throw accountError(400, "space_scope_conflict");
+    }
+    const allowGuest = /^\/v1\/spaces\/[^/]+\/documents\/[^/]+(?:\/(?:access|comments|assets|presence)(?:\/[^/]+)?)?$/.test(url.pathname);
+    return authorizeContentScope(this, request, await this.authenticateHeaders(request.headers, "", { spaceId, allowGuest }));
+  }
+
   // Only configured origins in account mode; arbitrary localhost websites
   // are not implicitly allowed to send authenticated requests.
   originAllowed(value) {
@@ -86,7 +109,12 @@ export class AccountAccessControl extends RuntimeAccessControl {
       return scope === "node.connect" && principal?.device?.kind === "resource"
         && super.hasScope(principal, scope);
     }
-    if (this.servedSpaceId && principal.space?.id !== this.servedSpaceId) return false;
+    if (this.servedSpaceId && contentSpaceId(principal) !== this.servedSpaceId) return false;
+    if (principal.contentScope) {
+      if (!["runtime.read", "runtime.write", "run.execute", "collaboration.write"].includes(scope)) return false;
+      await this.sharing.documentAccess(principal.user.id, principal.contentScope.originSpaceId,
+        principal.contentScope.documentId, scope === "runtime.read" ? "view" : "edit");
+    }
     const member = await this.accounts.membership(principal.user.id, principal.space?.id);
     return await this.accounts.activeSession(principal.sessionId, principal.user.id)
       && member?.status === "active" && roleScopes(member.role).includes(scope);
@@ -104,7 +132,7 @@ export class AccountAccessControl extends RuntimeAccessControl {
     if (
       principal?.kind === "account"
       && this.servedSpaceId
-      && principal.space?.id !== this.servedSpaceId
+      && contentSpaceId(principal) !== this.servedSpaceId
     ) {
       throw accountError(
         409,
@@ -131,6 +159,10 @@ export class AccountAccessControl extends RuntimeAccessControl {
     }
     this.requireServedSpace(principal);
     await this.requireScope(principal, scope);
+    if (this.sharedSpaces && principal.documentId) {
+      await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal),
+        principal.documentId, principal.documentAction || "view");
+    }
     return {
       ...principal,
       membership: await this.accounts.membership(principal.user.id, principal.space?.id)
@@ -154,14 +186,56 @@ export class AccountAccessControl extends RuntimeAccessControl {
   async authorizeRuntimeRequest(request) {
     const principal = await this.requireLogin(request);
     this.requireServedSpace(principal);
+    if (this.sharedSpaces && principal.space?.kind === "team" && !principal.explicitSpace) {
+      throw accountError(409, "explicit_space_required", "Shared Space requests require an explicit Space");
+    }
     const url = new URL(request.url, this.publicBaseUrl);
     const memoryFiles = this.memoryEnabled
       && /^\/v1\/plugins\/dev\.identity\/files\//.test(url.pathname);
     const memoryLocation = this.memoryEnabled
       && url.pathname === "/v1/plugins/dev.identity/locations" && request.method === "GET";
+    if (memoryFiles && url.searchParams.has("document")) {
+      const documentId = url.searchParams.get("document");
+      await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal), documentId,
+        writeMethod(request.method) ? "edit" : "view");
+      principal.documentId = documentId;
+      principal.documentAction = writeMethod(request.method) ? "edit" : "view";
+    }
     await this.requireScope(principal, memoryFiles
       ? (writeMethod(request.method) ? "runtime.write" : "runtime.read")
       : memoryLocation ? "runtime.read" : accountRequestScope(request.method, url.pathname));
+    if (this.sharedSpaces) {
+      const sessionPath = url.pathname.match(/^\/v1\/sessions\/([^/]+)(?:\/|$)/);
+      const runPath = url.pathname.match(/^\/v1\/runs\/([^/]+)(?:\/|$)/);
+      const assetPath = url.pathname.match(/^\/v1\/assets\/([^/]+)(?:\/|$)/);
+      let documentId = sessionPath ? decodeURIComponent(sessionPath[1]) : "";
+      if (runPath) {
+        const runId = decodeURIComponent(runPath[1]);
+        const run = (await this.sharedSpaces.pool.query("SELECT payload_json FROM runtime_runs WHERE space_id=$1 AND id=$2",
+          [contentSpaceId(principal), runId])).rows[0]?.payload_json;
+        documentId = run?.sessionId || "";
+        if (!run || !documentId && principal.space.kind === "team") throw accountError(404, "run_not_found");
+        if (principal.contentScope && documentId !== principal.contentScope.documentId) throw accountError(404, "run_not_found");
+        if (principal.contentScope && principal.contentScope.originSpaceId !== principal.space.id
+          && (run.principal?.contentScope?.originSpaceId !== principal.contentScope.originSpaceId
+            || run.principal?.contentScope?.documentId !== documentId)) {
+          throw accountError(404, "run_not_found");
+        }
+      }
+      if (documentId) {
+        const action = request.method === "DELETE" ? "manage" : writeMethod(request.method) ? "edit" : "view";
+        await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal), documentId, action);
+        principal.documentId = documentId;
+        principal.documentAction = action;
+      }
+      if (assetPath) {
+        const assetId = decodeURIComponent(assetPath[1]);
+        if (principal.contentScope && !(await this.sharedSpaces.pool.query(
+          "SELECT 1 FROM space_document_assets WHERE space_id=$1 AND document_id=$2 AND asset_id=$3",
+          [contentSpaceId(principal), principal.documentId, assetId])).rowCount) throw accountError(404, "asset_not_found");
+        await this.sharedSpaces.requireAsset(principal.user.id, contentSpaceId(principal), assetId);
+      }
+    }
     return principal;
   }
 
@@ -186,9 +260,22 @@ export class AccountAccessControl extends RuntimeAccessControl {
   }
 
   async authenticateCollaboration(input) {
-    const principal = await this.authenticateHeaders(input.headers, input.token);
+    let principal = await this.authenticateHeaders(input.headers, input.token, {
+      spaceId: input.parameters?.get("space") || input.spaceId || ""
+    });
+    const parameters = input.parameters || new URLSearchParams();
+    principal = await authorizeContentScope(this, { method: "GET", headers: input.headers,
+      url: `/v1/collaboration?${parameters}` }, principal);
+    assertContentRun(principal, { sessionId: input.documentName });
     this.requireServedSpace(principal);
     await this.requireScope(principal, "runtime.read");
+    if (this.sharedSpaces) {
+      if (principal.space.kind === "team" && !principal.explicitSpace) throw accountError(409, "explicit_space_required");
+      const d = await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal), input.documentName);
+      principal.documentId = input.documentName;
+      principal.documentAction = ["editor", "manager"].includes(d.access.role) ? "edit" : "view";
+      return { principal, documentId: input.documentName, readOnly: !["editor", "manager"].includes(d.access.role) };
+    }
     return {
       principal,
       readOnly: !await this.hasScope(principal, "collaboration.write")
@@ -197,16 +284,35 @@ export class AccountAccessControl extends RuntimeAccessControl {
 
   async authorizeRunRequest(principal, request, ceiling) {
     await this.reauthorize(principal, "run.execute");
+    assertContentRun(principal, request);
     const spaceId = principal.space?.id || this.accounts.spaceId;
+    if (this.sharedSpaces && principal.space.kind === "team" && !request.sessionId) {
+      throw accountError(400, "shared_document_required");
+    }
+    if (this.sharedSpaces && request.sessionId) {
+      await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal), request.sessionId, "edit");
+    }
     if (request.spaceId && request.spaceId !== spaceId) {
       throw accountError(403, "space_mismatch");
     }
     const role = (await this.accounts.membership(principal.user.id, spaceId)).role;
-    const policy = intersectAccountPolicy(request.policy, ceiling, role);
+    let policy = intersectAccountPolicy(request.policy, ceiling, role);
+    const sharedDocument = principal.contentScope || request.sessionId && this.sharing
+      && await this.sharing.sharedMemory(spaceId, request.sessionId);
+    const contentScope = principal.contentScope || (sharedDocument ? {
+      originSpaceId: spaceId, documentId: request.sessionId, ownerId: principal.user.id
+    } : null);
+    if (contentScope) {
+      policy = { ...policy, allowedTools: policy.allowedTools.filter(t => SHARED_DOCUMENT_SAFE_TOOLS.has(t)),
+        maxMailPerRun: 0, allowedRecipients: [], allowedCommandPrefixes: [], allowedTerminalSessionIds: [] };
+      request = { ...request, projectId: undefined, target: undefined,
+        metadata: Object.fromEntries(Object.entries(request.metadata || {}).filter(([key]) =>
+          ["interactionProfileId", "documentProjection", "workbenchClientId", "clientRequestId", "source", "documentRevision"].includes(key))) };
+    }
     return {
       ...request,
       principal: await this.accounts.issueGrant(principal.user.id, policy, {
-        spaceId,
+        spaceId, contentScope,
         profileId: request.interactionProfileId || request.metadata?.interactionProfileId || ""
       }),
       policy
@@ -219,6 +325,14 @@ export class AccountAccessControl extends RuntimeAccessControl {
 
   async authorizeRunExecution(request) {
     const grant = await this.accounts.validateGrant(request?.principal, request?.policy);
+    assertContentRun(grant.principal, { sessionId: request.sessionId || grant.principal.contentScope?.documentId });
+    if (this.servedSpaceId && contentSpaceId(grant.principal) !== this.servedSpaceId
+      && grant.principal.spaceId !== this.servedSpaceId) throw accountError(403, "grant_runtime_mismatch");
+    if (this.sharedSpaces && request.sessionId) {
+      await this.sharedSpaces.requireDocument(grant.principal.userId, contentSpaceId(grant.principal), request.sessionId, "edit");
+      if (request.metadata?.spaceBindingId) await this.sharedSpaces.requireBinding(
+        grant.principal.userId, grant.principal.spaceId, request.metadata.spaceBindingId);
+    }
     let policy = grant.policy;
     if (this.resolveProfile) {
       const profileIds = new Set([
@@ -247,12 +361,15 @@ export class AccountAccessControl extends RuntimeAccessControl {
   }
 
   async authorizeExistingRun(principal, run, { allowRevoked = false } = {}) {
-    await this.reauthorize(principal, "run.execute");
+    await this.reauthorize(principal, this.sharedSpaces && allowRevoked ? "runtime.read" : "run.execute");
     if (!run) throw accountError(404, "run_not_found");
-    if (run.principal?.spaceId && run.principal.spaceId !== principal.space?.id) {
+    if (run.principal?.spaceId && contentSpaceId(run.principal) !== contentSpaceId(principal)) {
       throw accountError(404, "run_not_found");
     }
-    if (run.principal?.userId !== principal.user.id) {
+    if (this.sharedSpaces && run.sessionId) {
+      assertContentRun(principal, run);
+      await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal), run.sessionId, allowRevoked ? "view" : "edit");
+    } else if (run.principal?.userId !== principal.user.id) {
       await this.requireScope(principal, "runtime.manage");
     }
     // Legacy Runs can be inspected, but must be submitted as new Runs to get
@@ -407,6 +524,9 @@ export class AccountAccessControl extends RuntimeAccessControl {
         if (request.method === "GET" && ["/v1/account/me", "/v1/access/session"].includes(path)) {
           json(response, 200, {
             authenticated: true, mode: this.mode, user: principal.user, space: principal.space,
+            memoryScope: principal.space.kind === "team" && !principal.explicitSpace ? null : await resolveMemoryScope(this, {
+              principal, sessionId: url.searchParams.get("document")
+            }),
             accountIdentity: await this.accounts.identityForUser?.(userId, this.sharedAccountIssuer || this.oidc.issuer) || null,
             membership: await this.accounts.membership(userId, spaceId), expiresAt: principal.expiresAt,
             sessionId: principal.sessionId,
@@ -476,20 +596,26 @@ export class AccountAccessControl extends RuntimeAccessControl {
           json(response, 200, { members: await this.accounts.listMembers(userId, spaceId) });
         } else if (request.method === "PATCH" && path.startsWith("/v1/account/members/")) {
           const memberId = decodeURIComponent(path.slice("/v1/account/members/".length));
+          const input = await readJson(request);
+          if (this.sharedSpaces) {
+            if (input.role === "owner") throw accountError(400, "use_ownership_transfer");
+            const actor = await this.sharedSpaces.member(userId, spaceId, this.sharedSpaces.pool, true);
+            const target = await this.accounts.membership(memberId, spaceId);
+            if (actor.role !== "owner" && (input.role === "admin" || target?.role === "admin")) throw accountError(403, "owner_required");
+          }
           json(response, 200, {
-            membership: await this.accounts.setMember(userId, memberId, await readJson(request), spaceId)
+            membership: await this.accounts.setMember(userId, memberId, input, spaceId)
           });
         } else if (request.method === "POST" && path === "/v1/account/invitations") {
-          const invitation = await this.accounts.invite(userId, await readJson(request), spaceId);
+          const invitation = this.sharedSpaces
+            ? await this.sharedSpaces.invite(userId, spaceId, await readJson(request))
+            : await this.accounts.invite(userId, await readJson(request), spaceId);
           json(response, 201, {
             ...invitation,
             url: `${this.publicBaseUrl}/account#invite=${encodeURIComponent(invitation.token)}`
           });
         } else if (request.method === "POST" && path === "/v1/account/invitations/accept") {
-          const accepted = await this.accounts.acceptInvitation(
-            userId,
-            (await readJson(request)).token
-          );
+          const accepted = await (this.sharedSpaces || this.accounts).acceptInvitation(userId, (await readJson(request)).token);
           json(response, 200, {
             membership: accepted?.membership || accepted,
             ...(accepted?.space ? { space: accepted.space } : {})

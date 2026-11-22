@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { Prec } from "@codemirror/state";
 import { Decoration, ViewPlugin, WidgetType, keymap } from "@codemirror/view";
 import { EditorCore } from "../../src/editor/EditorCore.ts";

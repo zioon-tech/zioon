@@ -121,7 +121,7 @@ function buildDecorations(view: EditorView): DecorationSet {
   return builder.finish();
 }
 
-const obsidianDecorations = ViewPlugin.fromClass(
+function obsidianDecorations(allowPrivateReferences: boolean) { return ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
 
@@ -147,6 +147,7 @@ const obsidianDecorations = ViewPlugin.fromClass(
         const raw = link.textContent || "";
         const biographyEventId = findBiographyEventReference(raw);
         if (biographyEventId) {
+          if (!allowPrivateReferences) return;
           event.preventDefault();
           event.stopPropagation();
           try {
@@ -166,8 +167,8 @@ const obsidianDecorations = ViewPlugin.fromClass(
       }
     }
   }
-);
+); }
 
-export function obsidianSyntaxExtension(): Extension {
-  return obsidianDecorations;
+export function obsidianSyntaxExtension(options: { allowPrivateReferences?: boolean } = {}): Extension {
+  return obsidianDecorations(options.allowPrivateReferences !== false);
 }

@@ -1,4 +1,5 @@
 import { readWorkbenchRuntimeConfig } from "../runtime/workbench-runtime-config";
+import { spaceScopedName, currentWorkbenchDocument, sharedWorkbenchDocument } from "../runtime/workbench-space";
 
 export const IMAGE_ASSET_PREFIX = "zion-asset://";
 export const LEGACY_IMAGE_ASSET_PREFIX = "app://img/";
@@ -71,12 +72,14 @@ function runtimeAssetId(source: string): string | null {
   return /^[a-zA-Z0-9._:-]{1,200}$/.test(id) ? id : null;
 }
 
-function runtimeAssetEndpoint(source: string, suffix = ""): string | null {
+function runtimeAssetEndpoint(source: string, suffix = "", sessionId = currentWorkbenchDocument()): string | null {
   const id = runtimeAssetId(source);
   if (!id) return null;
   const runtime = readWorkbenchRuntimeConfig();
   if (runtime.mode === "browser") return null;
-  return `${runtime.baseUrl}/v1/assets/${encodeURIComponent(id)}${suffix}`;
+  const url = new URL(`${runtime.baseUrl}/v1/assets/${encodeURIComponent(id)}${suffix}`);
+  if (sharedWorkbenchDocument(sessionId)) url.searchParams.set("document", sessionId);
+  return url.toString();
 }
 
 async function responseError(response: Response, fallback: string): Promise<Error> {
@@ -114,8 +117,8 @@ async function uploadRuntimeImage(
   return uri;
 }
 
-async function readRuntimeAssetBlob(source: string): Promise<Blob | null> {
-  const endpoint = runtimeAssetEndpoint(source, "/content");
+async function readRuntimeAssetBlob(source: string, sessionId = currentWorkbenchDocument()): Promise<Blob | null> {
+  const endpoint = runtimeAssetEndpoint(source, "/content", sessionId);
   if (!endpoint) return null;
   const response = await fetch(endpoint, {
     headers: { accept: "image/*" },
@@ -128,7 +131,7 @@ async function readRuntimeAssetBlob(source: string): Promise<Blob | null> {
 function openImageAssetDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     try {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      const request = indexedDB.open(spaceScopedName(DB_NAME), DB_VERSION);
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -237,19 +240,20 @@ export async function putImageAsset(
   return `${LEGACY_IMAGE_ASSET_PREFIX}${id}`;
 }
 
-export async function resolveImageAsset(source: string): Promise<string | null> {
+export async function resolveImageAsset(source: string, sessionId = currentWorkbenchDocument()): Promise<string | null> {
   if (!source) return null;
   if (!isImageAssetUri(source)) return source;
-  const cached = resolvedObjectUrls.get(source);
+  const cacheKey = `${spaceScopedName("asset")}:${sessionId}:${source}`;
+  const cached = resolvedObjectUrls.get(cacheKey);
   if (cached) {
-    resolvedObjectUrls.delete(source);
-    resolvedObjectUrls.set(source, cached);
+    resolvedObjectUrls.delete(cacheKey);
+    resolvedObjectUrls.set(cacheKey, cached);
     return cached.url;
   }
   if (source.startsWith(IMAGE_ASSET_PREFIX)) {
-    const blob = await readRuntimeAssetBlob(source);
+    const blob = await readRuntimeAssetBlob(source, sessionId);
     if (!blob) return null;
-    return cacheObjectUrl(source, URL.createObjectURL(blob), blob.size);
+    return cacheObjectUrl(cacheKey, URL.createObjectURL(blob), blob.size);
   }
   const id = source.slice(LEGACY_IMAGE_ASSET_PREFIX.length);
   const record = await readRecord(id);
@@ -257,7 +261,7 @@ export async function resolveImageAsset(source: string): Promise<string | null> 
   if (record.dataUrl) return record.dataUrl;
   if (!record.blob) return null;
   const url = URL.createObjectURL(record.blob);
-  return cacheObjectUrl(source, url, record.size ?? record.blob.size);
+  return cacheObjectUrl(cacheKey, url, record.size ?? record.blob.size);
 }
 
 export async function readImageAssetDataUrl(source: string): Promise<string | null> {

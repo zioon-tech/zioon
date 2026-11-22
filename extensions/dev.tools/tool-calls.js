@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
 import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import { diffWordsWithSpace } from "diff";
@@ -20,6 +21,7 @@ import {
 } from "../../src/chat/conversation-viewport.js";
 import { resolveToolCardId } from "../../src/chat/tool-card-id";
 import { inlineWidgetSourceFacet } from "../../src/editor/inlineWidgets";
+import { zionIconHtml } from "../../src/ui/icons";
 
 function t(key, fallback, values) {
   const fullKey = `dev.tools.${key}`;
@@ -27,7 +29,8 @@ function t(key, fallback, values) {
     const translated = window.zion?.i18n?.t?.(fullKey, values);
     if (translated && translated !== fullKey) return translated;
   } catch {}
-  return fallback;
+  return String(fallback).replace(/\{(\w+)\}/g, (token, name) =>
+    values?.[name] == null ? token : String(values[name]));
 }
 
 /**
@@ -750,7 +753,7 @@ function createReadPreviewView(result, args = {}, context = {}) {
 
   const headerRight = document.createElement("div");
   headerRight.className = "zion-tool-artifact-preview-right";
-  const openButton = createOpenInContextButton("read", args, context);
+  const openButton = context.readOnly ? null : createOpenInContextButton("read", args, context);
   if (openButton) headerRight.appendChild(openButton);
   if (offset != null) headerRight.appendChild(createMetaPill(`offset ${offset}`));
   if (limit != null) headerRight.appendChild(createMetaPill(`limit ${limit}`));
@@ -929,7 +932,7 @@ function createWritePreviewView(args) {
   return section;
 }
 
-function createArtifactDiffPreview(name, args, { id = "preview", result = null, ok = null, action = null, getContext = null } = {}) {
+function createArtifactDiffPreview(name, args, { id = "preview", result = null, ok = null, action = null, getContext = null, readOnly = false } = {}) {
   const artifact = buildArtifactFromTool({ id, name, args, result, ok, action: normalizeToolAction(action) }, {}, "");
   if (!artifact) return null;
   const isCreated = artifact.kind === "created";
@@ -957,9 +960,9 @@ function createArtifactDiffPreview(name, args, { id = "preview", result = null, 
 
   const headerRight = document.createElement("div");
   headerRight.className = "zion-tool-artifact-preview-right";
-  const openButton = createOpenInContextButton(name, args, getContext?.() || {});
+  const openButton = readOnly ? null : createOpenInContextButton(name, args, getContext?.() || {});
   if (openButton) headerRight.appendChild(openButton);
-  if (canAcceptRevertTool(name, args)) {
+  if (!readOnly && canAcceptRevertTool(name, args)) {
     const actions = document.createElement("div");
     actions.className = "zion-tool-artifact-preview-actions";
     actions.appendChild(createArtifactPreviewAction("Accept", () => emitToolCardAction("accept", { id, name, args, getContext }), "primary"));
@@ -1912,7 +1915,7 @@ function summarizeToolArgsCompact(name, args, max = 44) {
 }
 
 export class ToolCallCardWidget extends WidgetType {
-  constructor(id, name, args, result, ok, sessionId = null, action = null) {
+  constructor(id, name, args, result, ok, sessionId = null, action = null, options = {}) {
     super();
     this.id = id + ":card";
     this.name = name;
@@ -1921,9 +1924,10 @@ export class ToolCallCardWidget extends WidgetType {
     this.ok = ok;
     this.sessionId = sessionId || null;
     this.action = normalizeToolAction(action);
+    this.readOnly = !!options.readOnly;
   }
   eq(other) {
-    return other.id === this.id && other.name === this.name && other.result === this.result && other.ok === this.ok && other.sessionId === this.sessionId && other.action === this.action && JSON.stringify(other.args) === JSON.stringify(this.args);
+    return other.readOnly === this.readOnly && other.id === this.id && other.name === this.name && other.result === this.result && other.ok === this.ok && other.sessionId === this.sessionId && other.action === this.action && JSON.stringify(other.args) === JSON.stringify(this.args);
   }
   toDOM() {
     const wrap = document.createElement("div");
@@ -2004,7 +2008,7 @@ export class ToolCallCardWidget extends WidgetType {
         headMain.appendChild(subtitle);
       }
       header.appendChild(headMain);
-      if (isChangesArtifactTool(this.name)) {
+      if (!this.readOnly && isChangesArtifactTool(this.name)) {
         header.appendChild(createToolCardActionsMenu({
           id: String(this.id).replace(/:card$/, ""),
           name: this.name,
@@ -2031,14 +2035,15 @@ export class ToolCallCardWidget extends WidgetType {
         result: this.result,
         ok: this.ok,
         action: this.action,
+        readOnly: this.readOnly,
         getContext: getActionContext
       });
       if (requestView) wrap.appendChild(requestView);
     }
 
     // 响应结果部分
-    if (this.result && (!inlineArtifact || ok === false)) {
-        wrap.appendChild(createToolResponseRenderer(this.name, this.result, this.args || {}, getActionContext()));
+    if (this.result != null && (!inlineArtifact || ok === false)) {
+        wrap.appendChild(createToolResponseRenderer(this.name, this.result, this.args || {}, { ...getActionContext(), readOnly: this.readOnly }));
     }
 
     return wrap;
@@ -2051,7 +2056,7 @@ export class ToolCallCardWidget extends WidgetType {
  * handled by the existing domEventHandlers to dispatch toggleInline.
  */
 export class ToolInlineWidget extends WidgetType {
-  constructor(id, name, args, ok, done, action = null, result = null, sessionId = null) {
+  constructor(id, name, args, ok, done, action = null, result = null, sessionId = null, options = {}) {
     super();
     this.id = id + ":inline";
     this.name = name;
@@ -2061,9 +2066,10 @@ export class ToolInlineWidget extends WidgetType {
     this.action = normalizeToolAction(action);
     this.result = result;
     this.sessionId = sessionId || null;
+    this.readOnly = !!options.readOnly;
   }
   eq(other) {
-    return other.id === this.id && other.name === this.name && other.ok === this.ok && other.done === this.done && other.action === this.action && other.result === this.result && other.sessionId === this.sessionId && JSON.stringify(other.args) === JSON.stringify(this.args);
+    return other.readOnly === this.readOnly && other.id === this.id && other.name === this.name && other.ok === this.ok && other.done === this.done && other.action === this.action && other.result === this.result && other.sessionId === this.sessionId && JSON.stringify(other.args) === JSON.stringify(this.args);
   }
   toDOM() {
     const span = document.createElement("span");
@@ -2095,7 +2101,7 @@ export class ToolInlineWidget extends WidgetType {
     btn.type = "button";
     btn.title = t("call.toggle", "展开/收起工具调用卡片");
     btn.setAttribute("aria-label", t("call.toggle", "展开/收起工具调用卡片"));
-      btn.innerHTML = `<span class="codicon codicon-chevron-down" aria-hidden="true"></span>`;
+    btn.innerHTML = zionIconHtml("chevron-down", "", 14);
     Object.assign(btn.style, {
       flex: "0 0 auto"
     });
@@ -2155,7 +2161,7 @@ export class ToolInlineWidget extends WidgetType {
     const actionPill = createToolActionPill(this.action);
     if (actionPill) span.appendChild(actionPill);
 
-    const openBtn = createOpenInContextButton(this.name, this.args || {}, { sessionId: this.sessionId || "" });
+    const openBtn = this.readOnly ? null : createOpenInContextButton(this.name, this.args || {}, { sessionId: this.sessionId || "" });
     if (openBtn) span.appendChild(openBtn);
 
     const badge = document.createElement("span");

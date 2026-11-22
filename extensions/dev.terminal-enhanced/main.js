@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { installTerminalEnhancedPanel } from "./panel.js";
 import { getTerminalSessionRequirementError } from "../dev.tools/terminal-tool-context.js";
 import {

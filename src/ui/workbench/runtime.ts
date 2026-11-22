@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../runtime/workbench-space";
 export type Disposable = { dispose(): void };
 
 export type ActivityBarItem = {

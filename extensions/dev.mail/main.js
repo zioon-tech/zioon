@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { installMailConfigPanel } from "./mail-config.js";
 import { registerMailSettings } from "./settings.js";
 

@@ -27,12 +27,12 @@ describe("private Skill CLI lifecycle through authenticated account HTTP", () =>
     bob = await db.accounts.resolveIdentity({ issuer: "https://identity.test", subject: "bob" });
     await db.accounts.acceptInvitation(bob.id, (await db.accounts.invite(alice.id, {}, "space:extensions-cli")).token);
     tokens = new Map(await Promise.all([alice, bob].map(async (user) => [user.id,
-      (await db.accounts.createSession(user.id, { activeSpaceId: "space:extensions-cli" })).token])));
+      (await db.accounts.createSession(user.id)).token])));
     market = await new MarketplaceService({ pool: db.pool, artifactStore: createMemoryArtifactStore() }).initialize();
     workbench = await new PostgresWorkbenchStateStore(db.pool, { spaceId: "space:extensions-cli" }).initialize();
     const access = new AccountAccessControl({ accounts: db.accounts,
       store: new PostgresAccessStore(db.pool, { spaceId: "space:extensions-cli" }),
-      publicBaseUrl: "https://workbench.test", oidc: { secureCookies: true }, servedSpaceId: "space:extensions-cli" });
+      publicBaseUrl: "https://workbench.test", oidc: { secureCookies: true } });
     const handlers = [createMarketplaceHttpHandler({ service: market }), createSkillsCatalogHttpHandler({ store: workbench, marketplace: market })];
     server = createServer(async (req, res) => {
       try {

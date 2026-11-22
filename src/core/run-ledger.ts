@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../runtime/workbench-space";
 import type { ContextHealthRecommendation, ContextHealthSeverity } from "./run-health";
 
 export type RunStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "stopped" | "interrupted";

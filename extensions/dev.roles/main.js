@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 const I18N_NS = 'dev.roles';
 const I18N_MESSAGES = {
   'zh-CN': {

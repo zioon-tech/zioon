@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAccountOidcFixture } from "./helpers/account-oidc-fixture.mjs";
 import { startAccountRuntimeFixture, browserAccountLogin } from "./helpers/account-runtime-fixture.mjs";
 import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
@@ -15,10 +15,19 @@ import { runChatCli } from "../src/chat-cli.mjs";
 
 const cleanup = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-const api = async (origin, login, path, body, method = body === undefined ? "GET" : "POST") => fetch(origin + path, {
-  method, headers: { cookie: login.cookie, origin, "content-type": "application/json" },
-  ...(body === undefined ? {} : { body: JSON.stringify(body) })
-});
+const api = async (origin, login, path, body, method = body === undefined ? "GET" : "POST") => {
+  if (!login.spaceId) {
+    const me = await (await fetch(`${origin}/v1/account/me`, { headers: { cookie: login.cookie } })).json();
+    login.spaceId = me.space?.id;
+  }
+  const response = await fetch(origin + path, {
+    method, headers: { cookie: login.cookie, origin, "content-type": "application/json",
+      ...(login.spaceId ? { "x-zioon-space-id": login.spaceId } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  if (response.ok && path === "/v1/account/spaces/select") login.spaceId = body.spaceId;
+  return response;
+};
 
 describe("account clients with signed OIDC and two Runtime processes", () => {
   it("bootstraps and starts the deployment launcher with separate storage and built-in plugins", async () => {
@@ -101,8 +110,9 @@ describe("account clients with signed OIDC and two Runtime processes", () => {
     ).spaceId).toBe("space:a");
     idp.setSubject("test-member");
     const member = await browserAccountLogin(a.url);
-    expect((await api(a.url, member, "/v1/sessions")).status).toBe(409);
-    const invitation = await (await api(a.url, owner, "/v1/account/invitations", { role: "member" })).json();
+    expect((await api(a.url, member, "/v1/sessions")).status).toBe(200);
+    const prospectiveMember = await (await api(a.url, member, "/v1/account/me")).json();
+    const invitation = await (await api(a.url, owner, "/v1/account/invitations", { role: "member", userId: prospectiveMember.user.id })).json();
     const acceptedResponse = await api(a.url, member, "/v1/account/invitations/accept", { token: invitation.token });
     expect(acceptedResponse.status).toBe(200);
     const accepted = await acceptedResponse.json();
@@ -131,14 +141,17 @@ describe("account clients with signed OIDC and two Runtime processes", () => {
     await runChatCli({ ...cliOptions, argv: ["--account", "--url", a.url], input: Readable.from([]) });
     await expect(runRuntimeCli({ ...cliOptions, argv: ["session", "list", "--account", "--url", b.url] }))
       .rejects.toThrow("login required");
-    const run = await runRuntimeCli({ ...cliOptions, argv: ["run", "Hello fixture", ...flags] });
+    const run = await runRuntimeCli({ ...cliOptions, argv: ["run", "Hello fixture", ...flags,
+      "--space", identity.space.id, "--session", session.session.id] });
     expect(run.status).toBe("completed");
     const memberGrants = await (await api(a.url, member, "/v1/account/grants?limit=1")).json();
     expect(memberGrants.grants).toHaveLength(1);
     expect(memberGrants.grants[0].userId).toBe(identity.user.id);
     expect(memberGrants.grants[0]).not.toHaveProperty("policy_json");
     expect((await api(a.url, member, "/v1/account/grants/revoke", { grantId: run.principal.grantId })).status).toBe(200);
-    expect((await api(a.url, member, `/v1/runs/${run.id}/resume`, {})).status).toBe(403);
+    await vi.waitFor(async () => {
+      expect((await api(a.url, member, `/v1/runs/${run.id}/resume`, {})).status).toBe(403);
+    });
     await runRuntimeCli({ ...cliOptions, argv: ["auth", "logout", ...flags] });
     expect(credentials.size).toBe(0);
     expect((await api(a.url, member, "/v1/sessions")).status).toBe(200);
@@ -149,6 +162,6 @@ describe("account clients with signed OIDC and two Runtime processes", () => {
     expect((await api(a.url, member, "/v1/runs", { prompt: "forbidden" })).status).toBe(403);
     await api(a.url, ownerOther, `/v1/account/members/${encodeURIComponent(identity.user.id)}`,
       { role: "viewer", status: "removed" }, "PATCH");
-    expect((await api(a.url, member, "/v1/sessions")).status).toBe(409);
+    expect((await api(a.url, member, "/v1/sessions")).status).toBe(403);
   }, 30_000);
 });

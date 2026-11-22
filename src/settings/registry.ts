@@ -53,6 +53,7 @@ export interface SettingContribution {
   actionLabel?: string;
   actionLabelKey?: string;
   getValue?: () => unknown | Promise<unknown>;
+  subscribeValue?: (listener: () => void) => { dispose(): void };
   setValue?: (value: unknown) => void | Promise<void>;
   validate?: (value: unknown) => string | null | Promise<string | null>;
   reset?: () => void | Promise<void>;

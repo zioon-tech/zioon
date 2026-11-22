@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../../src/runtime/workbench-space";
 export function createSessionUIStateModel(opts) {
   const getZion = () => {
     try {
@@ -85,4 +86,3 @@ export function createSessionUIStateModel(opts) {
     setSidebarWidth
   };
 }
-

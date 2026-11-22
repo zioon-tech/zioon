@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { materializePluginSkills } from "./plugin-skills.js";
 import {
   runtimeDeviceServiceBaseUrl

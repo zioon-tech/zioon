@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 const TASKS_KEY = "zion.scheduler.local.tasks.v1";
 const RUNS_KEY = "zion.scheduler.local.runs.v1";
 const SESSION_ARCHIVE_KEY = "zion.scheduler.local.sessionArchive.v1";

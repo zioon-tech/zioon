@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { createHttpRuntimeClient } from "../../src/runtime/http-runtime-client.ts";
 import { currentAccountSession } from "../../packages/account-ui/src/client.ts";
 import {
@@ -135,7 +136,7 @@ function runtimeProjectionConfig(modelId, config, profile) {
 }
 
 export function loadLocalDynamicModelStore({
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   try {
     const raw = storage?.getItem?.(DYNAMIC_MODELS_KEY);
@@ -148,7 +149,7 @@ export function loadLocalDynamicModelStore({
 }
 
 export function saveLocalDynamicModelStore(dict, {
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   try {
     storage?.setItem?.(DYNAMIC_MODELS_KEY, JSON.stringify(objectValue(dict)));
@@ -235,7 +236,7 @@ export function runtimeProfileToDynamicEntry(profile) {
 
 export function shouldUseRuntimeModelStore({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   const config = readWorkbenchRuntimeConfig({ state, storage });
   const backend = String(state?.get?.("runtime.connection")?.backend || "").trim();
@@ -245,7 +246,7 @@ export function shouldUseRuntimeModelStore({
 
 async function loadRuntimeModelCatalog({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch,
   force = false
 } = {}) {
@@ -334,7 +335,7 @@ export async function loadRuntimeDynamicModelStore(options = {}) {
 
 export async function loadDynamicModelStore({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const local = loadLocalDynamicModelStore({ storage });
@@ -351,7 +352,7 @@ export async function upsertDynamicModel({
   modelId,
   config,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const id = String(modelId || "").trim();
@@ -401,7 +402,7 @@ export async function upsertDynamicModel({
 export async function deleteDynamicModel({
   modelId,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const id = String(modelId || "").trim();

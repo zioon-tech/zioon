@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 export function installMailConfigPanel() {
   const t = (key, fallback, values) => {
     const fullKey = `dev.mail.${key}`;

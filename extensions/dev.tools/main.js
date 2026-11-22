@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import "./styles.css";
 import { createElement } from "react";
 import { installToolCallCards } from "./tool-calls.js";
@@ -558,7 +559,7 @@ export function mergeRuntimeCapabilityToolsIntoWorkbenchTools({
 
 function readRuntimeInteractionProfileId({
   state = window.zion?.state,
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   const fromState = String(state?.get?.("runtime.interactionProfileId") || "").trim();
   if (fromState) return fromState;
@@ -591,7 +592,7 @@ export function createRuntimeToolPolicyPatch(enabledNames) {
 
 export async function syncEnabledToolsFromRuntimeProfile({
   state = window.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch,
   isCurrentScope = () => true,
   shouldApplyEnabledTools = () => true,
@@ -688,7 +689,7 @@ export async function syncEnabledToolsFromRuntimeProfile({
 export async function persistEnabledToolsToRuntimeProfile({
   enabledTools,
   state = window.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = readWorkbenchRuntimeConfig({ state, storage });

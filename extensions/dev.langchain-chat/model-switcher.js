@@ -1,3 +1,5 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
+import { sharedResourceMarker } from "../../src/ui/workbench/shared-resource-marker";
 /**
  * 模型切换器面板（搜索、键盘导航、点击选择、Esc 关闭）
  * 强化：支持新增/编辑/删除模型（user.dynamic），并提供连通性测试。
@@ -442,8 +444,9 @@ export function installModelSwitcher() {
       });
       // providerId 显示
       const provSpan = document.createElement("span");
-      provSpan.textContent = m.accountExtension ? "账户插件" : m.providerId;
+      provSpan.textContent = m.sharedModel ? `${m.providerName || "提供者"} 分享` : m.accountExtension ? "账户插件" : m.providerId;
       right.appendChild(provSpan);
+      if (m.sharedModel) right.prepend(sharedResourceMarker(m.providerName));
 
       // 操作按钮
       const canEdit = m.providerId === DYNAMIC_PROVIDER_ID;
@@ -518,7 +521,7 @@ export function installModelSwitcher() {
     const models = catalog();
     const q = (input.value || "").trim().toLowerCase();
     const filtered = models.filter(m => {
-      const s = `${m.label || ""} ${m.id} ${m.providerId}`.toLowerCase();
+      const s = `${m.label || ""} ${m.id} ${m.providerId} ${m.providerName || ""}`.toLowerCase();
       return q ? s.includes(q) : true;
     });
     currentItems = filtered;
