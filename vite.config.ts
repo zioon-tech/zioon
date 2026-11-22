@@ -4,6 +4,7 @@ import { zionExtensionsPlugin } from "./vite-plugin-extensions-fixed.js";
 import { VitePWA } from 'vite-plugin-pwa';
 import { createRequire } from "node:module";
 import { WORKBENCH_NAVIGATION_FALLBACK_DENYLIST } from "./src/pwa-navigation";
+import workbenchManifest from "./public/manifest.json";
 
 const require = createRequire(import.meta.url);
 const reactPath = require.resolve("react");
@@ -41,6 +42,7 @@ export default defineConfig({
       // 确保主应用入口被正确处理
       input: {
         main: './index.html',
+        'share-reader': './share-reader.html',
         'src/main': './src/main.ts'
       },
       // 不排除任何依赖，全部打包
@@ -49,6 +51,10 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         // 为插件创建独立的chunk
         manualChunks: (id) => {
+          if (/\.css(?:\?|$)/.test(id)) return;
+          if (/\/extensions\/dev\.tools\/(tool-calls|artifact-model|syntax-highlight)\.js$/.test(id)) return 'conversation-tools';
+          if (/\/extensions\/dev\.thinking\/thinking-cards\.js$/.test(id)) return 'conversation-thinking';
+          if (/\/extensions\/dev\.roles\/roles\.js$/.test(id)) return 'conversation-roles';
           // 插件代码单独打包
           if (id.includes('/extensions/')) {
             const match = id.match(/\/extensions\/([^/]+)/);
@@ -75,32 +81,14 @@ export default defineConfig({
     zionExtensionsPlugin() as any,
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png'],
+      includeAssets: ['favicon.svg', 'zioon-icon-192.png', 'zioon-icon-512.png', 'zioon-apple-touch-icon.png'],
       workbox: {
         importScripts: ["/sw-client-refresh.js"],
         navigateFallbackDenylist: WORKBENCH_NAVIGATION_FALLBACK_DENYLIST,
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
       },
-      manifest: {
-        name: 'Zion Next',
-        short_name: 'Zion',
-        description: 'Zion Next - A modern editor playground',
-        theme_color: '#282a36',
-        background_color: '#282a36',
-        display: 'standalone',
-        icons: [
-          {
-            src: 'icon-192.png',
-            sizes: '192x192',
-            type: 'image/png'
-          },
-          {
-            src: 'icon-512.png',
-            sizes: '512x512',
-            type: 'image/png'
-          }
-        ]
-      },
+      manifest: { ...workbenchManifest, display: "standalone",
+        icons: workbenchManifest.icons.map(icon => ({ ...icon, purpose: "any" as const })) },
       devOptions: {
         enabled: true,
         type: 'module'

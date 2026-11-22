@@ -6,6 +6,7 @@ import {
   link,
   mkdir,
   open,
+  opendir,
   readdir,
   stat,
   unlink
@@ -184,5 +185,29 @@ export class LocalFilesystemBlobStore {
       end,
       stream: createReadStream(path, { start, end })
     };
+  }
+
+  async garbageCandidates({ minimumAgeMs = 86400000, limit = 50, now = Date.now() } = {}) {
+    await this.initialize();
+    const root = join(this.blobRoot, "sha256");
+    const candidates = [];
+    let prefixes;
+    try { prefixes = await opendir(root); } catch (error) { if (error.code === "ENOENT") return []; throw error; }
+    for await (const prefix of prefixes) {
+      if (!prefix.isDirectory() || !/^[a-f0-9]{2}$/.test(prefix.name)) continue;
+      for await (const entry of await opendir(join(root, prefix.name))) {
+        if (!entry.isFile() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
+        const key = `sha256/${prefix.name}/${entry.name}`;
+        const value = await stat(this.pathForKey(key));
+        if (now - value.mtimeMs < minimumAgeMs) continue;
+        candidates.push(key);
+        if (candidates.length >= limit) return candidates;
+      }
+    }
+    return candidates;
+  }
+
+  async remove(key) {
+    await unlink(this.pathForKey(key)).catch(error => { if (error.code !== "ENOENT") throw error; });
   }
 }

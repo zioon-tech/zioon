@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 const LEGACY_KEY = "zion.mail.config";
 
 export const MAIL_SETTINGS_DEFAULTS = {

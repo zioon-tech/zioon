@@ -2,17 +2,23 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_INTERACTION_PROFILE_ID } from "./interaction-profile-store.mjs";
 import { resolveRuntimeCliHeaders } from "./accounts/cli-account-auth.mjs";
+import { createSpacesClient } from "../../../packages/runtime-client/src/spaces.mjs";
 import { ChatInput } from "./cli-input.mjs";
 import { boundedFetch, cliJson, followCliRun } from "./cli-run-follow.mjs";
 import { runChatShell } from "./cli-chat-shell.mjs";
 import { createActivity, terminalTheme } from "./cli-terminal.mjs";
 import { createChatState } from "./cli-chat-state.mjs";
+import { createSharingClient } from "../../../packages/runtime-client/src/sharing.mjs";
+import { resolveSharedChatTarget } from "./sharing-cli.mjs";
+import { createSharedChatClient } from "./cli-shared-content.mjs";
 
 const CHAT_USAGE = `Usage: zioon chat [options]
 
 Options:
   --url <url>                    Runtime URL
   --runtime-profile <name>       Configured Runtime endpoint and authentication
+  --shared <share-id>            Open a received content share
+  --document <id>                Choose a conversation from a folder share
   --account                     Use account login for --url
   --session <id>                Reconnect to an existing Session
   --continue                    Reopen this account's last local conversation
@@ -204,14 +210,28 @@ async function startChatCli({
   const baseUrl = target.baseUrl;
   const headers = await resolveRuntimeCliHeaders(target, { credentialStore, fetchImpl });
   let requestedSessionId = readArg(argv, "--session", "");
-  const client = createRuntimeChatClient({ baseUrl, fetchImpl, headers });
-  const identity = target.auth?.type === "account" ? await client.identity() : null;
+  let identity = target.auth?.type === "account"
+    ? await createSpacesClient({ baseUrl, spaceId: target.spaceId, fetchImpl, headers, signal }).identity() : null;
+  const personal = identity?.spaces?.find(s => s.kind === "personal");
+  if (!target.spaceId && personal && personal.id !== identity.space.id) {
+    identity = await createSpacesClient({ baseUrl, spaceId: personal.id, fetchImpl, headers, signal }).identity();
+  }
+  if (identity?.space?.id) headers["x-zioon-space-id"] = identity.space.id;
+  let client = createRuntimeChatClient({ baseUrl, fetchImpl, headers });
+  const sharingClient = identity ? createSharingClient({ baseUrl, headers, fetchImpl, signal }) : null;
+  const sharedId = readArg(argv, "--shared", "");
+  if (argv.includes("--document") && !sharedId) throw new Error("--document requires --shared <folder-share-id>");
+  if (sharedId && !sharingClient) throw new Error("Sign in with --account to open shared content.");
+  if (sharedId && argv.includes("--session")) throw new Error("Choose --shared or --session.");
+  const contentTarget = sharedId ? await resolveSharedChatTarget(sharingClient, sharedId, readArg(argv, "--document", "")) : null;
+  if (contentTarget) requestedSessionId = contentTarget.documentId;
+  const spacesClient = identity ? createSpacesClient({ baseUrl, spaceId: identity.space.id, fetchImpl, headers, signal }) : null;
   const state = createChatState({ baseUrl, environment,
-    identity: identity?.user?.id ? `${identity.user.id}:${identity.space?.id || ""}` : JSON.stringify(headers),
+    identity: identity?.user?.id ? `${identity.user.id}:${identity.space?.id || ""}${contentTarget ? `:content:${contentTarget.originSpaceId}:${contentTarget.documentId}` : ":private"}` : JSON.stringify(headers),
     onError: (error) => { composer.notice = error.message; }
   });
   const defaults = await state.read("settings");
-  if (argv.includes("--continue") && !requestedSessionId) requestedSessionId = (await state.read("last")).sessionId || "";
+  if (argv.includes("--continue") && !requestedSessionId && !contentTarget) requestedSessionId = (await state.read("last")).sessionId || "";
   const profileArg = readArg(
     argv,
     "--profile",
@@ -292,12 +312,20 @@ async function startChatCli({
     policy: Object.keys(policy).length ? policy : undefined
   };
   const saved = requestedSessionId ? await state.read(`session:${requestedSessionId}`) : {};
+  if (contentTarget) {
+    sessionOptions.model = modelProfileId ? { profileId: modelProfileId } : saved.draftModel || sessionOptions.model;
+    client = createSharedChatClient({ baseUrl, headers, fetchImpl, target: contentTarget, privateClient: client,
+      contentClient: createRuntimeChatClient({ baseUrl, fetchImpl, headers: { ...headers,
+        "x-zioon-content-space": contentTarget.originSpaceId, "x-zioon-content-document": contentTarget.documentId } }),
+      sessionOptions });
+  }
   const session = requestedSessionId
     ? saved.branchHistory ? saved.branchSession : await client.getSession(requestedSessionId)
     : { title, model: sessionOptions.model };
 
   onReady();
   return runChatShell({ client, session, sessionOptions, baseUrl, composer, output, environment, signal, requestedSessionId, state, defaults,
+    space: identity?.space, spacesClient, sharingClient, contentTarget,
     initialImages: argv.flatMap((value, index) => value === "--image" || value === "-i" ? [argv[index + 1]] : []),
     modelSource: requestedSessionId ? "saved conversation" : argv.includes("--model-profile") ? "--model-profile" :
       environment.ZION_RUNTIME_CHAT_MODEL_PROFILE || environment.ZION_RUNTIME_MODEL_PROFILE ? "environment" :
@@ -311,7 +339,7 @@ export async function runChatCli(options = {}) {
     return null;
   }
   if (argv.includes("--jsonl")) throw new Error("For JSONL output, use: zioon run <prompt> --jsonl");
-  const valueOptions = new Set(["--url", "--runtime-profile", "--session", "--profile", "--interaction-profile",
+  const valueOptions = new Set(["--space", "--shared", "--document", "--url", "--runtime-profile", "--session", "--profile", "--interaction-profile",
     "--title", "--model-profile", "--preset", "--project", "--tool", "--file-root", "--terminal-session", "--max-tool-calls", "--image", "-i"]);
   const flags = new Set(["--account", "--no-tools", "--no-terminal-context", "--plain", "--continue"]);
   for (let index = 0; index < argv.length; index++) {
@@ -334,12 +362,24 @@ export async function runChatCli(options = {}) {
   composer.onCancel = () => startup.abort(new DOMException("Cancelled", "AbortError"));
   activity.start("Connecting");
   try {
-    return await startChatCli({
-      ...options, argv, composer, signal, onReady: () => activity.stop(),
-      fetchImpl: (url, init = {}) => fetchImpl(url, {
-        ...init, signal: init.signal ? AbortSignal.any([signal, init.signal]) : signal
-      })
-    });
+    let currentArgs = argv;
+    while (true) {
+      const result = await startChatCli({
+        ...options, argv: currentArgs, composer, signal, onReady: () => activity.stop(),
+        fetchImpl: (url, init = {}) => fetchImpl(url, {
+          ...init, signal: init.signal ? AbortSignal.any([signal, init.signal]) : signal
+        })
+      });
+      if (!result?.switchSpaceId && !result?.switchTarget) return result;
+      const remove = result.switchSpaceId ? ["--space", "--session", "--shared", "--document"] : ["--session", "--shared", "--document"];
+      currentArgs = currentArgs.filter((value, index) => !remove.includes(value)
+        && !remove.includes(currentArgs[index - 1]) && value !== "--continue");
+      if (result.switchSpaceId) currentArgs = [...currentArgs, "--space", result.switchSpaceId];
+      if (result.switchTarget?.shareId) currentArgs.push("--shared", result.switchTarget.shareId);
+      if (result.switchTarget?.documentId) currentArgs.push("--document", result.switchTarget.documentId);
+      if (result.switchTarget?.sessionId) currentArgs.push("--session", result.switchTarget.sessionId);
+      composer.setDraft(""); composer.images = [];
+    }
   } finally {
     activity.stop(); composer.close();
   }

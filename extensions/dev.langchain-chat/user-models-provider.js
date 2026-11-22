@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 /**
  * user.dynamic provider (Runtime Host first, localStorage fallback)
  *

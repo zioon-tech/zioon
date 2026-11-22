@@ -279,8 +279,11 @@ describe("Workbench collaboration E2E", () => {
       subscription.abort();
       finishModel!();
     }
-    await waitFor(() => editorA.getValue().includes("streamed answer") && editorA.getValue() === editorB.getValue());
-    expect(editorA.getValue()).toContain(tail ? "streamed answer\nuser " : "streamed answer\nuser \nuser later edited remotely");
+    const finalText = tail ? "streamed answer\nuser " : "streamed answer\nuser \nuser later edited remotely";
+    // The last model delta precedes the terminal projection that inserts the
+    // next user line. Wait for both editors to receive that terminal update.
+    await waitFor(() => editorA.getValue().includes(finalText) && editorA.getValue() === editorB.getValue());
+    expect(editorA.getValue()).toContain(finalText);
     await waitFor(async () => (await workbenchState.readSession("editor-session")).text === editorA.getValue());
     expect((await runs.getRunConversationInput(accepted.runId)).messages)
       .toEqual([{ role: "user", content: "question" }]);

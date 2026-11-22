@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { getEditorCore } from "../dev.tools/editor-core.js";
 import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview } from "../dev.tools/files-panel.js";
 import {

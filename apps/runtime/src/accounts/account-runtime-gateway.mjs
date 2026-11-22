@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { bearerToken, headerValue, readJson, json } from "../access-control.mjs";
 import { accountError } from "./account-policy.mjs";
+import { verifyMemoryRequestPayload } from "./memory-delegation.mjs";
+import { contentSpaceId } from "../sharing/content-scope.mjs";
 
 const hash = (value) => createHash("sha256").update(String(value)).digest("hex");
 const matches = (secret, digest) => {
@@ -64,8 +66,29 @@ export class AccountRuntimeGateway {
     if (url.pathname.startsWith("/v1/platform-admin/") || url.pathname === "/v1/status/incidents") {
       return this.instances.get(this.platformSpaceId);
     }
-    if (/^\/v1\/account\/(?:apps\/|login|callback|shared\/|device\/|token\/exchange|config|logout|sessions|spaces|me)/.test(url.pathname)) {
+    if (/^\/v1\/(?:sharing(?:\/|$)|spaces(?:\/|$)|contacts(?:\/|$)|space-invitations\/|publications\/)/.test(url.pathname)) {
       return this.instances.get(this.platformSpaceId);
+    }
+    if (/^\/v1\/account\/(?:apps\/|login|callback|shared\/|device\/|token\/exchange|config|logout|sessions|spaces|me(?:\/|$))/.test(url.pathname)) {
+      return this.instances.get(this.platformSpaceId);
+    }
+    if (request.method === "POST" && url.pathname === "/v1/account/memory/verify") {
+      const access = this.platform.accessControl;
+      if (!access.memoryBridgeSecret) throw accountError(404, "memory_bridge_disabled");
+      const payload = await verifyMemoryRequestPayload(access.memoryBridgeSecret,
+        bearerToken(request.headers), await readJson(request));
+      const principal = payload.context?.principal;
+      const spaceId = principal?.spaceId || principal?.space?.id;
+      if (!spaceId) throw accountError(403, "memory_identity_required");
+      if (principal.kind === "account") {
+        if (!await access.accounts.activeSession(principal.sessionId, principal.user?.id)
+          || (await access.accounts.membership(principal.user?.id, spaceId))?.status !== "active") {
+          throw accountError(403, "memory_identity_required");
+        }
+      } else {
+        await access.accounts.validateGrant(principal, payload.context?.policy);
+      }
+      return this.instance(principal.contentScope?.originSpaceId || spaceId);
     }
     const principal = await this.platform.accessControl.authenticateRequest(request);
     if (principal?.kind === "account") {
@@ -73,8 +96,8 @@ export class AccountRuntimeGateway {
       const origin = headerValue(request.headers, "origin");
       if (origin && !this.platform.accessControl.originAllowed(origin)) throw accountError(403, "invalid_origin");
       this.platform.accessControl.checkCsrf(request, principal);
-      await this.provisioner.ensure(principal.user.id);
-      return this.instance(principal.space.id);
+      await this.provisioner?.ensure(principal.user.id);
+      return this.instance(contentSpaceId(principal));
     }
     // Connector credentials identify their existing scoped store. Validate
     // the secret before allocating an instance for an unauthenticated caller.
@@ -101,6 +124,17 @@ export class AccountRuntimeGateway {
       }
     }
     return this.instances.get(this.platformSpaceId);
+  }
+
+  async acquire(spaceId) {
+    const entry = await this.instance(spaceId);
+    entry.requests++;
+    entry.lastUsed = Date.now();
+    let released = false;
+    return { app: entry.app, release() {
+      if (released) return;
+      released = true; entry.requests--; entry.lastUsed = Date.now();
+    } };
   }
 
   async handleRequest(request, response) {

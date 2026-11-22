@@ -24,6 +24,8 @@ jobs:
           fetch-depth: 0
       - id: affected
         run: node scripts/ci/affected.mjs
+      - name: Verify shared reader proxy transaction
+        run: python3 scripts/operations/share-proxy.py --self-test
   secrets:
     uses: zioon-tech/workflows/.github/workflows/secret-scan.yml@c393e2bb7646ec3e3ac889c5548f6c719d3ca2bc
   runtime:

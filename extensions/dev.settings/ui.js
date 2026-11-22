@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   SERVICE_DEFS,
   DEFAULT_BASE_URL,

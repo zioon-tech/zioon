@@ -11,6 +11,8 @@ const { Pool } = pg;
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const migration001 = join(moduleDirectory, "postgres/migrations/001_account_control_plane.sql");
 const migration002 = join(moduleDirectory, "postgres/migrations/002_space_scoped_audit.sql");
+const migration003 = join(moduleDirectory, "postgres/migrations/003_verified_addresses.sql");
+const migration004 = join(moduleDirectory, "postgres/migrations/004_content_run_grants.sql");
 const DAY = 86_400_000;
 const MAX_TASK_GRANT_TTL_MS = 10 * 365 * DAY;
 const hash = (value) => createHash("sha256").update(String(value)).digest("hex");
@@ -121,6 +123,16 @@ export class PostgresAccountStore {
            VALUES (2, $1)`,
           [this.now()]
         );
+      }
+      const applied003 = await client.query("SELECT 1 FROM account_schema_migrations WHERE version = 3");
+      if (!applied003.rowCount) {
+        await client.query(await readFile(migration003, "utf8"));
+        await client.query("INSERT INTO account_schema_migrations (version, applied_at) VALUES (3, $1)", [this.now()]);
+      }
+      const applied004 = await client.query("SELECT 1 FROM account_schema_migrations WHERE version = 4");
+      if (!applied004.rowCount) {
+        await client.query(await readFile(migration004, "utf8"));
+        await client.query("INSERT INTO account_schema_migrations (version, applied_at) VALUES (4, $1)", [this.now()]);
       }
       await client.query("COMMIT");
     } catch (error) {
@@ -266,6 +278,7 @@ export class PostgresAccountStore {
           user = userFromRow(result.rows[0]);
         }
         await this.ensurePersonalSpace(user, client);
+        await this.recordVerifiedAddress(client, user.id, issuer, email, emailVerified);
         return user;
       }
       const userId = id("user");
@@ -285,12 +298,21 @@ export class PostgresAccountStore {
         [issuer, subject, user.id]
       );
       const space = await this.ensurePersonalSpace(user, client);
+      await this.recordVerifiedAddress(client, user.id, issuer, email, emailVerified);
       await this.audit(user.id, "account.created", user.id, {}, {
         spaceId: space.id,
         client
       });
       return user;
     });
+  }
+
+  async recordVerifiedAddress(client, userId, issuer, email, verified) {
+    // A fresh unverified claim invalidates this issuer's old address proof.
+    await client.query("DELETE FROM account_verified_addresses WHERE user_id=$1 AND issuer=$2", [userId, issuer]);
+    if (verified !== true || typeof email !== "string" || !email.trim()) return;
+    await client.query(`INSERT INTO account_verified_addresses (user_id,issuer,email,verified_at)
+      VALUES ($1,$2,$3,$4)`, [userId, issuer, email.trim().toLowerCase(), this.now()]);
   }
 
   async getUser(userId, client = this.pool) {
@@ -383,7 +405,7 @@ export class PostgresAccountStore {
     });
   }
 
-  async authenticate(token) {
+  async authenticate(token, { spaceId = "", allowGuest = false } = {}) {
     if (!String(token || "").startsWith("zion_account_v1.")) return null;
     return this.transaction(async (client) => {
       const result = await client.query(
@@ -403,6 +425,15 @@ export class PostgresAccountStore {
         status: row.status,
         createdAt: integer(row.user_created_at)
       };
+      if (spaceId) {
+        const space = await this.space(spaceId, client);
+        const membership = await this.membership(user.id, spaceId, client);
+        if (!space || (!allowGuest && membership?.status !== "active")) {
+          throw accountError(403, "space_unavailable");
+        }
+        return { user, sessionId: row.id, expiresAt: integer(row.expires_at),
+          space, membership, explicitSpace: true };
+      }
       let membership = await this.membership(user.id, row.active_space_id, client);
       let space = membership?.status === "active"
         ? await this.space(row.active_space_id, client)
@@ -493,13 +524,15 @@ export class PostgresAccountStore {
     return result.rows.map((row) => ({ ...row, revision: integer(row.revision) }));
   }
 
-  async setMember(actorId, userId, { role, status = "active" }, spaceId) {
+  async setMember(actorId, userId, { role, status = "active", expectedRevision }, spaceId) {
     accountRole(role);
     if (!["active", "removed"].includes(status)) throw accountError(400, "invalid_member_status");
     return this.transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`shared-space:${spaceId}`]);
       const actor = await this.require(actorId, "members.manage", spaceId, client);
       const target = await this.membership(userId, spaceId, client);
       if (!target) throw accountError(404, "member_not_found");
+      if (expectedRevision !== undefined && expectedRevision !== target.revision) throw accountError(409, "membership_revision_conflict");
       if ((role === "owner" || target.role === "owner") && actor.role !== "owner") {
         throw accountError(403, "owner_required");
       }
@@ -671,9 +704,13 @@ export class PostgresAccountStore {
   }
 
   async issueGrant(userId, policy, {
-    spaceId, purpose = "run", sourceId = "", profileId = "", scopes, ttlMs = DAY
+    spaceId, purpose = "run", sourceId = "", profileId = "", scopes, ttlMs = DAY, contentScope = null
   } = {}) {
     const member = await this.require(userId, "run.execute", spaceId);
+    if (contentScope) {
+      if (!this.sharing || purpose !== "run") throw accountError(403, "content_grant_denied");
+      await this.sharing.documentAccess(userId, contentScope.originSpaceId, contentScope.documentId, "edit");
+    }
     if (!["run", "task"].includes(purpose)) throw accountError(400, "invalid_grant_purpose");
     const maximumTtl = purpose === "task"
       ? MAX_TASK_GRANT_TTL_MS
@@ -690,12 +727,12 @@ export class PostgresAccountStore {
     await this.pool.query(
       `INSERT INTO account_run_grants
        (id, user_id, space_id, policy_json, purpose, source_id,
-        created_at, expires_at, profile_id, scopes_json)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb)`,
+        created_at, expires_at, profile_id, scopes_json, content_scope_json)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb)`,
       [
         grantId, userId, spaceId, JSON.stringify(bounded), purpose,
         String(sourceId), this.now(), this.now() + ttlMs,
-        String(profileId), JSON.stringify(boundedScopes)
+        String(profileId), JSON.stringify(boundedScopes), contentScope ? JSON.stringify(contentScope) : null
       ]
     );
     await this.audit(userId, "grant.created", grantId, {}, { spaceId });
@@ -704,7 +741,8 @@ export class PostgresAccountStore {
       userId,
       spaceId,
       grantId,
-      kind: purpose === "task" ? "service" : "user"
+      kind: purpose === "task" ? "service" : "user",
+      ...(contentScope ? { contentScope } : {})
     };
   }
 
@@ -720,6 +758,12 @@ export class PostgresAccountStore {
     );
     const grant = result.rows[0];
     if (!grant) throw accountError(403, "grant_inactive");
+    const contentScope = grant.content_scope_json || null;
+    if (["originSpaceId", "documentId", "ownerId"].some(k => principal.contentScope?.[k] !== contentScope?.[k])) {
+      throw accountError(403, "content_grant_mismatch");
+    }
+    if (contentScope) await this.sharing.documentAccess(grant.user_id,
+      contentScope.originSpaceId, contentScope.documentId, "edit");
     const member = await this.require(grant.user_id, "run.execute", grant.space_id);
     const policy = jsonObject(grant.policy_json);
     const grantedScopes = jsonArray(grant.scopes_json);
@@ -729,7 +773,8 @@ export class PostgresAccountStore {
         userId: grant.user_id,
         spaceId: grant.space_id,
         grantId: grant.id,
-        kind: grant.purpose === "task" ? "service" : "user"
+        kind: grant.purpose === "task" ? "service" : "user",
+        ...(contentScope ? { contentScope } : {})
       },
       policy: intersectAccountPolicy(requestedPolicy || policy, policy, member.role),
       profileId: grant.profile_id,

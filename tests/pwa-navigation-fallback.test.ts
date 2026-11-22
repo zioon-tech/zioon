@@ -8,6 +8,9 @@ function denied(pathname: string) {
 describe("Workbench PWA navigation fallback", () => {
   it.each([
     "/v1/account/login",
+    "/share/document-link",
+    "/share/document-link/assets/image",
+    "/p/publication",
     "/health",
     "/idp",
     "/idp/authorize",

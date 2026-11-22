@@ -165,9 +165,11 @@ AliyunAccountStorage.prototype.provision = async function({accountId,workspaceId
       .find((item) => item.id === "interactive.default").modelProfileId).toBe("platform-default");
     expect(defaults.body.profiles.find((item) => item.id === "interactive.default").policy)
       .toMatchObject({ preset: "trusted-automation", fileRoots: ["/"], allowedTools: expect.arrayContaining(["Bash", "write", "read"]) });
+    const session = await request(a, "/v1/sessions", { title: "Gateway model check" }, "POST");
+    expect(session.status).toBe(201);
     const run = await request(a, "/v1/runs", {
       interactionProfileId: "interactive.default", prompt: "Reply with fresh-account-model-ok",
-      sessionId: "gateway-completion",
+      sessionId: session.body.session.id,
       policy: { allowedTools: [] }
     }, "POST");
     expect(run.status, JSON.stringify(run.body)).toBe(202);

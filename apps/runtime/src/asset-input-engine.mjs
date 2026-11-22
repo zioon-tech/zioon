@@ -3,7 +3,7 @@ import {
   assetIdFromUri
 } from "./asset-service.mjs";
 
-async function materializeMessage(message, assets, maxInlineBytes) {
+async function materializeMessage(message, assets, maxInlineBytes, authorizeAsset, request) {
   if (!Array.isArray(message?.content)) return message;
   const content = await Promise.all(message.content.map(async (part) => {
     if (part?.type !== "image_url") return part;
@@ -16,6 +16,7 @@ async function materializeMessage(message, assets, maxInlineBytes) {
         statusCode: 422
       });
     }
+    await authorizeAsset?.(request, assetId);
     return {
       ...part,
       image_url: {
@@ -31,25 +32,30 @@ export class AssetInputEngine {
   constructor({
     engine,
     assets,
-    maxInlineBytes
+    maxInlineBytes,
+    authorizeAsset = null
   }) {
     if (!engine?.streamTurn) throw new Error("AssetInputEngine requires an Agent engine");
     if (!assets?.readDataUrl) throw new Error("AssetInputEngine requires an AssetService");
     this.engine = engine;
     this.assets = assets;
     this.maxInlineBytes = Number(maxInlineBytes);
+    this.authorizeAsset = authorizeAsset;
     this.id = engine.id;
   }
 
-  async *streamTurn(request) {
+  async materialize(request) {
     const messages = await Promise.all(
       request.messages.map((message) =>
-        materializeMessage(message, this.assets, this.maxInlineBytes)
+        materializeMessage(message, this.assets, this.maxInlineBytes, this.authorizeAsset, request)
       )
     );
-    yield* this.engine.streamTurn({
+    return {
       ...request,
       messages
-    });
+    };
+  }
+  async *streamTurn(request) {
+    yield* this.engine.streamTurn(await this.materialize(request));
   }
 }

@@ -1,4 +1,10 @@
+import { workbenchStorage as localStorage, sharedWorkbenchDocument, currentWorkbenchDocument } from "../../src/runtime/workbench-space.ts";
 import { registerEditorTools } from "./editor-config-tools.js";
+import { openDocumentAccessDialog } from "../../src/ui/workbench/DocumentAccess";
+import { openEditorConfigPanel } from "../../src/ui/editor-config-panel.js";
+import { editorConfigurationMenuItems } from "../../src/ui/editor-display-contributions.js";
+import { applyEditorWidth, readMinimapPreference, subscribeDisplayPreferences } from "../../src/editor/display-preferences";
+import { mountEditorAppearanceControls } from "../../src/ui/editor-appearance-controls";
 
 const I18N_NS = "dev.editor-config";
 const I18N_MESSAGES = {
@@ -147,6 +153,12 @@ const I18N_MESSAGES = {
 };
 
 export async function activate(ctx) {
+  let accessPanel = null;
+  ctx.subscriptions.push({ dispose() { accessPanel?.dispose(); } });
+  function openAccessPanel(sessionId) {
+    document.getElementById("dev-editor-config-panel")?.remove();
+    accessPanel = openDocumentAccessDialog(sessionId);
+  }
   try {
     const disp = window.zion.i18n?.registerNamespace?.(I18N_NS, I18N_MESSAGES);
     if (disp) ctx.subscriptions.push(disp);
@@ -207,53 +219,8 @@ export async function activate(ctx) {
   }
 
   const applyWidthMode = (editor) => {
-    const mode = getMode();
-    const cm = editor?.getView?.()?.dom || null;
-    if (!cm) return;
-    const scroller = cm.querySelector(".cm-scroller") || cm;
-    const centeredPadding = (maxWidth, side) => {
-      const tocWidth = "var(--zion-toc-inline-width, 0px)";
-      const sign = side === "left" ? "-" : "+";
-      return `max(0px, calc((100% - ${maxWidth}px ${sign} ${tocWidth}) / 2))`;
-    };
-
-    // reset common styles
-    scroller.style.maxWidth = "";
-    scroller.style.width = "";
-    scroller.style.marginLeft = "";
-    scroller.style.marginRight = "";
-    scroller.style.paddingLeft = "";
-    scroller.style.paddingRight = "";
-    scroller.style.boxSizing = "";
-    scroller.style.display = "";
-    scroller.style.minWidth = "";
-    cm.style.width = "";
-
-    if (mode === "full") {
-      // full: occupy available width
-      cm.style.width = "100%";
-      scroller.style.width = "100%";
-    } else if (mode === "wide") {
-      // wide mode: content centered with max-width, scrollbar on right edge
-      cm.style.width = "100%";
-      scroller.style.width = "100%";
-      // Use padding on scroller to center content area
-      const maxWidth = 960;
-      scroller.style.boxSizing = "border-box";
-      scroller.style.paddingLeft = centeredPadding(maxWidth, "left");
-      scroller.style.paddingRight = centeredPadding(maxWidth, "right");
-      scroller.style.minWidth = "0"; // Allow content to shrink
-    } else {
-      // standard mode: content centered with max-width, scrollbar on right edge
-      cm.style.width = "100%";
-      scroller.style.width = "100%";
-      // Use padding on scroller to center content area
-      const maxWidth = 720;
-      scroller.style.boxSizing = "border-box";
-      scroller.style.paddingLeft = centeredPadding(maxWidth, "left");
-      scroller.style.paddingRight = centeredPadding(maxWidth, "right");
-      scroller.style.minWidth = "0"; // Allow content to shrink
-    }
+    const view = editor?.getView?.();
+    if (view) applyEditorWidth(view, getMode());
   };
 
   // Decorator to apply width mode reactively
@@ -398,23 +365,18 @@ export async function activate(ctx) {
         } catch {}
       };
 
-      register({ id: "dev.editor.menu.openConfigPanel", title: "Editor Config…", section: "Editor", kind: "action", order: 40, onClick: () => openConfigPanel() });
+      register({ id: "dev.editor.menu.openConfigPanel", title: "Editor Config…", section: "Editor", kind: "action", order: 40, onClick: context => openConfigPanel(context?.sessionId) });
+      register({ id: "dev.editor.menu.sharing", title: "分享与权限管理…", section: "分享与权限", kind: "action", order: 1,
+        onClick: context => {
+          if (context?.sessionId) {
+            if (sharedWorkbenchDocument(context.sessionId)) openAccessPanel(context.sessionId);
+            else window.zion.commands.executeCommand("zion.sharing.manage", { sourceId: context.sessionId });
+          }
+        } });
+      register({ id: "dev.editor.menu.access", title: "访问权限与链接设置…", section: "分享与权限", kind: "action", order: 2,
+        onClick: context => openAccessPanel(context?.sessionId) });
 
-      register({ id: "dev.editor.menu.lineNumbers", title: "Line Numbers", section: "Editor", kind: "toggle", order: 41, getChecked: () => !!window.zion.state.get("ui.lineNumbers"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleLineNumbers") });
-      register({ id: "dev.editor.menu.activeLineHighlight", title: "Active Line Highlight", section: "Editor", kind: "toggle", order: 42, getChecked: () => !!window.zion.state.get("ui.activeLineHighlight"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleActiveLineHighlight") });
-      register({ id: "dev.editor.menu.syntaxHighlight", title: "Syntax Highlight", section: "Editor", kind: "toggle", order: 43, getChecked: () => !!window.zion.state.get("ui.syntaxHighlight"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleSyntaxHighlight") });
-      register({ id: "dev.editor.menu.autoIndent", title: "Auto Indent", section: "Editor", kind: "toggle", order: 44, getChecked: () => !!window.zion.state.get("ui.autoIndent"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleAutoIndent") });
-      register({ id: "dev.editor.menu.folding", title: "Folding", section: "Editor", kind: "toggle", order: 45, getChecked: () => !!window.zion.state.get("ui.folding"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleFolding") });
-      register({ id: "dev.editor.menu.lineWrap", title: "Line Wrap", section: "Editor", kind: "toggle", order: 46, getChecked: () => !!window.zion.state.get("ui.lineWrap"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleLineWrap") });
-      register({ id: "dev.editor.menu.minimap", title: "Minimap", section: "Editor", kind: "toggle", order: 47, getChecked: () => !!window.zion.state.get("ui.minimapEnabled"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleMinimap") });
-
-      register({ id: "dev.editor.menu.width.standard", title: "Width: Standard", section: "Layout", kind: "toggle", order: 50, getChecked: () => getMode() === "standard", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthStandard") });
-      register({ id: "dev.editor.menu.width.wide", title: "Width: Wide", section: "Layout", kind: "toggle", order: 51, getChecked: () => getMode() === "wide", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthWide") });
-      register({ id: "dev.editor.menu.width.full", title: "Width: Full", section: "Layout", kind: "toggle", order: 52, getChecked: () => getMode() === "full", onClick: () => window.zion.commands.executeCommand("dev.editor.setWidthFull") });
-
-      register({ id: "dev.editor.menu.heading.medium", title: "Heading: Medium", section: "Layout", kind: "toggle", order: 60, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "medium", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeMedium") });
-      register({ id: "dev.editor.menu.heading.small", title: "Heading: Small", section: "Layout", kind: "toggle", order: 61, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "small", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeSmall") });
-      register({ id: "dev.editor.menu.heading.xsmall", title: "Heading: XSmall", section: "Layout", kind: "toggle", order: 62, getChecked: () => String(window.zion.state.get("ui.headingSize") || "xsmall") === "xsmall", onClick: () => window.zion.commands.executeCommand("dev.editor.setHeadingSizeXSmall") });
+      for (const item of editorConfigurationMenuItems(window.zion)) register(item);
 
       register({ id: "dev.editor.menu.includeToolHistory", title: "Include Tool History", section: "Chat", kind: "toggle", order: 70, getChecked: () => !!window.zion.state.get("chat.includeToolHistory"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleIncludeToolHistory") });
       register({ id: "dev.editor.menu.includeThinkingHistory", title: "Include Thinking History", section: "Chat", kind: "toggle", order: 71, getChecked: () => !!window.zion.state.get("chat.includeThinkingHistory"), onClick: () => window.zion.commands.executeCommand("dev.editor.toggleIncludeThinkingHistory") });
@@ -519,56 +481,21 @@ export async function activate(ctx) {
 
   // Minimap init: load persisted preference and delegate actual enabling to core via zion commands bridge.
   try {
-    const MINIMAP_KEY_GLOBAL = "zion.minimap";
-    const minimapKeyForSession = (sid) => sid ? `zion.minimap.session.${sid}` : MINIMAP_KEY_GLOBAL;
-    const getStoredBool = (key) => {
-      try {
-        const v = localStorage.getItem(key);
-        if (v == null) return undefined;
-        if (v === "0" || v === "false") return false;
-        if (v === "1" || v === "true") return true;
-        return undefined;
-      } catch {
-        return undefined;
-      }
-    };
     const getCurrentSessionId = () => {
-      try {
-        const sid = window.zion.state.get("sessions.currentId");
-        return sid ? String(sid) : "";
-      } catch {
-        return "";
-      }
+      return currentWorkbenchDocument();
     };
-    const readMinimapPref = (sid) => {
-      const per = sid ? getStoredBool(minimapKeyForSession(sid)) : undefined;
-      if (typeof per === "boolean") return per;
-      const legacy = getStoredBool(MINIMAP_KEY_GLOBAL);
-      if (typeof legacy === "boolean") return legacy;
-      return false;
+    const refreshMinimapState = () => {
+      window.zion.state.set("ui.minimapEnabled", readMinimapPreference(getCurrentSessionId()));
     };
-    const persistMinimapPref = (sid, enabled) => {
-      try { localStorage.setItem(minimapKeyForSession(sid), enabled ? "1" : "0"); } catch {}
-    };
-    const applyMinimap = (enabled) => {
-      window.zion.state.set("ui.minimapEnabled", !!enabled);
-      try { window.zion.commands.executeCommand("zion.setMinimap", !!enabled); } catch {}
-    };
-    const applyMinimapForSession = (sid) => {
-      const v = readMinimapPref(sid);
-      applyMinimap(v);
-      return v;
-    };
-
-    const minV = applyMinimapForSession(getCurrentSessionId());
+    refreshMinimapState();
+    ctx.subscriptions.push(subscribeDisplayPreferences(refreshMinimapState));
+    ctx.subscriptions.push(window.zion.state.onDidChange("sessions.currentId", refreshMinimapState));
 
     // expose extension-level toggle that just calls the core bridge
     const dm = window.zion.commands.registerCommand("dev.editor.toggleMinimap", () => {
       try {
-        const sid = getCurrentSessionId();
-        const cur = !!window.zion.state.get("ui.minimapEnabled");
+        const cur = readMinimapPreference(getCurrentSessionId());
         const next = !cur;
-        persistMinimapPref(sid, next);
         window.zion.commands.executeCommand("zion.setMinimap", next);
         return next;
       } catch (e) {
@@ -624,286 +551,9 @@ export async function activate(ctx) {
   ctx.subscriptions.push(hMed, hSml, hXSml, hCycle);
 
   // Build and open the config panel
-  function openConfigPanel() {
-    try {
-      const existing = document.getElementById("dev-editor-config-panel");
-      if (existing) {
-        existing.remove();
-      }
-
-      const overlay = document.createElement("div");
-      overlay.id = "dev-editor-config-panel";
-      overlay.style.position = "fixed";
-      overlay.style.inset = "0";
-      overlay.style.background = "rgba(0,0,0,0.35)";
-      overlay.style.zIndex = "99998";
-      overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-      const panel = document.createElement("div");
-      panel.style.position = "fixed";
-      panel.style.right = "20px";
-      panel.style.top = "80px";
-      panel.style.width = "320px";
-      panel.style.maxHeight = "70vh";
-      panel.style.overflow = "auto";
-      panel.style.background = "var(--panel)";
-      panel.style.border = "1px solid var(--border)";
-      panel.style.borderRadius = "6px";
-      panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
-      panel.style.padding = "12px";
-      panel.style.zIndex = "99999";
-      panel.style.color = "var(--fg)";
-      panel.onclick = (e) => e.stopPropagation();
-
-      const title = document.createElement("div");
-      title.textContent = "Editor Configuration";
-      title.style.fontWeight = "600";
-      title.style.marginBottom = "8px";
-      panel.appendChild(title);
-
-      // helper to create toggle rows
-      const makeToggleRow = (stateKey, labelText, commandToExecute) => {
-        const row = document.createElement("div");
-        row.style.display = "flex";
-        row.style.alignItems = "center";
-        row.style.justifyContent = "space-between";
-        row.style.padding = "6px 0";
-
-        const lbl = document.createElement("label");
-        lbl.textContent = labelText;
-        lbl.style.fontSize = "13px";
-
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!window.zion.state.get(stateKey);
-        cb.onchange = () => {
-          // prefer calling core command to toggle
-          try {
-            window.zion.commands.executeCommand(commandToExecute);
-          } catch (e) { console.error("toggle command failed", e); }
-        };
-
-        // listen for external state changes to keep UI in sync
-        const sub = window.zion.state.onDidChange(stateKey, (nv) => {
-          try { cb.checked = !!nv; } catch {}
-        });
-
-        // attach cleanup when panel closes
-        panelCleanup.push(() => { try { sub.dispose?.(); } catch {} });
-
-        row.appendChild(lbl);
-        row.appendChild(cb);
-        return row;
-      };
-
-      const makeSelectRow = (stateKey, labelText, options, commandToExecute) => {
-        const row = document.createElement("div");
-        row.style.display = "flex";
-        row.style.alignItems = "center";
-        row.style.justifyContent = "space-between";
-        row.style.padding = "6px 0";
-
-        const lbl = document.createElement("label");
-        lbl.textContent = labelText;
-        lbl.style.fontSize = "13px";
-
-        const sel = document.createElement("select");
-        sel.style.fontSize = "12px";
-        sel.style.padding = "4px 6px";
-        sel.style.border = "1px solid var(--border)";
-        sel.style.borderRadius = "4px";
-        sel.style.background = "var(--panel)";
-        sel.style.color = "var(--fg)";
-
-        for (const opt of options) {
-          const o = document.createElement("option");
-          o.value = opt.value;
-          o.textContent = opt.label;
-          sel.appendChild(o);
-        }
-
-        sel.value = String(window.zion.state.get(stateKey) || "auto");
-        sel.onchange = () => {
-          try {
-            window.zion.commands.executeCommand(commandToExecute, sel.value);
-          } catch (e) { console.error("select command failed", e); }
-        };
-
-        const sub = window.zion.state.onDidChange(stateKey, (nv) => {
-          try { sel.value = String(nv || "auto"); } catch {}
-        });
-        panelCleanup.push(() => { try { sub.dispose?.(); } catch {} });
-
-        row.appendChild(lbl);
-        row.appendChild(sel);
-        return row;
-      };
-
-      // track panel-local disposables (listeners)
-      const panelCleanup = [];
-
-      // toggles
-      const togglesContainer = document.createElement("div");
-      togglesContainer.style.marginBottom = "8px";
-      togglesContainer.appendChild(makeToggleRow("ui.lineNumbers", "Line Numbers", "zion.toggleLineNumbers"));
-      togglesContainer.appendChild(makeToggleRow("ui.activeLineHighlight", "Active Line Highlight", "zion.toggleActiveLineHighlight"));
-      togglesContainer.appendChild(makeToggleRow("ui.syntaxHighlight", "Syntax Highlight", "zion.toggleSyntaxHighlight"));
-      togglesContainer.appendChild(makeToggleRow("ui.autoIndent", "Auto Indent", "zion.toggleAutoIndent"));
-      togglesContainer.appendChild(makeToggleRow("ui.folding", "Folding", "zion.toggleFolding"));
-      togglesContainer.appendChild(makeToggleRow("ui.lineWrap", "Line Wrap", "zion.toggleLineWrap"));
-      togglesContainer.appendChild(makeToggleRow("ui.minimapEnabled", "Minimap", "dev.editor.toggleMinimap"));
-      togglesContainer.appendChild(makeToggleRow("ui.selectionHighlight", "Selection Highlight", "zion.toggleSelectionHighlight"));
-      togglesContainer.appendChild(makeToggleRow("chat.includeToolHistory", "Include Tool History in Chat", "dev.editor.toggleIncludeToolHistory"));
-      togglesContainer.appendChild(makeToggleRow("chat.includeThinkingHistory", "Include Thinking in Chat", "dev.editor.toggleIncludeThinkingHistory"));
-      togglesContainer.appendChild(makeSelectRow(
-        "chat.toolCallsReasoningContentMode",
-        "Tool Calls reasoning_content",
-        [
-          { value: "auto", label: "Auto" },
-          { value: "always", label: "Always" },
-          { value: "never", label: "Never" }
-        ],
-        "dev.editor.setToolCallsReasoningContentMode"
-      ));
-      panel.appendChild(togglesContainer);
-
-      // width mode controls
-      const widthTitle = document.createElement("div");
-      widthTitle.textContent = "Editor Width";
-      widthTitle.style.fontWeight = "600";
-      widthTitle.style.marginTop = "6px";
-      widthTitle.style.marginBottom = "6px";
-      panel.appendChild(widthTitle);
-
-      const widthGroup = document.createElement("div");
-      widthGroup.style.display = "flex";
-      widthGroup.style.justifyContent = "space-between";
-      widthGroup.style.gap = "8px";
-
-      const makeWidthBtn = (mode, text, cmd) => {
-        const b = document.createElement("button");
-        b.textContent = text;
-        b.style.flex = "1";
-        b.style.padding = "6px 8px";
-        b.style.borderRadius = "4px";
-        b.style.border = "1px solid var(--border)";
-        b.style.background = "var(--panel)";
-        b.style.color = "var(--fg)";
-        b.onclick = () => {
-          try { window.zion.commands.executeCommand(cmd); } catch (e) { console.error(e); }
-        };
-        return b;
-      };
-
-      const btnStd = makeWidthBtn("standard", "Standard", "dev.editor.setWidthStandard");
-      const btnWide = makeWidthBtn("wide", "Wide", "dev.editor.setWidthWide");
-      const btnFull = makeWidthBtn("full", "Full", "dev.editor.setWidthFull");
-      widthGroup.appendChild(btnStd);
-      widthGroup.appendChild(btnWide);
-      widthGroup.appendChild(btnFull);
-      panel.appendChild(widthGroup);
-
-      // reflect current selection (highlight active width)
-      const updateWidthButtons = () => {
-        const m = window.zion.state.get(STATE_KEY) || DEFAULT_MODE;
-        const resetStyle = (btn) => {
-          btn.style.outline = "none";
-          btn.style.boxShadow = "none";
-        };
-        [btnStd, btnWide, btnFull].forEach(resetStyle);
-        if (m === "standard") { btnStd.style.boxShadow = "inset 0 0 0 2px var(--accent)"; }
-        else if (m === "wide") { btnWide.style.boxShadow = "inset 0 0 0 2px var(--accent)"; }
-        else if (m === "full") { btnFull.style.boxShadow = "inset 0 0 0 2px var(--accent)"; }
-      };
-      updateWidthButtons();
-      const widthSub = window.zion.state.onDidChange(STATE_KEY, updateWidthButtons);
-      panelCleanup.push(() => { try { widthSub.dispose?.(); } catch {} });
-
-      /* ===== Heading Size controls ===== */
-      const headingTitle = document.createElement("div");
-      headingTitle.textContent = "Heading Size";
-      headingTitle.style.fontWeight = "600";
-      headingTitle.style.marginTop = "10px";
-      headingTitle.style.marginBottom = "6px";
-      panel.appendChild(headingTitle);
-
-      const headingGroup = document.createElement("div");
-      headingGroup.style.display = "flex";
-      headingGroup.style.justifyContent = "space-between";
-      headingGroup.style.gap = "8px";
-
-      const makeHeadingBtn = (mode, text, cmd) => {
-        const b = document.createElement("button");
-        b.textContent = text;
-        b.style.flex = "1";
-        b.style.padding = "6px 8px";
-        b.style.borderRadius = "4px";
-        b.style.border = "1px solid var(--border)";
-        b.style.background = "var(--panel)";
-        b.style.color = "var(--fg)";
-        b.title = `Set Heading Size: ${mode}`;
-        b.onclick = () => {
-          try { window.zion.commands.executeCommand(cmd); } catch (e) { console.error(e); }
-        };
-        return b;
-      };
-
-      const btnMedium = makeHeadingBtn("medium", "适中", "dev.editor.setHeadingSizeMedium");
-      const btnSmall = makeHeadingBtn("small", "小", "dev.editor.setHeadingSizeSmall");
-      const btnXSmall = makeHeadingBtn("xsmall", "再小", "dev.editor.setHeadingSizeXSmall");
-      headingGroup.appendChild(btnMedium);
-      headingGroup.appendChild(btnSmall);
-      headingGroup.appendChild(btnXSmall);
-      panel.appendChild(headingGroup);
-
-      const updateHeadingButtons = () => {
-        const m = window.zion.state.get("ui.headingSize") || HEADING_DEFAULT;
-        const reset = (btn) => { btn.style.boxShadow = "none"; };
-        [btnMedium, btnSmall, btnXSmall].forEach(reset);
-        if (m === "medium") btnMedium.style.boxShadow = "inset 0 0 0 2px var(--accent)";
-        else if (m === "small") btnSmall.style.boxShadow = "inset 0 0 0 2px var(--accent)";
-        else if (m === "xsmall") btnXSmall.style.boxShadow = "inset 0 0 0 2px var(--accent)";
-      };
-      updateHeadingButtons();
-      const headingSub = window.zion.state.onDidChange("ui.headingSize", updateHeadingButtons);
-      panelCleanup.push(() => { try { headingSub.dispose?.(); } catch {} });
-
-      // footer
-      const footer = document.createElement("div");
-      footer.style.marginTop = "12px";
-      footer.style.display = "flex";
-      footer.style.justifyContent = "flex-end";
-      footer.style.gap = "8px";
-
-      const closeBtn = document.createElement("button");
-      closeBtn.textContent = "Close";
-      closeBtn.style.background = "var(--border)";
-      closeBtn.style.color = "var(--fg)";
-      closeBtn.style.border = "1px solid var(--accent)";
-      closeBtn.style.borderRadius = "4px";
-      closeBtn.style.padding = "6px 10px";
-      closeBtn.onclick = () => overlay.remove();
-
-      footer.appendChild(closeBtn);
-      panel.appendChild(footer);
-
-      // cleanup when overlay removed
-      overlay.addEventListener("remove", () => {
-        try { panelCleanup.forEach(fn => { try { fn(); } catch {} }); } catch {}
-      });
-
-      // ensure cleanup runs when overlay is removed by click handler
-      const originalRemove = overlay.remove.bind(overlay);
-      overlay.remove = function () {
-        try { panelCleanup.forEach(fn => { try { fn(); } catch {} }); } catch {}
-        originalRemove();
-      };
-
-      overlay.appendChild(panel);
-      document.body.appendChild(overlay);
-    } catch (e) {
-      console.error("openConfigPanel error:", e);
-    }
+  function openConfigPanel(sessionId = currentWorkbenchDocument()) {
+    accessPanel?.dispose();
+    return openEditorConfigPanel(window.zion, { sessionId, openAccessPanel, mountAppearance: mountEditorAppearanceControls });
   }
 
   const getBool = (key, fallback = false) => {

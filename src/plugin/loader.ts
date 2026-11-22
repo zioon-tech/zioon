@@ -427,6 +427,7 @@ export class PluginLoader {
         const key = path.slice('internal:'.length);
         const extensionModules = (import.meta as any).glob([
           '/extensions/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/*.d.ts',
           '!/extensions/dev.identity/**/*.{js,mjs,ts,jsx,tsx}',
           '!/extensions/dev.byteintl-model/**/*.{js,mjs,ts,jsx,tsx}',
           '!/extensions/dev.adc-studio/**/*.{js,mjs,ts,jsx,tsx}',
@@ -459,6 +460,7 @@ export class PluginLoader {
       if (normalizedExtensionPath) {
         const extensionModules = (import.meta as any).glob([
           '/extensions/**/*.{js,mjs,ts,jsx,tsx}',
+          '!/extensions/**/*.d.ts',
           '!/extensions/dev.identity/**/*.{js,mjs,ts,jsx,tsx}',
           '!/extensions/dev.byteintl-model/**/*.{js,mjs,ts,jsx,tsx}',
           '!/extensions/dev.adc-studio/**/*.{js,mjs,ts,jsx,tsx}',

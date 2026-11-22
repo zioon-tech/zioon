@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { LocalSchedulerEngine } from "./engine.js";
 import { ACTIVE_RUN_STATUSES, buildSchedulerTask, SchedulerController, validateSchedulerTask } from "./controller.js";
 import { describeSchedule, normalizeSchedule } from "./schedule.js";

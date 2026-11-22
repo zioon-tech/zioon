@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 /**
  * dev.context-compression - Multi-strategy context compression plugin for Zion Next
  * 

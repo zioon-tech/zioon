@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -18,7 +19,7 @@ function runtimeConfigForCompression(state, storage) {
 
 export async function loadCompressionSettingsFromRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForCompression(state, storage);
@@ -38,7 +39,7 @@ export async function loadCompressionSettingsFromRuntime({
 export async function syncCompressionSettingsToRuntime({
   settings,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForCompression(state, storage);

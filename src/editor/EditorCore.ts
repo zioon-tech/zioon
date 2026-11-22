@@ -1,4 +1,4 @@
-import { EditorState, EditorSelection, Compartment, Prec, Transaction, type Extension } from "@codemirror/state";
+import { Annotation, EditorState, EditorSelection, Compartment, Prec, Transaction, type Extension, type StateEffect } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -236,6 +236,10 @@ export type EditorCoreOptions = {
   lineNumbers?: boolean;
   activeLineHighlight?: boolean;
   folding?: boolean;
+  readOnly?: boolean;
+  untrustedContent?: boolean;
+  imageUrl?: (source: string) => string | null;
+  extensions?: Extension[];
 };
 
 export type VimOperationalMode = "normal" | "insert" | "replace" | "visual";
@@ -440,15 +444,24 @@ export class EditorCore {
   private wysiwygEnabled = true;
   private wysiwygKeepActiveLineRendered = true;
   private disposed = false;
+  private readonly readOnly: boolean;
+  private readonly untrustedContent: boolean;
+  private readonly imageUrl?: (source: string) => string | null;
+  private readonly readerContentUpdate = Annotation.define<boolean>();
   private _panelId: string;
   private _editorId: string;
   private _sessionId: string | null = null;
+  private sessionListeners = new Set<() => void>();
   private windowDisposers: Array<() => void> = [];
   private focusReturnScrollGuard: { until: number; scrollTop: number; scrollLeft: number; reason: string } | null = null;
 
   constructor(parent: HTMLElement, initialValue = "", panelId = "panel-0", options: EditorCoreOptions = {}) {
     this._panelId = panelId;
     this._editorId = createEditorId(panelId);
+    this.readOnly = options.readOnly === true;
+    this.untrustedContent = options.untrustedContent ?? this.readOnly;
+    this.imageUrl = options.imageUrl;
+    this.externalExtensions = options.extensions || [];
     this.lineNumbersEnabled = options.lineNumbers ?? false;
     this.activeLineHighlightEnabled = options.activeLineHighlight ?? false;
     this.foldEnabled = options.folding ?? false;
@@ -457,6 +470,15 @@ export class EditorCore {
       state: EditorState.create({
         doc: initialValue,
         extensions: [
+          ...(this.readOnly ? [
+            EditorState.readOnly.of(true),
+            EditorView.editable.of(false),
+            EditorState.transactionFilter.of(tr =>
+              tr.docChanged && !tr.annotation(this.readerContentUpdate) ? [] : tr),
+            EditorView.contentAttributes.of({
+              "aria-label": "会话正文（只读）", tabindex: "0", "aria-readonly": "true"
+            })
+          ] : []),
           EditorState.allowMultipleSelections.of(true),
             drawSelection(),
           Prec.highest(
@@ -493,27 +515,27 @@ export class EditorCore {
           // features (line numbers, active line gutter/highlight, auto indent, folding) are placed
           // in a dedicated compartment so they can be toggled at runtime.
           this.featuresComp.of(this.buildFeaturesArray()),
-          scrollPastEnd(),
+          ...(this.readOnly ? [] : [scrollPastEnd()]),
             modDSelectNext,
-          this.historyComp.of(history()),
+          this.historyComp.of(this.readOnly ? [] : history()),
           // markdown is put into its own compartment so code-language highlighting can
           // be enabled/disabled at runtime.
           this.mdComp.of(markdown({ codeLanguages: languages, extensions: [roleScopedFencedCode, GFM] })),
-          this.autocompletionComp.of(getAutocompletionExtension()),
+          this.autocompletionComp.of(this.readOnly ? [] : getAutocompletionExtension()),
           this.themeComp.of(oneDark),
           this.uiComp.of(this.buildWysiwygExtension()),
-          selectionToolbarExtension(),
-          linkDetector,
-          linkStyles,
-          imageInsertionExtension(),
-          obsidianSyntaxExtension(),
+          ...(this.readOnly ? [] : [
+            selectionToolbarExtension(), linkDetector, linkStyles,
+            imageInsertionExtension()
+          ]),
+          obsidianSyntaxExtension({ allowPrivateReferences: !this.untrustedContent }),
           // minimap compartment (can be toggled)
           this.minimapComp.of([]),
           // selection highlight compartment
           this.selectionHighlightComp.of(getSelectionHighlightExtensions(this.selectionHighlightEnabled)),
           // Vim mode is compartmentalized so the editor can switch modes without recreation.
           this.vimComp.of([]),
-          inlineWidgetDecorationsExtension(),
+          ...(this.readOnly ? [] : [inlineWidgetDecorationsExtension()]),
           // external visual extensions compartment (extensions can push CM6 ViewPlugins)
           this.externalComp.of(this.externalExtensions),
           this.keymapComp.of(
@@ -567,12 +589,36 @@ export class EditorCore {
   }
 
   setSessionId(sessionId: string | null): void {
-    this._sessionId = sessionId ? String(sessionId) : null;
+    const next = sessionId ? String(sessionId) : null;
+    if (next === this._sessionId) return;
+    this._sessionId = next;
     this.applyDomIdentity();
+    for (const listener of this.sessionListeners) listener();
+  }
+
+  onSessionChanged(listener: () => void) {
+    this.sessionListeners.add(listener);
+    return { dispose: () => { this.sessionListeners.delete(listener); } };
   }
 
   getValue(): string {
     return this.view.state.doc.toString();
+  }
+
+  /** Only the share transport can replace reader content; ordinary edit APIs stay guarded. */
+  updateReadOnlyContent(value: string, effects: StateEffect<any>[] = []): void {
+    if (!this.readOnly || this.disposed) return;
+    const source = this.getValue();
+    let from = 0, endBefore = source.length, endAfter = value.length;
+    while (from < endBefore && from < endAfter && source[from] === value[from]) from++;
+    while (endBefore > from && endAfter > from && source[endBefore - 1] === value[endAfter - 1]) {
+      endBefore--; endAfter--;
+    }
+    this.view.dispatch({
+      ...(source !== value ? { changes: { from, to: endBefore, insert: value.slice(from, endAfter) } } : {}),
+      effects,
+      annotations: [this.readerContentUpdate.of(true), Transaction.addToHistory.of(false)]
+    });
   }
 
   setValue(v: string, opts?: EditorSetValueOptions): void {
@@ -684,7 +730,10 @@ export class EditorCore {
 
   private buildWysiwygExtension(): Extension {
     return this.wysiwygEnabled
-      ? wysiwyg({ keepActiveLineRendered: this.wysiwygKeepActiveLineRendered })
+      ? wysiwyg({
+          keepActiveLineRendered: this.wysiwygKeepActiveLineRendered,
+          ...(this.untrustedContent ? { publicReadOnly: true, imageUrl: this.imageUrl } : {})
+        })
       : [];
   }
 
@@ -1081,6 +1130,11 @@ export class EditorCore {
     try {
       this.view.destroy();
     } catch {}
+  }
+
+  own(disposable: { dispose(): void }): void {
+    if (this.disposed) disposable.dispose();
+    else this.windowDisposers.push(() => disposable.dispose());
   }
 }
 

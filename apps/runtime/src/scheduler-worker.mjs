@@ -139,7 +139,7 @@ export class RuntimeSchedulerWorker {
         },
         createdAt: timestamp,
         updatedAt: timestamp
-      });
+      }, ...(task.executionPrincipal ? [{ principal: task.executionPrincipal }] : []));
       this.activeSessionId = sessionId;
     }
     const handle = this.executor.execute({

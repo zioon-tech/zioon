@@ -11,6 +11,11 @@ const migration006 = join(moduleDirectory, "postgres/migrations/006_runtime_webh
 const migration007 = join(moduleDirectory, "postgres/migrations/007_conversation_inputs.sql");
 const migration008 = join(moduleDirectory, "postgres/migrations/008_run_completion_tasks.sql");
 const migration009 = join(moduleDirectory, "postgres/migrations/009_identity_contexts.sql");
+const migration011 = join(moduleDirectory, "postgres/migrations/011_shared_spaces.sql");
+const migration012 = join(moduleDirectory, "postgres/migrations/012_account_sharing.sql");
+const migration013 = join(moduleDirectory, "postgres/migrations/013_content_run_grants.sql");
+const migration014 = join(moduleDirectory, "postgres/migrations/014_share_recipient_roles.sql");
+const migration015 = join(moduleDirectory, "postgres/migrations/015_document_links.sql");
 
 const migrations = [
   [2, migration002],
@@ -20,7 +25,12 @@ const migrations = [
   [6, migration006],
   [7, migration007],
   [8, migration008],
-  [9, migration009]
+  [9, migration009],
+  [11, migration011],
+  [12, migration012],
+  [13, migration013],
+  [14, migration014],
+  [15, migration015]
 ];
 
 export async function initializePostgresRuntimeSchema(pool, {

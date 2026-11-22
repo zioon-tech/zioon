@@ -1,3 +1,5 @@
+import { workbenchStorage as localStorage } from "../runtime/workbench-space";
+import { readDisplayPreference, readMinimapPreference } from "../editor/display-preferences";
 import { settingsRegistry } from "../settings/registry";
 import { open as openSettingsPanel, close as closeSettingsPanel } from "../settings/SettingsPanel";
 import { EventBus } from "../core/event-bus";
@@ -274,7 +276,9 @@ class Registry {
         const hasAny = !!this.editorCore || this.editorCores.size > 0;
         if (!hasAny) return false;
         try {
-          this.forEachEditorCore((core) => core.setMinimapEnabled(!!enabled));
+          const sid = this.editorCore?.getSessionId() || "";
+          localStorage.setItem(sid ? `zion.minimap.session.${sid}` : "zion.minimap", enabled ? "1" : "0");
+          this.forEachEditorCore((core) => core.setMinimapEnabled(readMinimapPreference(core.getSessionId() || "")));
           this.state.set("ui.minimapEnabled", !!enabled);
           return true;
         } catch (e) {
@@ -290,12 +294,7 @@ class Registry {
           this.state.set("ui.minimapEnabled", next);
           return next;
         }
-        try {
-          this.forEachEditorCore((core) => core.setMinimapEnabled(next));
-        } catch (e) {
-          console.error("[zion] toggleMinimap error", e);
-        }
-        this.state.set("ui.minimapEnabled", next);
+        this.executeCommand("zion.setMinimap", next);
         return next;
       });
     } catch (e) {
@@ -308,6 +307,7 @@ class Registry {
         const hasAny = !!this.editorCore || this.editorCores.size > 0;
         if (!hasAny) return false;
         try {
+          localStorage.setItem("zion.selectionHighlight", enabled ? "1" : "0");
           this.forEachEditorCore((core) => core.setSelectionHighlightEnabled(!!enabled));
           this.state.set("ui.selectionHighlight", !!enabled);
           return true;
@@ -325,6 +325,7 @@ class Registry {
           return next;
         }
         try {
+          localStorage.setItem("zion.selectionHighlight", next ? "1" : "0");
           this.forEachEditorCore((core) => core.setSelectionHighlightEnabled(next));
         } catch (e) {
           console.error("[zion] toggleSelectionHighlight error", e);
@@ -417,6 +418,7 @@ class Registry {
 
   private syncActiveEditor() {
     this.editorCore = this.getActiveEditorCore();
+    this.state.set("ui.minimapEnabled", readMinimapPreference(this.editorCore?.getSessionId() || ""));
   }
 
   private attachPasteListener(panelId: string) {

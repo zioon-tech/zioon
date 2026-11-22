@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { setTimeout as delay } from "node:timers/promises";
+import { createAuthorizedWorkbenchStore } from "./spaces/authorized-workbench-store.mjs";
 
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const DEFAULT_EVENT_POLL_INTERVAL_MS = 100;
@@ -67,13 +68,14 @@ function matchKVPath(pathname) {
 }
 
 export function createWorkbenchStateHttpHandler({
-  store,
+  store: sourceStore,
+  spaces = null,
   reauthorize = null,
   readOnlyKeys = [],
   eventPollIntervalMs = DEFAULT_EVENT_POLL_INTERVAL_MS,
   eventHeartbeatMs = DEFAULT_EVENT_HEARTBEAT_MS
 }) {
-  if (!store?.readSnapshot || !store?.updateSession) {
+  if (!sourceStore?.readSnapshot || !sourceStore?.updateSession) {
     throw new Error("Workbench state HTTP handler requires a state store");
   }
   const protectedKeys = new Set(readOnlyKeys);
@@ -92,6 +94,7 @@ export function createWorkbenchStateHttpHandler({
   return async (request, response, url) => {
     const path = url.pathname;
     if (!path.startsWith("/v1/workbench-state")) return false;
+    const store = createAuthorizedWorkbenchStore({ store: sourceStore, spaces, principal: request.zionPrincipal });
 
     if (request.method === "GET" && path === "/v1/workbench-state/status") {
       json(response, 200, await store.readStatus());
@@ -183,6 +186,7 @@ export function createWorkbenchStateHttpHandler({
           response.write(`data: ${JSON.stringify(event)}\n\n`);
           lastWriteAt = Date.now();
         }
+        cursor = Math.max(cursor, feed.cursor || 0);
         if (Date.now() - lastWriteAt >= eventHeartbeatMs) {
           response.write(`: heartbeat ${Date.now()}\n\n`);
           lastWriteAt = Date.now();

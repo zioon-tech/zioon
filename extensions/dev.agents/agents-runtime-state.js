@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -41,7 +42,7 @@ function stateTasks(state) {
 }
 
 export function agentsSnapshotFromStorage({
-  storage = globalThis.localStorage,
+  storage = localStorage,
   state = globalThis.window?.zion?.state
 } = {}) {
   const tasks = stateTasks(state) || readJson(storage, AGENTS_TASKS_STORAGE_KEY, []);
@@ -60,7 +61,7 @@ export function agentsSnapshotFromStorage({
 }
 
 export function applyAgentsSnapshotToStorage(snapshot, {
-  storage = globalThis.localStorage,
+  storage = localStorage,
   state = globalThis.window?.zion?.state
 } = {}) {
   const value = normalizeAgentsSnapshot(snapshot);
@@ -83,7 +84,7 @@ function runtimeConfigForAgents(state, storage) {
 
 export async function loadAgentsSnapshotFromRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForAgents(state, storage);
@@ -103,7 +104,7 @@ export async function loadAgentsSnapshotFromRuntime({
 export async function syncAgentsSnapshotToRuntime({
   snapshot,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForAgents(state, storage);

@@ -4,7 +4,6 @@ import { syntaxTree } from "@codemirror/language";
 import { insertNewlineAndIndent } from "@codemirror/commands";
 import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import katex from "katex";
-import mermaid from "mermaid";
 import { encode as encodePlantUML } from "plantuml-encoder";
 import {
   collectStandaloneImageGroups,
@@ -18,7 +17,9 @@ import {
   showImageDropIndicator
 } from "./image-transactions";
 import { resolveImageAsset } from "../media/image-assets";
+import { workbenchDocumentForView } from "../runtime/workbench-space";
 import { isContinuationBoundaryLine } from "../chat/session-document-format.js";
+import { safeMarkdownHref, sanitizePublicSvg } from "./public-content-security";
 
 /**
  * Revised WYSIWYG plugin:
@@ -366,7 +367,8 @@ function appendTableInlineMarkdown(parent: HTMLElement, source: string) {
         if (urlEnd > labelEnd + 2) {
           const a = document.createElement("a");
           a.className = "cm-md-link cm-md-table-link";
-          a.href = source.slice(labelEnd + 2, urlEnd);
+          const href = safeMarkdownHref(source.slice(labelEnd + 2, urlEnd));
+          if (href) a.href = href;
           a.target = "_blank";
           a.rel = "noopener noreferrer";
           appendTableInlineMarkdown(a, source.slice(i + 1, labelEnd));
@@ -480,6 +482,18 @@ const wysiwygKeepActiveLineRenderedFacet = Facet.define<boolean, boolean>({
     return values.length ? values[values.length - 1] !== false : true;
   }
 });
+type ReaderRenderOptions = {
+  publicReadOnly?: boolean;
+  imageUrl?: (source: string) => string | null;
+};
+const readerRenderOptions = Facet.define<ReaderRenderOptions, ReaderRenderOptions>({
+  combine: values => values[values.length - 1] || {}
+});
+const imageUrlForView = (source: string, view: EditorView) => {
+  const options = view.state.facet(readerRenderOptions);
+  return options.imageUrl ? Promise.resolve(options.imageUrl(source))
+    : resolveImageAsset(source, workbenchDocumentForView(view));
+};
 
 type RenderedInlineRange = {
   from: number;
@@ -493,6 +507,7 @@ type RenderedLineBoundaries = {
 };
 
 function selectionTouchesRange(state: EditorState, from: number, to: number): boolean {
+  if (state.facet(readerRenderOptions).publicReadOnly) return false;
   if (from > to) return false;
   for (const range of state.selection.ranges) {
     if (range.empty) {
@@ -1172,7 +1187,8 @@ class SimpleLinkWidget extends WidgetType {
   toDOM() {
     const a = document.createElement("a");
     a.className = "cm-md-link";
-    a.href = this.url;
+    const href = safeMarkdownHref(this.url);
+    if (href) a.href = href;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     appendTableInlineMarkdown(a, this.label);
@@ -1200,6 +1216,7 @@ function makeImageDraggable(
   view: EditorView,
   image: Pick<MarkdownImage, "alt" | "src" | "markdown" | "from" | "to">
 ) {
+  if (view.state.readOnly) return;
   element.draggable = true;
   element.addEventListener("dragstart", (event) => {
     try {
@@ -1275,7 +1292,7 @@ class SimpleImageWidget extends WidgetType {
     appendTableInlineMarkdown(fallback, this.alt || "[image]");
     wrap.appendChild(fallback);
 
-    resolveImageAsset(this.src || "").then((url) => {
+    imageUrlForView(this.src || "", view).then((url) => {
       if (!url || !wrap.isConnected) return;
       const img = createImageElement(image, this.kind, wrap);
       setImageSourceMetadata(img, image);
@@ -1328,7 +1345,7 @@ class ImageGalleryWidget extends WidgetType {
       fallback.textContent = item.alt || "[image]";
       cell.appendChild(fallback);
       makeImageDraggable(cell, view, item);
-      resolveImageAsset(item.src).then((url) => {
+      imageUrlForView(item.src, view).then((url) => {
         if (!url || !cell.isConnected) return;
         const img = createImageElement(item, "gallery", cell);
         setImageSourceMetadata(img, item);
@@ -1517,6 +1534,7 @@ class TaskWidget extends WidgetType {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = !!this.checked;
+    checkbox.disabled = view.state.readOnly;
     if (this.label) checkbox.setAttribute("aria-label", `Task: ${this.label}`);
     checkbox.addEventListener("click", (e) => {
       e.preventDefault();
@@ -1738,7 +1756,7 @@ class TableWidget extends WidgetType {
       e.stopPropagation();
       try { this.onEditSource(); } catch {}
     };
-    toolbar.appendChild(editBtn);
+    if (!this.view.state.readOnly) toolbar.appendChild(editBtn);
 
     const copyBtn = document.createElement("button");
     copyBtn.className = "cm-md-table-btn";
@@ -1863,11 +1881,13 @@ function getMermaidTheme(): "default" | "dark" {
   const t = document.documentElement.getAttribute("data-theme");
   return t === "light" ? "default" : "dark";
 }
-function ensureMermaidInit() {
+async function ensureMermaidInit(publicReadOnly = false) {
+  const { default: mermaid } = await import("mermaid");
   try {
     mermaid.initialize({
       startOnLoad: false,
-      securityLevel: "loose",
+      securityLevel: publicReadOnly ? "strict" : "loose",
+      ...(publicReadOnly ? { flowchart: { htmlLabels: false }, htmlLabels: false } : {}),
       theme: getMermaidTheme(),
       logLevel: "error",
       suppressErrors: true
@@ -1875,6 +1895,7 @@ function ensureMermaidInit() {
     // Suppress global parse error handler to avoid DOM error notes
     try { (mermaid as any).parseError = () => {}; } catch {}
   } catch {}
+  return mermaid;
 }
 async function copyToClipboard(text: string) {
   try {
@@ -1967,9 +1988,10 @@ class DiagramWidget extends WidgetType {
   eq(other: DiagramWidget) {
     return other.code === this.code && other.lang === this.lang;
   }
-  toDOM() {
+  toDOM(view: EditorView) {
     const wrap = document.createElement("div");
     wrap.className = "cm-md-diagram";
+    const publicReadOnly = view.state.facet(readerRenderOptions).publicReadOnly;
     const cacheKey = `diagram:${this.lang}:${hashString(this.code || "")}`;
     applyCachedMinHeight(wrap, cacheKey);
 
@@ -2006,7 +2028,9 @@ class DiagramWidget extends WidgetType {
         } catch {}
       }
     });
-    toolbar.append(editBtn, copySvgBtn, exportPngBtn, openBtn);
+    if (!view.state.readOnly) toolbar.appendChild(editBtn);
+    toolbar.append(copySvgBtn, exportPngBtn);
+    if (!publicReadOnly) toolbar.appendChild(openBtn);
     wrap.appendChild(toolbar);
 
     const body = document.createElement("div");
@@ -2016,7 +2040,6 @@ class DiagramWidget extends WidgetType {
     if (this.lang === "mermaid") {
       let scratch: HTMLDivElement | null = null;
       try {
-        ensureMermaidInit();
         const id = "mmd-" + Math.random().toString(36).slice(2);
         // Use an offscreen scratch container to prevent mermaid from appending error text to document.body
         scratch = document.createElement("div");
@@ -2024,7 +2047,18 @@ class DiagramWidget extends WidgetType {
         scratch.style.left = "-9999px";
         scratch.style.top = "-9999px";
         document.body.appendChild(scratch);
-        mermaid.render(id, this.code, scratch).then(({ svg }) => {
+        ensureMermaidInit(!!publicReadOnly).then(mermaid => mermaid.render(id, this.code, scratch || undefined)).then(({ svg }) => {
+          if (publicReadOnly) {
+            const node = sanitizePublicSvg(svg);
+            if (!node) return;
+            this.svgString = new XMLSerializer().serializeToString(node);
+            requestAnimationFrame(() => {
+              body.replaceChildren(node);
+              updateCachedHeight(wrap, cacheKey);
+              applyCachedMinHeight(wrap, cacheKey);
+            });
+            return;
+          }
           // sanitize: remove script tags
           const parser = new DOMParser();
           const doc = parser.parseFromString(svg, "image/svg+xml");
@@ -2049,6 +2083,12 @@ class DiagramWidget extends WidgetType {
         try { scratch?.remove(); } catch {}
       }
     } else if (this.lang === "uml") {
+      if (publicReadOnly) {
+        body.textContent = this.code.trim();
+        body.classList.add("cm-md-codeblock");
+        toolbar.remove();
+        return wrap;
+      }
       try {
         const encoded = encodePlantUML(this.code);
         const server = (window as any).__plantuml_server || "https://www.plantuml.com/plantuml/svg/";
@@ -2067,6 +2107,14 @@ class DiagramWidget extends WidgetType {
         body.appendChild(img);
       } catch {}
     } else if (this.lang === "svg") {
+      if (publicReadOnly) {
+        const node = sanitizePublicSvg(this.code);
+        if (node) {
+          this.svgString = new XMLSerializer().serializeToString(node);
+          body.appendChild(node);
+        }
+        return wrap;
+      }
       try {
         // Sanitize SVG content: remove script tags and other potentially dangerous elements
         const parser = new DOMParser();
@@ -3337,6 +3385,7 @@ export function getRenderedLineVisibleCursorPos(view: EditorView, lineNumber: nu
 }
 
 function getSourceRevealLines(view: EditorView): Set<number> {
+  if (view.state.facet(readerRenderOptions).publicReadOnly) return new Set();
   const activeLines = getActiveLines(view);
   const keepRendered = view.state.facet(wysiwygKeepActiveLineRenderedFacet);
   if (!keepRendered) {
@@ -3386,13 +3435,14 @@ function getTableBlockRangeAtPos(view: EditorView, startPos: number): { from: nu
   }
 }
 
-export function wysiwyg(options: { keepActiveLineRendered?: boolean } = {}): Extension {
+export function wysiwyg(options: { keepActiveLineRendered?: boolean } & ReaderRenderOptions = {}): Extension {
   return [
+    readerRenderOptions.of(options),
     wysiwygKeepActiveLineRenderedFacet.of(options.keepActiveLineRendered !== false),
     roleFenceBlocksField,
     tableBlockDecorationsField,
     imageGalleryField,
-    imageInternalDragHandlers,
+    ...(options.publicReadOnly ? [] : [imageInternalDragHandlers]),
     wysiwygPlugin
   ];
 }

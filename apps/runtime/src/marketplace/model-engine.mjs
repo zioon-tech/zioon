@@ -6,6 +6,9 @@ import { extensionAccountId } from "./run-bindings.mjs";
 const fail = (code) => { throw Object.assign(new Error(code), { code, statusCode: 409, retryable: false }); };
 const profileId = (listingId, providerId, modelId) => `extension.${hashExtension([listingId, providerId, modelId])}`;
 export const isExtensionModel = (model) => String(model?.profileId || "").startsWith("extension.");
+// A symbol cannot be supplied by HTTP/JSON metadata. Only the server's
+// capability broker may provide a separately authorized source-side Run.
+export const SHARED_MODEL_EXECUTION = Symbol("sharedModelExecution");
 
 /** Account discovery is metadata-only and never activates an execution resource. */
 export class AccountExtensionModelCatalog {
@@ -82,7 +85,7 @@ export class AccountExtensionModelEngine {
       } finally { await iterator.return?.(); }
       return;
     }
-    const run = await this.runs.get(request.runId);
+    const run = request[SHARED_MODEL_EXECUTION] || await this.runs.get(request.runId);
     const plan = run?.metadata?.extensionModelPlan;
     if (!run || !plan || plan.profileId !== request.model.profileId
       || plan.model.id !== request.model.modelId || extensionAccountId(run.principal) !== extensionAccountId(request.principal)) {

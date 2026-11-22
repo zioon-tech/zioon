@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rebuildModelCatalog } from "../extensions/dev.langchain-chat/model-catalog.js";
+import { installModelSwitcher } from "../extensions/dev.langchain-chat/model-switcher.js";
 import {
   invalidateRuntimeDynamicModelCache
 } from "../extensions/dev.langchain-chat/runtime-user-model-store.js";
@@ -7,6 +8,41 @@ import {
 const originalFetch = globalThis.fetch;
 
 describe("model catalog Runtime credentials", () => {
+  it("combines own and received models without requiring a browser provider for the received model", async () => {
+    const values = new Map();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ profiles: [{
+      id: "own.profile", providerId: "own", sourceModelId: "mine", model: "mine", credentialConfigured: true
+    }, {
+      id: "share.share1", providerId: "shared", model: "share1", label: "共享模型", credentialConfigured: true,
+      metadata: { source: "account-share", providerName: "Alice" }
+    }] }), { headers: { "content-type": "application/json" } }));
+    window.zion = { models: { listProviders: () => ["own"], getProvider: () => ({
+      list: async () => [{ id: "mine" }], resolve: async () => ({ _credentialConfigured: true })
+    }) }, state: {
+      get: key => key === "runtime.mode" ? "runtime" : key === "runtime.connection"
+        ? { backend: "runtime", baseUrl: "http://runtime.test" } : values.get(key),
+      set: (key, value) => values.set(key, value)
+    } };
+    const models = await rebuildModelCatalog();
+    expect(models).toHaveLength(2);
+    expect(models.find(model => model.providerId === "shared")).toMatchObject({
+      runtimeProfileId: "share.share1", providerName: "Alice", sharedModel: true, requiresConfig: false
+    });
+    const scroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    const switcher = installModelSwitcher();
+    try {
+      switcher.open();
+      const rows = document.querySelectorAll("#zion-model-switcher-root [data-index]");
+      expect(rows).toHaveLength(2);
+      expect(rows[0].querySelector(".shared-resource-marker")).toBeNull();
+      expect(rows[1].querySelector(".shared-resource-marker")?.getAttribute("title")).toBe("Alice 分享的资源");
+    } finally {
+      switcher.dispose();
+      if (scroll) HTMLElement.prototype.scrollIntoView = scroll;
+      else delete HTMLElement.prototype.scrollIntoView;
+    }
+  });
   beforeEach(() => {
     localStorage.clear();
     invalidateRuntimeDynamicModelCache();

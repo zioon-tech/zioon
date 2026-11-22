@@ -23,6 +23,19 @@ import {
 } from "../../../packages/runtime/dist/index.js";
 import { RuntimeAccessControl } from "./access-control.mjs";
 import { AccountAccessControl } from "./accounts/account-access-control.mjs";
+import { PostgresSharedSpaceStore } from "./spaces/postgres-shared-space-store.mjs";
+import { SpaceExecutionStore } from "./spaces/space-execution-store.mjs";
+import { createSharedCollaborationPersistence } from "./spaces/collaboration-persistence.mjs";
+import { createDocumentTransfer } from "./spaces/document-transfer.mjs";
+import { createAuthorizedWorkbenchStore } from "./spaces/authorized-workbench-store.mjs";
+import { createSpaceHttpHandler } from "./spaces/space-http-handler.mjs";
+import { SpaceCapabilityBroker, SharedSpaceRuntime, sharedModelBinding } from "./spaces/space-runtime.mjs";
+import { createProviderCapabilities } from "./spaces/provider-capabilities.mjs";
+import { PostgresSharingStore } from "./sharing/postgres-sharing-store.mjs";
+import { AccountModelSharing, borrowedModelShare } from "./sharing/model-sharing.mjs";
+import { createSharingHttpHandler } from "./sharing/sharing-http-handler.mjs";
+import { createDocumentLinkHttpHandler } from "./sharing/document-link-http-handler.mjs";
+import { createDocumentPresenceHttpHandler } from "./sharing/document-presence-http-handler.mjs";
 import { createPlatformNodePolicy } from "./accounts/platform-node-policy.mjs";
 import { PostgresAccountStore } from "./accounts/postgres-account-store.mjs";
 import { createOidcProvider } from "./accounts/oidc-provider.mjs";
@@ -31,6 +44,7 @@ import { createAccountAppHandoff } from "./accounts/account-app-handoff.mjs";
 import { PlatformAdminService } from "./platform-admin/service.mjs";
 import { createPlatformAdminHandler } from "./platform-admin/http-handler.mjs";
 import { createMemoryAccountAuthorization } from "./accounts/memory-account-connection.mjs";
+import { authorizeMemoryContext } from "./accounts/memory-delegation.mjs";
 import { createAccountExecutionAuthority } from "./accounts/execution-authority.mjs";
 import { bindRuntimeDataDirectory } from "./accounts/data-directory-binding.mjs";
 import { createAgentRunnerPluginService } from "./agent-runner-plugin-service.mjs";
@@ -81,7 +95,7 @@ import { createPluginFileService } from "./plugin-file-service.mjs";
 import { createAgentFsMemoryClient, createAgentFsMemoryLocations } from "./agentfs-memory-client.mjs";
 import { PostgresIdentityContextStore } from "./identity-context-store.mjs";
 import { createAgentFsMcpClient } from "./agentfs-mcp-client.mjs";
-import { AGENTFS_MCP_READ_NAMES } from "../../../packages/plugin-sdk/src/agentfs-mcp-policy.mjs";
+import { AGENTFS_MCP_READ_NAMES, AGENTFS_MCP_PREFIX, AGENTFS_MCP_WRITE_TOOLS } from "../../../packages/plugin-sdk/src/agentfs-mcp-policy.mjs";
 import { createPluginFilesHttpHandler } from "./plugin-files-http-handler.mjs";
 import { createDeviceServiceClient } from "./device-service-client.mjs";
 import { resolvePluginDataHost } from "./plugin-data-host.mjs";
@@ -114,7 +128,8 @@ import { MarketplaceService } from "./marketplace/service.mjs";
 import { createMarketplaceHttpHandler } from "./marketplace/http-handler.mjs";
 import { ExtensionExecutionService, withExtensionTools } from "./marketplace/execution-service.mjs";
 import { ExtensionInvocationEngine } from "./marketplace/invocation-engine.mjs";
-import { AccountExtensionModelCatalog, AccountExtensionModelEngine, isExtensionModel } from "./marketplace/model-engine.mjs";
+import { AccountExtensionModelCatalog, AccountExtensionModelEngine, isExtensionModel, SHARED_MODEL_EXECUTION } from "./marketplace/model-engine.mjs";
+import { contentSpaceId } from "./sharing/content-scope.mjs";
 import { AccountModelSelection, createModelManagementPluginService } from "./marketplace/model-selection.mjs";
 import { ExtensionHostBridge } from "./marketplace/host-bridge.mjs";
 import { ExtensionRunBindings, extensionTerminalOutbox } from "./marketplace/run-bindings.mjs";
@@ -271,6 +286,7 @@ function createEngine(mode, credentials, models, preferredProfileId = "") {
       providerId: "runtime",
       providerType: "echo",
       model: "echo",
+      credentialRequired: false,
       capabilities: {}
     };
     return {
@@ -632,6 +648,18 @@ const marketplace = accountStore ? await new MarketplaceService({
   reviewerIds: String(process.env.ZION_MARKETPLACE_REVIEWER_IDS || "").split(",").filter(Boolean)
 }).initialize() : null;
 await initializePostgresRuntimeSchema(postgresPool);
+const sharedSpaces = accountStore ? new PostgresSharedSpaceStore({ accounts: accountStore }) : null;
+const spaceExecution = sharedSpaces ? new SpaceExecutionStore({ spaces: sharedSpaces }) : null;
+const spaceBroker = sharedSpaces ? new SpaceCapabilityBroker({
+  spaces: sharedSpaces,
+  acquireRuntime: async (spaceId) => {
+    if (gateway) return gateway.acquire(spaceId);
+    if (spaceId !== runtimeSpaceId) throw Object.assign(new Error("Provider Runtime unavailable"), { statusCode: 503, code: "provider_runtime_unavailable" });
+    return { app: platformRuntime, release() {} };
+  }
+}) : null;
+const sharing = accountStore ? new PostgresSharingStore({ accounts: accountStore }) : null;
+if (sharedSpaces) sharedSpaces.sharing = sharing;
 const extensionTrustedOrigins = parseList(process.env.ZION_RUNTIME_EXTENSION_TRUSTED_ORIGINS);
 const extensionTransport = createExtensionHttpTransport({ trustedOrigins: extensionTrustedOrigins });
 const configuredRunControllers = await loadRuntimeHookAdapters(process.env.ZION_RUNTIME_HOOKS_FILE, {
@@ -786,6 +814,15 @@ const assetService = new AssetService({
   metadata: assetMetadata,
   maxImageBytes: assetMaxImageBytes
 });
+let assetCollecting = false;
+const assetCollector = setInterval(() => {
+  if (assetCollecting) return;
+  assetCollecting = true;
+  void assetService.collectGarbage().catch(() => process.stderr.write("[runtime-assets] orphan collection failed\n"))
+    .finally(() => { assetCollecting = false; });
+}, 300000);
+assetCollector.unref();
+startupCleanup.push(() => clearInterval(assetCollector));
 const workbenchState = await new PostgresWorkbenchStateStore(postgresPool, {
   spaceId: runtimeSpaceId
 }).initialize();
@@ -821,7 +858,8 @@ const accessControl = accountStore
       memoryEnabled: !!memoryServiceUrl,
       adcOrigin: process.env.ZIOON_ADC_ORIGIN || "",
       sharedAccountIssuer: process.env.ZIOON_ACCOUNT_ISSUER || "",
-      servedSpaceId: runtimeSpaceId
+      servedSpaceId: runtimeSpaceId,
+      sharedSpaces, sharing
     })
   : accessStore ? new RuntimeAccessControl({
       store: accessStore,
@@ -830,6 +868,10 @@ const accessControl = accountStore
       trustedProxyAddresses: parseList(process.env.ZION_RUNTIME_TRUSTED_PROXY_ADDRESSES)
     })
   : null;
+const modelSharing = sharing ? new AccountModelSharing({
+  sharing, acquireRuntime: id => spaceBroker.acquireRuntime(id),
+  authorize: request => accessControl.authorizeRunExecution(request)
+}) : null;
 const observabilityTraceReader = observabilityQueryUrl
   ? createJaegerTraceReader({
       baseUrl: observabilityQueryUrl,
@@ -865,17 +907,27 @@ const observabilityProjection = await new PostgresObservabilityProjection({
 startupCleanup.push(() => observabilityProjection.stop());
 const collaboration = createRuntimeCollaborationService({
   store: workbenchState,
+  withPersistence: sharedSpaces ? createSharedCollaborationPersistence({
+    spaces: sharedSpaces, store: workbenchState, access: accessControl, runs
+  }) : null,
   authenticate: accessControl
     ? (input) => accessControl.authenticateCollaboration(input)
     : null,
   reauthorize: accessControl
-    ? (context) => accessControl.reauthorize(
+    ? async (context) => {
+      await accessControl.reauthorize(
         context?.principal,
         context?.readOnly ? "runtime.read" : "collaboration.write"
-      )
+      );
+      if (sharedSpaces) await sharedSpaces.requireDocument(context.principal.user.id,
+        contentSpaceId(context.principal), context.documentId, context.readOnly ? "view" : "edit");
+    }
     : null,
   authorizeOutbound: accountStore
-    ? (context) => accessControl.reauthorize(context.principal, "runtime.read")
+    ? async (context) => {
+      await accessControl.reauthorize(context.principal, "runtime.read");
+      await sharedSpaces.requireDocument(context.principal.user.id, contentSpaceId(context.principal), context.documentId);
+    }
     : null,
   allowOrigin: accessControl
     ? (request) => accessControl.originAllowed(request.headers?.origin)
@@ -886,6 +938,7 @@ const scheduler = new PostgresSchedulerStore(postgresPool, {
   spaceId: runtimeSpaceId
 });
 const interrupted = await runs.reconcileActiveRuns();
+if (spaceExecution) await spaceExecution.recover(runtimeSpaceId);
 const projectedMessages = await runs.reconcileCompletedSessionMessages();
 const modelProfileStore = new FileModelProfileStore(modelProfilePath);
 const models = createBuiltinModelRegistry({
@@ -952,17 +1005,48 @@ const {
   resolveModel
 } = createEngine(engineMode, credentials, models, platformContext?.defaultModelProfileId);
 let accountModelEngine;
-const engine = new AssetInputEngine({
+const sharedRuntime = sharedSpaces ? new SharedSpaceRuntime({
+  spaces: sharedSpaces, execution: spaceExecution, broker: spaceBroker, runs, runtimeSpaceId,
+  authorizeExecution: request => accessControl.authorizeRunExecution(request),
+  prepareDocument: (request, context) => {
+    const user = request.messages?.findLast((message) => message.role === "user");
+    const content = typeof user?.content === "string" ? user.content
+      : Array.isArray(user?.content) ? user.content.filter((p) => p.type === "text").map((p) => p.text).join("\n") : request.prompt || "";
+    return collaboration.prepareRun(request.sessionId, {
+      runId: context.runId, userContent: content, mode: request.metadata?.documentProjection?.mode,
+      appendUserPrompt: request.metadata?.documentProjection?.appendUserPrompt === true,
+      documentAnchor: request.metadata?.documentProjection?.anchor, returnSnapshot: false
+    });
+  },
+  waitForProjection: (runId, attemptId) => runtime.waitForProjection(runId, attemptId)
+}) : null;
+const assetEngine = new AssetInputEngine({
   engine: new ExtensionInvocationEngine({
     engine: { id: configuredEngine.id, async *streamTurn(request) {
-      yield* (accountModelEngine || configuredEngine).streamTurn(request);
+      if (request.principal?.contentScope && request.principal.spaceId !== runtimeSpaceId) {
+        const lease = await spaceBroker.acquireRuntime(request.principal.spaceId);
+        try { yield* lease.app.streamContentModel(request); }
+        finally { lease.release(); }
+        return;
+      }
+      yield* (modelSharing && borrowedModelShare(request.model)
+        ? modelSharing : accountModelEngine || configuredEngine).streamTurn(request);
     } }, runs,
     resolvePluginTool: (pluginId, name) => runtimePlugins.getToolDefinitions()
       .find((tool) => tool.pluginId === pluginId && tool.name === name)
   }),
   assets: assetService,
-  maxInlineBytes: assetMaxImageBytes
+  maxInlineBytes: assetMaxImageBytes,
+  authorizeAsset: sharedSpaces ? async (request, assetId) => {
+    if (request.principal?.contentScope && !(await postgresPool.query(
+      "SELECT 1 FROM space_document_assets WHERE space_id=$1 AND document_id=$2 AND asset_id=$3",
+      [runtimeSpaceId, request.principal.contentScope.documentId, assetId])).rowCount) {
+      throw Object.assign(new Error("asset_not_found"), { statusCode: 404, code: "asset_not_found" });
+    }
+    return sharedSpaces.requireAsset(request.principal?.userId, runtimeSpaceId, assetId);
+  } : null
 });
+const engine = sharedRuntime ? sharedRuntime.wrapEngine(assetEngine) : assetEngine;
 const importModelProfile = engineMode === "openai"
   ? ({ profile: input, credential }) => {
       const id = String(input?.id || "").trim();
@@ -1026,17 +1110,57 @@ const listModelProfiles = () => (
 const listModelProfilesWithCredentialStatus = () => listModelProfiles()
   .map((item) => ({
     ...item,
-    credentialConfigured: credentials.has(item.credentialRef)
+    credentialConfigured: item.credentialRequired === false || credentials.has(item.credentialRef)
   }));
-const listAccountModelProfiles = async (principal) => [
-  ...listModelProfilesWithCredentialStatus(), ...(accountModelCatalog ? await accountModelCatalog.list(principal) : [])
-];
-const resolveAccountModel = (requested, principal) => isExtensionModel(requested)
-  ? accountModelCatalog.resolve(requested, principal) : resolveModel(requested);
+const listAccountModelProfiles = async (principal) => {
+  const requesterSpace = principal?.spaceId || principal?.space?.id;
+  if (principal?.contentScope && requesterSpace !== runtimeSpaceId) {
+    const lease = await spaceBroker.acquireRuntime(requesterSpace);
+    try { return await lease.app.listContentModels(principal); }
+    finally { lease.release(); }
+  }
+  return [
+  ...(runtimeSpace?.kind === "team" ? [] : listModelProfilesWithCredentialStatus()),
+  ...(runtimeSpace?.kind === "team" && principal ? await spaceBroker.models(principal)
+    : accountModelCatalog ? await accountModelCatalog.list(principal) : []),
+  ...(runtimeSpace?.kind !== "team" && modelSharing ? await modelSharing.models(principal) : [])
+  ];
+};
+const resolveAccountModel = async (requested, principal) => {
+  const requesterSpace = principal?.spaceId || principal?.space?.id;
+  if (principal?.contentScope && requesterSpace !== runtimeSpaceId) {
+    const lease = await spaceBroker.acquireRuntime(requesterSpace);
+    try { return await lease.app.resolveContentModel(requested, principal); }
+    finally { lease.release(); }
+  }
+  return borrowedModelShare(requested) && runtimeSpace?.kind !== "team"
+  ? modelSharing.resolve(requested, principal) : sharedModelBinding(requested)
+  ? spaceBroker.resolveModel(requested, principal)
+  : runtimeSpace?.kind === "team"
+    ? Promise.reject(Object.assign(new Error("请选择空间里明确共享的模型"), { statusCode: 403, code: "personal_model_not_shared" }))
+    : isExtensionModel(requested) ? accountModelCatalog.resolve(requested, principal) : resolveModel(requested);
+};
 const modelSelection = new AccountModelSelection({
   marketplace, listProfiles: listAccountModelProfiles, interactionProfiles: interactionProfileStore,
-  resolveModel: resolveAccountModel, fallbackModel: modelRefForProfile(profile)
+  resolveModel: resolveAccountModel, fallbackModel: modelRefForProfile(profile),
+  sharedSpaces: runtimeSpace?.kind === "team" ? sharedSpaces : null
 });
+const ownDefaultModel = modelSelection.defaultModel.bind(modelSelection);
+const ownResolveRequest = modelSelection.resolveRequest.bind(modelSelection);
+modelSelection.defaultModel = async (principal, id) => {
+  const requesterSpace = principal?.spaceId || principal?.space?.id;
+  if (!principal?.contentScope || requesterSpace === runtimeSpaceId) return ownDefaultModel(principal, id);
+  const lease = await spaceBroker.acquireRuntime(requesterSpace);
+  try { return await lease.app.resolveContentModel(null, principal, id); }
+  finally { lease.release(); }
+};
+modelSelection.resolveRequest = async (body, principal) => {
+  const requesterSpace = principal?.spaceId || principal?.space?.id;
+  if (!principal?.contentScope || requesterSpace === runtimeSpaceId) return ownResolveRequest(body, principal);
+  const lease = await spaceBroker.acquireRuntime(requesterSpace);
+  try { return await lease.app.resolveContentRequest(body, principal); }
+  finally { lease.release(); }
+};
 const localDataFiles = pluginDataHost.localFiles
   ? createPluginDataFileHost({ root: pluginDataRoot })
   : null;
@@ -1289,6 +1413,18 @@ function createSchedulerPluginService({
 }
 function createSessionManagerPluginService({ workbenchState }) {
   return Object.freeze({
+    async forContext(context) {
+      if (!sharedSpaces) return createSessionManagerPluginService({ workbenchState });
+      let principal = context?.request?.principal || context?.principal;
+      if (principal?.kind !== "account") {
+        await accessControl.authorizeRunExecution({
+          ...context, ...(context?.request || {}), principal
+        });
+        principal = { kind: "account", user: { id: principal.userId },
+          space: await accountStore.space(principal.spaceId), contentScope: principal.contentScope };
+      }
+      return createAuthorizedWorkbenchStore({ store: workbenchState, spaces: sharedSpaces, principal });
+    },
     async readSnapshot() {
       return await workbenchState.readSnapshot() || {
         snapshot: {
@@ -1353,7 +1489,7 @@ const identityFileService = memoryServiceUrl ? createPluginFileService({
   fileClient: createAgentFsMemoryClient({
     baseUrl: memoryServiceUrl,
     secret: memoryBridgeSecret,
-    ...(memoryAccountConnectionsDir ? { authorizationProvider: createMemoryAccountAuthorization({
+    ...(memoryAccountConnectionsDir && runtimeSpace?.kind !== "team" ? { authorizationProvider: createMemoryAccountAuthorization({
       directory: memoryAccountConnectionsDir, baseUrl: memoryServiceUrl, accessControl
     }) } : {})
   }),
@@ -1376,7 +1512,7 @@ const withIdentityFileHttpContext = async (
   const principal = await accessControl.reauthorize(
     actor, access === "write" ? "runtime.write" : "runtime.read"
   );
-  return await operation({ principal, policy: {
+  return await operation({ principal, sessionId: principal.documentId, policy: {
     preset: access === "write" ? "workspace-write" : "read-only",
     fileRoots: ["/memory/dev.identity"],
     allowedTerminalSessionIds: []
@@ -1460,7 +1596,7 @@ const runtimePlugins = new RuntimePluginService({
           defaultOutputTokens: selected?.maxOutputTokens };
       },
       modelService: createPluginModelService({
-        engine, resolveModel,
+        engine, resolveModel: resolveAccountModel,
         authorizeRequest: accountExecution?.authorizeExecution,
         onRequest: publishModelRequest
       })
@@ -1481,12 +1617,21 @@ const runtimePlugins = new RuntimePluginService({
     },
     "dev.identity": {
       fileService: identityFileService,
+      spaceKind: runtimeSpace?.kind,
+      authorizeContext: accessControl ? (context, access) => authorizeMemoryContext(accessControl, {
+        context: { ...context,
+          principal: context.request?.principal || context.principal,
+          policy: context.request?.policy || context.policy,
+          sessionId: context.request?.sessionId || context.sessionId,
+          interactionProfileId: context.request?.interactionProfileId || context.interactionProfileId
+        }, write: access === "write", filePaths: ["/memory/dev.identity"]
+      }) : null,
       contextStore: new PostgresIdentityContextStore(postgresPool),
       contextBindingKey: `${memoryServiceUrl}|${memoryMcpEnabled ? "mcp" : "cli"}`,
       mcpService: identityMcpService,
       modelService: createPluginModelService({
         engine,
-        resolveModel,
+        resolveModel: resolveAccountModel,
         authorizeRequest: accountExecution?.authorizeExecution,
         onRequest: publishModelRequest,
         onRequestError(error, { requestContext } = {}) {
@@ -1626,7 +1771,7 @@ if (extensionExecution) extensionExecution.publishEvents = (...args) => extensio
 startupCleanup.push(() => extensionOutbox?.close());
 startupCleanup.push(() => extensionExecution?.bridge.close());
 const pluginTools = withExtensionTools(runtimePlugins, extensionExecution);
-tools = new RuntimeToolBroker({
+const runtimeTools = new RuntimeToolBroker({
   localTools: analysisTools,
   pluginTools,
   receipts: runs,
@@ -1646,6 +1791,7 @@ tools = new RuntimeToolBroker({
     return authorized;
   }
 });
+tools = sharedRuntime ? sharedRuntime.wrapTools(runtimeTools) : runtimeTools;
 observabilityProjection.tools = new Set(tools.supportedToolNames);
 observabilityProjection.start();
 const knownToolDefinitions = new Map(
@@ -1678,6 +1824,8 @@ capabilityTools = () => {
 const defaultAvailableToolNames = [
   ...new Set(tools.supportedToolNames || [])
 ];
+const sharedMemoryToolNames = runtimeSpace?.kind === "team"
+  ? [...AGENTFS_MCP_READ_NAMES, ...AGENTFS_MCP_WRITE_TOOLS.map(name => `${AGENTFS_MCP_PREFIX}${name}`)] : [];
 let defaultInteractionProfile = interactionProfileStore.ensure(
   {
     ...createDefaultInteractionProfile({
@@ -1690,6 +1838,7 @@ let defaultInteractionProfile = interactionProfileStore.ensure(
         allowedTools: defaultAvailableToolNames.filter((name) =>
           DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES.includes(name)
           || SANDBOX_TERMINAL_POLICY.allowedTools.includes(name) || name === "extensionsCall"
+          || runtimeSpace?.kind === "team" && (name === "spaceCapabilityCall" || sharedMemoryToolNames.includes(name))
         ),
         maxToolCalls: 50
       },
@@ -1714,14 +1863,23 @@ defaultInteractionProfile = mergeDefaultProfileTools(
     profileId: DEFAULT_INTERACTION_PROFILE_ID,
     availableToolNames: defaultAvailableToolNames,
     allowedToolNames: platformContext
-      ? [...DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES, ...SANDBOX_TERMINAL_POLICY.allowedTools, "extensionsCall"]
+      ? [...DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES, ...SANDBOX_TERMINAL_POLICY.allowedTools, "extensionsCall",
+        ...(runtimeSpace?.kind === "team" ? ["spaceCapabilityCall", ...sharedMemoryToolNames] : [])]
       : [...DEFAULT_INTERACTIVE_READONLY_TOOL_NAMES,
+        ...(runtimeSpace?.kind === "team" ? ["spaceCapabilityCall", ...sharedMemoryToolNames] : []),
         ...(extensionExecution && defaultInteractionProfile.policy?.preset === "trusted-automation"
           ? ["extensionsCall"] : [])],
     version: DEFAULT_PROFILE_TOOLSET_VERSION,
     replaceDefaultTools: true
   }
 );
+if (runtimeSpace?.kind === "team") {
+  defaultInteractionProfile = interactionProfileStore.patch(DEFAULT_INTERACTION_PROFILE_ID, {
+    policy: { ...defaultInteractionProfile.policy, fileRoots: ["/memory/dev.identity"],
+      allowedCommandPrefixes: [], allowedTerminalSessionIds: [], allowedRecipients: [], maxMailPerRun: 0 },
+    metadata: { ...defaultInteractionProfile.metadata, includeTerminalContext: false }
+  });
+}
 mergeDefaultProfileTools(
   interactionProfileStore,
   interactionProfileStore.ensure(
@@ -1777,7 +1935,8 @@ const deviceServiceWebSocketHandler = createDeviceServiceWebSocketHandler({
     ? (request, route) => accessControl.authorizeDeviceService(request, route)
     : null
 });
-const listRunControllers = () => {
+const listRunControllers = (request) => {
+  if (request?.principal?.contentScope) return [];
   const controllers = [...runtimePlugins.getRunControllers(), ...configuredRunControllers];
   if (new Set(controllers.map((controller) => controller.id)).size !== controllers.length) {
     throw new Error("Duplicate Runtime Hook controller id");
@@ -1788,15 +1947,28 @@ executor = createAgentExecutor({
   engine,
   tools,
   runs,
-  contexts: runtimePlugins.getContextProviders(),
-  controllers: listRunControllers(),
-  bindRun: extensionBindings ? async (request, context) => {
-    const bindings = await extensionBindings.prepare(request, context);
+  contexts: runtimePlugins.getContextProviders().map(provider => ({ ...provider,
+    id: provider.id, order: provider.order, stage: provider.stage, required: provider.required,
+    ...(provider.prepare ? { prepare: async context => context.request?.principal?.contentScope
+      && provider.id !== "dev.identity.context" ? null : provider.prepare(context) } : {}),
+    ...(provider.contribute ? { contribute: async (messages, context) => context.request?.principal?.contentScope
+      && provider.id !== "dev.identity.context" ? messages : provider.contribute(messages, context) } : {})
+  })),
+  controllers: [],
+  bindRun: async (request, context) => {
+    const spaceBindings = await sharedRuntime?.prepare(request, context);
+    const bindings = spaceBindings || (extensionBindings ? await extensionBindings.prepare(request, context) : {});
     try {
-      const model = await accountModelEngine.prepare(request, context);
-      return { ...bindings, metadata: { ...bindings.metadata, ...model.metadata } };
-    } catch (error) { bindings.dispose?.(); throw error; }
-  } : undefined,
+      let model = !spaceBindings && accountModelEngine ? await accountModelEngine.prepare(request, context) : {};
+      if (request.principal?.contentScope && isExtensionModel(request.model)) {
+        const lease = await spaceBroker.acquireRuntime(request.principal.spaceId);
+        try { model = await lease.app.prepareContentModel(request, context); }
+        finally { lease.release(); }
+      }
+      return { ...bindings, controllers: [...(bindings.controllers || []), ...listRunControllers(request)],
+        metadata: { ...bindings.metadata, ...model.metadata } };
+    } catch (error) { await bindings.dispose?.(); throw error; }
+  },
   authorizeRun: accountStore
     ? (request, phase) => phase === "admission"
       ? request.policy
@@ -1819,7 +1991,17 @@ const schedulerWorker = schedulerWorkerEnabled
   ? new RuntimeSchedulerWorker({
       executor,
       scheduler,
-      sessions: runs,
+      sessions: sharedSpaces ? new Proxy(runs, { get(target, key) {
+        if (key === "createSession") return async (record, context) => {
+          await accessControl.authorizeRunExecution({ principal: context.principal, policy: record.policy,
+            interactionProfileId: record.metadata?.interactionProfileId });
+          await sharedSpaces.transaction(runtimeSpaceId, async client => {
+            await sharedSpaces.registerDocument(context.principal.userId, runtimeSpaceId, record.id, client);
+            await runs.createSession(record, { client });
+          });
+        };
+        return typeof target[key] === "function" ? target[key].bind(target) : target[key];
+      } }) : runs,
       tools,
       resolveRequest: (request) => modelSelection.resolveRequest(request, request.principal),
       availableTools: () => tools.supportedToolNames,
@@ -1872,7 +2054,9 @@ const serviceHttpHandlers = [
     }
   })] : []),
   ...(sandboxTools ? [createSandboxHttpHandler({ broker: sandboxTools, accessControl })] : []),
-  createAssetHttpHandler({ assets: assetService }),
+  createAssetHttpHandler({ assets: assetService, bindContentAsset: sharedSpaces ? (principal, asset) =>
+    sharedSpaces.transaction(runtimeSpaceId, client => sharedSpaces.bindDocumentAssets(
+      principal.user.id, runtimeSpaceId, principal.contentScope.documentId, [asset.id], client)) : null }),
   createObservabilityHttpHandler({
     service: observabilityService,
     projection: observabilityProjection,
@@ -1906,6 +2090,7 @@ const serviceHttpHandlers = [
   }),
   createWorkbenchStateHttpHandler({
     store: workbenchState,
+    spaces: sharedSpaces,
     readOnlyKeys: [
       "runtime.plugins.dev.identity.identity.snapshot",
       SKILLS_RUNTIME_KV_KEY,
@@ -2000,6 +2185,48 @@ const runtime = createRuntimeServer({
       return true;
     }] : []),
     ...(accessControl ? [accessControl.handleHttp.bind(accessControl)] : []),
+    ...(sharedSpaces ? [createDocumentPresenceHttpHandler({ sharing, spaces: sharedSpaces, accessControl,
+      acquireRuntime: id => spaceBroker.acquireRuntime(id) })] : []),
+    ...(sharing ? [createDocumentLinkHttpHandler({ sharing, accessControl,
+      ...(workbenchDist ? { readReaderTemplate: () => readFile(join(workbenchDist, "share-reader.html"), "utf8") } : {}),
+      readDocumentAsset: async (userId, spaceId, documentId, assetId) => {
+        const lease = await spaceBroker.acquireRuntime(spaceId);
+        try { return await lease.app.readDocumentAsset(userId, documentId, assetId); }
+        finally { lease.release(); }
+      }
+    })] : []),
+    ...(sharing ? [createSharingHttpHandler({ sharing, models: modelSharing, accessControl, publicBaseUrl,
+      readDocumentVisitors: async (originSpaceId, documentId, self) => {
+        const lease = await spaceBroker.acquireRuntime(originSpaceId);
+        try { return await lease.app.listDocumentVisitors(documentId, { self, accountIds: true }); }
+        finally { lease.release(); }
+      },
+      readDocumentPresence: async (originSpaceId, documentId) => {
+        const lease = await spaceBroker.acquireRuntime(originSpaceId);
+        try { return await lease.app.listDocumentPresence(documentId); }
+        finally { lease.release(); }
+      }
+    })] : []),
+    ...(sharedSpaces ? [createSpaceHttpHandler({
+      spaces: sharedSpaces, execution: spaceExecution, accessControl, broker: spaceBroker,
+      transferDocument: createDocumentTransfer({ spaces: sharedSpaces, acquireRuntime: id => spaceBroker.acquireRuntime(id) }),
+      resolveSource: (principal, input) => spaceBroker.source(principal, input),
+      readDocumentAsset: async (userId, spaceId, documentId, assetId) => {
+        const lease = await spaceBroker.acquireRuntime(spaceId);
+        try { return await lease.app.readDocumentAsset(userId, documentId, assetId); }
+        finally { lease.release(); }
+      },
+      readPublicationAssets: async (principal, documentId, assetIds) => {
+        if (!Array.isArray(assetIds) || assetIds.length > 20) throw Object.assign(new Error("Invalid publication assets"), { statusCode: 400 });
+        const lease = await spaceBroker.acquireRuntime(principal.space.id);
+        try { return await lease.app.readPublicationAssets(principal.user.id, documentId, assetIds); }
+        finally { lease.release(); }
+      },
+      abortRun: async (spaceId, runId) => {
+        const lease = await spaceBroker.acquireRuntime(spaceId);
+        try { await lease.app.abortSharedRun(runId); } finally { lease.release(); }
+      }
+    })] : []),
     ...(canonicalWorkbenchHostHandler ? [canonicalWorkbenchHostHandler] : []),
     ...(workbenchStaticHandler ? [workbenchStaticHandler] : [])
   ],
@@ -2010,6 +2237,8 @@ const runtime = createRuntimeServer({
   ],
   sessionEventStore: workbenchState,
   sessionDocumentService: collaboration,
+  sharedRunQueue: runtimeSpace?.kind === "team" ? true
+    : sharing ? sessionId => sharing.sharedMemory(runtimeSpaceId, sessionId) : false,
   runtimeHealth,
   maxRequestBytes: runtimeMaxRequestBytes,
   validateRunRequest: async (request) => {
@@ -2029,7 +2258,7 @@ const runtime = createRuntimeServer({
       );
     }
   },
-  runPostProcessors: () => runtimePlugins.getRunPostProcessors(),
+  runPostProcessors: request => runtimeSpace?.kind === "team" || request?.principal?.contentScope ? [] : runtimePlugins.getRunPostProcessors(),
   runControllers: listRunControllers,
   pluginCommands: async (id, args, context) => {
     if (runtimePlugins.commandHandlers.has(id)) return runtimePlugins.invokeCommand(id, args, context);
@@ -2156,6 +2385,7 @@ async function shutdown() {
   shuttingDown = true;
   const failures = [];
   for (const cleanup of [
+    () => clearInterval(assetCollector),
     () => runtime.close(), () => extensionOutbox?.close(), () => extensionExecution?.bridge.close(),
     () => sandboxTerminalService?.close(),
     () => sandboxTools?.close(), () => sandboxStore?.close(), () => storageMaintenance?.stop(),
@@ -2171,7 +2401,106 @@ async function shutdown() {
   if (failures.length) throw new AggregateError(failures, "Runtime cleanup failed");
 }
 return {
-  runtime, accessControl, credentials, listModelProfiles,
+  runtime, accessControl, credentials, listModelProfiles, documentStore: workbenchState, sharing,
+  listDocumentPresence: documentId => collaboration.listDocumentPresence(documentId),
+  listDocumentVisitors: (documentId, options) => collaboration.listDocumentVisitors(documentId, options),
+  registerDocumentVisit: (documentId, input) => collaboration.registerDocumentVisit(documentId, input),
+  renewDocumentVisit: (documentId, id, input) => collaboration.renewDocumentVisit(documentId, id, input),
+  removeDocumentVisit: (documentId, id, input) => collaboration.removeDocumentVisit(documentId, id, input),
+  async listContentModels(principal) {
+    if ((principal?.spaceId || principal?.space?.id) !== runtimeSpaceId || !principal.contentScope) {
+      throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    }
+    await sharing.documentAccess(principal.userId || principal.user?.id, contentSpaceId(principal), principal.contentScope.documentId, "edit");
+    return listAccountModelProfiles(principal);
+  },
+  async resolveContentModel(requested, principal, id) {
+    const requesterSpace = principal?.spaceId || principal?.space?.id;
+    if (!principal?.contentScope || requesterSpace !== runtimeSpaceId) throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    await sharing.documentAccess(principal.userId || principal.user?.id, contentSpaceId(principal), principal.contentScope.documentId, "edit");
+    return requested ? resolveAccountModel(requested, principal) : modelSelection.defaultModel(principal, id);
+  },
+  async resolveContentRequest(body, principal) {
+    if ((principal?.spaceId || principal?.space?.id) !== runtimeSpaceId || !principal.contentScope) throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    return modelSelection.resolveRequest(body, principal);
+  },
+  async prepareContentModel(request, context) {
+    await accessControl.authorizeRunExecution(request);
+    if (request.principal?.spaceId !== runtimeSpaceId || !request.principal.contentScope) throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    return accountModelEngine?.prepare(request, context) || {};
+  },
+  async *streamContentModel(request) {
+    if (request.principal?.spaceId !== runtimeSpaceId || !request.principal.contentScope) throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    await accessControl.authorizeRunExecution(request);
+    const scoped = { ...request };
+    scoped[SHARED_MODEL_EXECUTION] = scoped;
+    yield* (borrowedModelShare(request.model) ? modelSharing : accountModelEngine || configuredEngine).streamTurn(scoped);
+  },
+  async stageReviewedAssets(userId, assets) {
+    const staged = [];
+    try {
+      for (const asset of assets) staged.push({ sourceId: asset.id, ...await assetService.createImage({
+        stream: [asset.content], ownerId: userId, declaredMediaType: asset.mediaType, originalName: asset.originalName,
+        declaredBytes: asset.content.length
+      }) });
+      return staged;
+    } catch (error) {
+      await postgresPool.query("DELETE FROM runtime_assets WHERE space_id=$1 AND owner_id=$2 AND id=ANY($3::text[])",
+        [runtimeSpaceId, userId, staged.map(a => a.id)]);
+      throw error;
+    }
+  },
+  discardReviewedAssets: (userId, ids) => postgresPool.query(
+    "DELETE FROM runtime_assets WHERE space_id=$1 AND owner_id=$2 AND id=ANY($3::text[])", [runtimeSpaceId, userId, ids]),
+  ...(accountStore ? createProviderCapabilities({
+    accounts: accountStore, runtimeSpaceId, listModels: async (principal) => [
+      ...listModelProfilesWithCredentialStatus(), ...(accountModelCatalog ? await accountModelCatalog.list(principal) : [])
+    ],
+    resolveModel: (requested, principal) => isExtensionModel(requested)
+      ? accountModelCatalog.resolve(requested, principal) : resolveModel(requested),
+    configuredEngine, extensionModels: accountModelEngine, modelCatalog: accountModelCatalog,
+    marketplace, extensionExecution, nodeBroker, accessStore, profileId: DEFAULT_INTERACTION_PROFILE_ID
+  }) : {}),
+  abortSharedRun: (runId) => runtime.abortRun(runId, "space-cancelled"),
+  async readDocumentAsset(userId, documentId, assetId) {
+    await sharedSpaces.requireDocument(userId, runtimeSpaceId, documentId);
+    const document = await sharedSpaces.content(runtimeSpaceId, documentId);
+    const refs = new Set([...document.text.matchAll(/zion-asset:\/\/([A-Za-z0-9_-]+)/g)].map(m => m[1]));
+    if (!refs.has(assetId)) throw Object.assign(new Error("asset_not_found"), { statusCode: 404 });
+    await sharedSpaces.requireAsset(userId, runtimeSpaceId, assetId);
+    const opened = await assetService.openRead(assetId), chunks = [];
+    let size = 0;
+    for await (const chunk of opened.stream) {
+      const bytes = Buffer.from(chunk); size += bytes.length;
+      if (size > 16 * 1024 * 1024) throw Object.assign(new Error("asset_too_large"), { statusCode: 413 });
+      chunks.push(bytes);
+    }
+    await sharedSpaces.requireDocument(userId, runtimeSpaceId, documentId);
+    const current = await sharedSpaces.content(runtimeSpaceId, documentId);
+    if (![...current.text.matchAll(/zion-asset:\/\/([A-Za-z0-9_-]+)/g)].some(m => m[1] === assetId)) {
+      throw Object.assign(new Error("asset_not_found"), { statusCode: 404 });
+    }
+    await sharedSpaces.requireAsset(userId, runtimeSpaceId, assetId);
+    return { mediaType: opened.asset.mediaType, content: Buffer.concat(chunks) };
+  },
+  async readPublicationAssets(userId, documentId, assetIds) {
+    await sharedSpaces.requireDocument(userId, runtimeSpaceId, documentId, "manage");
+    const assets = [];
+    let size = 0;
+    for (const id of assetIds) {
+      await sharedSpaces.requireAsset(userId, runtimeSpaceId, id);
+      const opened = await assetService.openRead(id);
+      const content = [];
+      for await (const chunk of opened.stream) {
+        const bytes = Buffer.from(chunk);
+        size += bytes.length;
+        if (size > 32 * 1024 * 1024) throw Object.assign(new Error("公开图片超过 32MB"), { statusCode: 413 });
+        content.push(bytes);
+      }
+      assets.push({ ...opened.asset, content: Buffer.concat(content) });
+    }
+    return assets;
+  },
   defaultModelProfileId: defaultInteractionProfile.modelProfileId
     || models.resolveModelRef(defaultInteractionProfile.model).id,
   close: shutdown,
@@ -2191,7 +2520,7 @@ return {
 const platformRuntime = await createSpaceRuntime({
   runtimeSpaceId, dataDirectory, modelProfilePath, credentialStorePath, interactionProfilePath
 });
-const gateway = automaticWorkspaces ? new AccountRuntimeGateway({
+const gateway = accountsEnabled ? new AccountRuntimeGateway({
   platform: platformRuntime, platformSpaceId: runtimeSpaceId, pool: postgresPool,
   provisioner: workspaceProvisioner, host, port,
   maxRuntimes: positiveInteger(process.env.ZION_ACCOUNT_RUNTIME_MAX_ACTIVE || "32", "Active account Runtime limit"),

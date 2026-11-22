@@ -27,6 +27,9 @@ export function createMemoryAccountAuthorization({
     if (!local.scopes?.includes(write ? "runtime.write" : "runtime.read")) {
       throw error("memory_permission_denied", "Local account grant does not permit this memory operation", 403);
     }
+    if (local.memoryScope?.kind !== "personal") {
+      throw error("shared_memory_bridge_required", "Shared Memory requires the Space bridge; reconnecting a personal drive is unavailable", 403);
+    }
     const path = memoryConnectionDirectory(directory, {
       userId: local.user.id, spaceId: local.space.id
     });

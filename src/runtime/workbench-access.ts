@@ -6,6 +6,8 @@ import {
 import {
   accountRequest, pendingInvitation, setAccountSession, type AccountSession
 } from "../../packages/account-ui/src/client";
+import { installWorkbenchSpaceTransport, pinWorkbenchSpace, lockWorkbenchSpace, requestedWorkbenchSpace } from "./workbench-space";
+import { captureSharingInvitation } from "../ui/workbench/SharingWorkbench";
 
 const WORKBENCH_DEVICE_ID_KEY = "zion.access.deviceId";
 
@@ -209,9 +211,36 @@ function renderPairingPrompt(
   });
 }
 
+function renderUnavailableSpace(host: HTMLElement): Promise<void> {
+  host.replaceChildren();
+  const shell = document.createElement("main");
+  shell.className = "zion-pairing-shell";
+  const panel = document.createElement("section");
+  panel.className = "zion-pairing-panel";
+  const title = document.createElement("h1");
+  title.textContent = "暂时无法进入这个空间";
+  const message = document.createElement("p");
+  message.textContent = "空间链接无效，或当前账号已失去访问权限。你可以返回自己的空间继续工作。";
+  const button = document.createElement("button");
+  button.textContent = "返回我的空间";
+  button.onclick = () => {
+    const url = new URL(location.href);
+    url.pathname = "/";
+    url.hash = "";
+    for (const key of ["space", "session", "zionSession", "spaceInvite"]) url.searchParams.delete(key);
+    location.assign(url);
+  };
+  panel.append(title, message, button);
+  shell.append(panel);
+  host.append(shell);
+  // Navigation replaces the page. Never mount a Workbench with an unverified scope.
+  return new Promise(() => {});
+}
+
 export async function ensureWorkbenchRuntimeAccess(
   host: HTMLElement
 ): Promise<void> {
+  captureSharingInvitation();
   let config = readWorkbenchRuntimeConfig({
     state: globalThis.window?.zion?.state,
     storage: globalThis.localStorage
@@ -234,8 +263,15 @@ export async function ensureWorkbenchRuntimeAccess(
   requireSameOrigin(config.baseUrl);
   persistRuntimeTarget(config.baseUrl);
   if (health.authMode === "accounts-v1") {
+    try { installWorkbenchSpaceTransport(config.baseUrl); }
+    catch { return renderUnavailableSpace(host); }
     const invitation = pendingInvitation();
-    const account = await accountRequest<AccountSession>(config.baseUrl, "me").catch(() => null);
+    let unavailable = false;
+    const account = await accountRequest<AccountSession>(config.baseUrl, "me").catch(error => {
+      unavailable = !!requestedWorkbenchSpace() && [403, 404].includes(error.status);
+      return null;
+    });
+    if (unavailable) return renderUnavailableSpace(host);
     if (account) setAccountSession(account);
     if (account?.membership?.status === "active"
       && !invitation
@@ -264,12 +300,27 @@ export async function ensureWorkbenchRuntimeAccess(
     }
     // Re-enter the gate if membership or role changes. Backend checks remain
     // authoritative between polls, including existing collaboration streams.
-    const identity = await accountRequest<AccountSession>(config.baseUrl, "me");
+    let identity = await accountRequest<AccountSession>(config.baseUrl, "me");
+    // The ordinary Workbench starts in the user's own resources even if a
+    // legacy team page changed the cookie's selected scope.
+    const personal = identity.spaces?.find(space => space.kind === "personal");
+    if (!requestedWorkbenchSpace() && personal && personal.id !== identity.space.id) {
+      const response = await fetch(`${config.baseUrl}/v1/account/me`, {
+        headers: { accept: "application/json", "x-zioon-space-id": personal.id }, credentials: "include"
+      });
+      if (!response.ok) throw new Error("暂时无法进入你的工作台");
+      identity = await response.json();
+    }
+    pinWorkbenchSpace(identity, config.baseUrl);
+    const pinnedUrl = new URL(location.href);
+    pinnedUrl.searchParams.set("space", identity.space.id);
+    history.replaceState(history.state, "", pinnedUrl);
     setAccountSession(identity);
     let accessChanged = false;
     const requireReentry = () => {
       if (accessChanged) return;
       accessChanged = true;
+      lockWorkbenchSpace();
       // Do not flush old-space edits through a cookie that now belongs to
       // another account. Preserve them locally before leaving the old page.
       const drafts = (window.zion?.panels?.listEditors?.() || []).map((entry: any) => {
@@ -288,7 +339,11 @@ export async function ensureWorkbenchRuntimeAccess(
       message.textContent = "账户或访问权限已变化。当前内容已保留，请重新进入工作台。";
       const button = document.createElement("button");
       button.textContent = "重新进入";
-      button.onclick = () => location.reload();
+      button.onclick = () => {
+        const url = new URL(location.href);
+        for (const key of ["space", "session", "zionSession"]) url.searchParams.delete(key);
+        location.assign(url);
+      };
       const download = document.createElement("button");
       download.textContent = "下载保留的内容";
       download.onclick = () => {
@@ -311,7 +366,7 @@ export async function ensureWorkbenchRuntimeAccess(
           || next.membership?.status !== identity.membership?.status
           || next.membership?.role !== identity.membership?.role
           || JSON.stringify([...next.scopes].sort()) !== JSON.stringify([...identity.scopes].sort())) requireReentry();
-      }).catch((error) => { if (error.status === 401) requireReentry(); });
+      }).catch((error) => { if ([401, 403, 404].includes(error.status)) requireReentry(); });
     };
     window.setInterval(checkIdentity, 15_000);
     window.addEventListener("focus", checkIdentity);

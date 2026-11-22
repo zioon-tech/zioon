@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   createHttpRuntimeClient,
   createRemoteRunHandle
@@ -16,6 +17,7 @@ import {
 import { normalizeModelLimits } from "./model-limits.js";
 import { submitConversationInput } from "../../src/runtime/conversation-submission.js";
 import { currentAccountSession } from "../../packages/account-ui/src/client";
+import { isSharedWorkbenchContent, sharedDocumentEditable, refreshWorkbenchContentPrivacy } from "../../src/runtime/workbench-space";
 
 export const CHAT_RUNTIME_ENABLED_KEY = "zion.chat.runtime.enabled";
 export const CHAT_RUNTIME_BASE_URL_KEY = "zion.chat.runtime.baseUrl";
@@ -270,7 +272,7 @@ export function createInteractiveRuntimePolicy(tools, options = {}) {
 
 export function readInteractiveRuntimeConfig({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   const config = readWorkbenchRuntimeConfig({
     state,
@@ -455,6 +457,13 @@ export async function prepareInteractiveRuntimeMessages({
   transformMessages
 }) {
   let prepared = Array.isArray(messages) ? messages : [];
+  await refreshWorkbenchContentPrivacy(contributorContext.sessionId);
+  // Shared content cannot acquire private browser Identity, skills, roles or
+  // extension context. The Runtime adds the authorized document Memory.
+  if (isSharedWorkbenchContent(contributorContext.sessionId)) {
+    assertRuntimeMessageShape(prepared);
+    return prepared;
+  }
   const context = {
     ...contributorContext,
     runtimeBackend: "external",
@@ -785,6 +794,7 @@ async function buildInteractiveRuntimeRequest({
   fetchImpl,
   interactionProfileId = DEFAULT_INTERACTIVE_RUNTIME_PROFILE_ID
 }) {
+  if (!sharedDocumentEditable(workbenchSessionId)) throw new Error("这篇分享文档仅可查看");
   const {
     policy,
     selectedTools,

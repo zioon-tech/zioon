@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../../src/runtime/workbench-space.ts";
 export function createSessionUrlModel(opts) {
   const urlSessionKey = opts?.urlSessionKey || "zionSession";
   const urlSessionAltKey = opts?.urlSessionAltKey || "session";

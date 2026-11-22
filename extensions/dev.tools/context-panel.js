@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 /* global CSS */
 import { getEditorCore } from "./editor-core.js";
 import { createFilesCodeEditor, createFilesCodeViewer, createFilesMarkdownPreview, detectPathKindForContext, ensureRevealSourceForPath, getProvider, iconForFile, isMarkdownTab, languageFromFilename, shouldShowMarkdownPreview, stableFileTabId } from "./files-panel.js";

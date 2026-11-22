@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { getBuiltinModelLimits, withResolvedModelLimits } from "./model-limits.js";
 import { normalizeModelDescription } from "./model-config-fields.js";
 import {

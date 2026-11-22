@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -131,7 +132,7 @@ function runtimeConfigForTaskPanel(state, storage) {
 
 export async function loadRuntimeTodoLists({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch,
   limit = 200,
   updatedAfter = 0
@@ -157,7 +158,7 @@ export async function loadRuntimeTodoLists({
 
 export async function loadRuntimeTodoList(ownerId, {
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForTaskPanel(state, storage);

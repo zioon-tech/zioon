@@ -275,7 +275,17 @@ export class PostgresWorkbenchStateStore {
     return this;
   }
 
-  async transaction(action) {
+  async transaction(action, { client: externalClient, afterCommit } = {}) {
+    if (externalClient) {
+      if (!Array.isArray(afterCommit)) throw new Error("External Workbench transactions require an after-commit queue");
+      const published = [];
+      await this.ensureState(this.now(), externalClient);
+      await externalClient.query(
+        "SELECT revision FROM runtime_workbench_state WHERE space_id = $1 FOR UPDATE", [this.spaceId]);
+      const result = await action(externalClient, published);
+      afterCommit.push(() => { for (const event of published) this.publish(event); });
+      return result;
+    }
     const client = await this.pool.connect();
     const published = [];
     try {
@@ -504,7 +514,7 @@ export class PostgresWorkbenchStateStore {
     reason = "checkpoint",
     force = false,
     timestamp = this.now()
-  } = {}) {
+  } = {}, transactionOptions) {
     const id = normalizeId(sessionId);
     return this.transaction(async (client) => {
       const session = await this.currentSession(id, client);
@@ -529,7 +539,7 @@ export class PostgresWorkbenchStateStore {
         client
       );
       return { saved: true, revision: session.revision };
-    });
+    }, transactionOptions);
   }
 
   async recordEvent(type, {
@@ -569,10 +579,9 @@ export class PostgresWorkbenchStateStore {
     return event;
   }
 
-  async appendEvent(type, input = {}) {
+  async appendEvent(type, input = {}, transactionOptions) {
     return this.transaction(async (client, published) =>
-      this.recordEvent(type, input, client, published)
-    );
+      this.recordEvent(type, input, client, published), transactionOptions);
   }
 
   async readEvent(sequence, client = this.pool) {
@@ -672,7 +681,7 @@ export class PostgresWorkbenchStateStore {
     sourceClientId = "",
     timestamp = this.now(),
     emitEvent = true
-  } = {}) {
+  } = {}, transactionOptions) {
     const id = normalizeId(sessionId);
     const bytes = Buffer.from(state || []);
     if (!bytes.length) throw new Error("collaboration document state required");
@@ -783,7 +792,7 @@ export class PostgresWorkbenchStateStore {
         session_revision: sessionRevision,
         event_sequence: event?.sequence ?? 0
       };
-    });
+    }, transactionOptions);
   }
 
   async deleteCollaborationDocument(sessionId) {
@@ -997,7 +1006,7 @@ export class PostgresWorkbenchStateStore {
     );
   }
 
-  async createSession(input = {}) {
+  async createSession(input = {}, transactionOptions) {
     return this.transaction(async (client, published) => {
       const duplicate = await this.duplicateOperation(input.operation_id, client);
       if (duplicate) return duplicate;
@@ -1070,7 +1079,7 @@ export class PostgresWorkbenchStateStore {
         client
       );
       return result;
-    });
+    }, transactionOptions);
   }
 
   async readSnapshot(client = this.pool) {
@@ -1136,7 +1145,7 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async searchSessions({ query = "", limit = 50, offset = 0 } = {}) {
+  async searchSessions({ query = "", limit = 50, offset = 0, allowedSessionIds = null } = {}) {
     const take = Math.min(100, Math.max(1, Math.floor(Number(limit) || 50)));
     const skip = Math.max(0, Math.floor(Number(offset) || 0));
     const term = String(query).trim().slice(0, 200);
@@ -1145,11 +1154,11 @@ export class PostgresWorkbenchStateStore {
               substring(d.text FROM greatest(1, strpos(lower(d.text), lower($2)) - 80) FOR 240) AS snippet
        FROM runtime_workbench_documents d
        LEFT JOIN runtime_workbench_metadata m ON m.space_id = d.space_id AND m.id = d.id
-       WHERE d.space_id = $1 AND ($2 = '' OR strpos(lower(d.text), lower($2)) > 0
+       WHERE d.space_id = $1 AND ($5::text[] IS NULL OR d.id=ANY($5)) AND ($2 = '' OR strpos(lower(d.text), lower($2)) > 0
          OR strpos(lower(COALESCE(m.meta_json->>'title', d.id)), lower($2)) > 0)
        ORDER BY d.updated_at DESC, d.id
        LIMIT $3 OFFSET $4`,
-      [this.spaceId, term, take + 1, skip]
+      [this.spaceId, term, take + 1, skip, allowedSessionIds]
     );
     return {
       sessions: result.rows.slice(0, take).map((row) => ({
@@ -1253,7 +1262,7 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async writeSnapshot(snapshot, expectedRevision = null, sourceClientId = "") {
+  async writeSnapshot(snapshot, expectedRevision = null, sourceClientId = "", transactionOptions) {
     if (!isObject(snapshot)) throw new Error("snapshot must be an object");
     return this.transaction((client, published) =>
       this.writeSnapshotInTransaction(
@@ -1262,7 +1271,7 @@ export class PostgresWorkbenchStateStore {
         sourceClientId,
         client,
         published
-      )
+      ), transactionOptions
     );
   }
 
@@ -1405,7 +1414,7 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "", baseTree = null) {
+  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "", baseTree = null, transactionOptions) {
     if (!isObject(tree)) throw new Error("tree must be an object");
     return this.transaction(async (client, published) => {
       const currentRevision = await this.revision(client);
@@ -1430,7 +1439,7 @@ export class PostgresWorkbenchStateStore {
         timestamp
       }, client, published);
       return { ok: true, revision, tree: completeTree, index, event_sequence: event.sequence };
-    });
+    }, transactionOptions);
   }
 
   async readSession(sessionId, client = this.pool) {
@@ -1460,10 +1469,10 @@ export class PostgresWorkbenchStateStore {
     } : null;
   }
 
-  async updateSession(sessionId, input = {}) {
+  async updateSession(sessionId, input = {}, transactionOptions) {
     const id = normalizeId(sessionId);
     return this.transaction((client, published) =>
-      this.updateSessionInTransaction(id, input, client, published)
+      this.updateSessionInTransaction(id, input, client, published), transactionOptions
     );
   }
 
@@ -1582,7 +1591,7 @@ export class PostgresWorkbenchStateStore {
     return result;
   }
 
-  async deleteSession(sessionId, input = {}) {
+  async deleteSession(sessionId, input = {}, transactionOptions) {
     const id = normalizeId(sessionId);
     return this.transaction(async (client, published) => {
       const duplicate = await this.duplicateOperation(input.operation_id, client);
@@ -1680,7 +1689,7 @@ export class PostgresWorkbenchStateStore {
         client
       );
       return result;
-    });
+    }, transactionOptions);
   }
 
   async listSessionRevisions(sessionId) {
@@ -1701,7 +1710,7 @@ export class PostgresWorkbenchStateStore {
     }));
   }
 
-  async restoreSessionRevision(sessionId, revision, operationId = null) {
+  async restoreSessionRevision(sessionId, revision, operationId = null, transactionOptions) {
     const id = normalizeId(sessionId);
     return this.transaction(async (client, published) => {
       const result = await client.query(
@@ -1724,7 +1733,7 @@ export class PostgresWorkbenchStateStore {
         operation_id: operationId,
         reason: "restore"
       }, client, published);
-    });
+    }, transactionOptions);
   }
 
   async readKV(key, client = this.pool) {
@@ -1809,7 +1818,7 @@ export class PostgresWorkbenchStateStore {
     });
   }
 
-  async migrateBrowserStorage(sourceId, snapshot, fingerprint) {
+  async migrateBrowserStorage(sourceId, snapshot, fingerprint, transactionOptions) {
     const source = normalizeId(sourceId, "source id");
     const marker = normalizeId(fingerprint, "fingerprint");
     return this.transaction(async (client, published) => {
@@ -1911,7 +1920,7 @@ export class PostgresWorkbenchStateStore {
         ]
       );
       return report;
-    });
+    }, transactionOptions);
   }
 
   async hasMigration(source, fingerprint, client = this.pool) {

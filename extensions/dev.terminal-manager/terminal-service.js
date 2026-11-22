@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   buildTerminalInventory,
   DEFAULT_MACHINE_DESCRIPTION,

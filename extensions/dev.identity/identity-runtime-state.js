@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -37,7 +38,7 @@ function runtimeConfigForIdentity(state, storage) {
 
 export function canSyncIdentitySnapshotToRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage
+  storage = localStorage
 } = {}) {
   return !!runtimeConfigForIdentity(state, storage);
 }
@@ -45,7 +46,7 @@ export function canSyncIdentitySnapshotToRuntime({
 export async function refreshIdentityContextInRuntime({
   sessionId,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForIdentity(state, storage);
@@ -65,7 +66,7 @@ export async function refreshIdentityContextInRuntime({
 
 export async function loadIdentitySnapshotFromRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForIdentity(state, storage);
@@ -85,7 +86,7 @@ export async function loadIdentitySnapshotFromRuntime({
 export async function syncIdentitySnapshotToRuntime({
   snapshot,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForIdentity(state, storage);
@@ -114,7 +115,7 @@ export async function syncIdentitySnapshotToRuntime({
 
 export async function loadProjectAutomationFromRuntime({
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForIdentity(state, storage);
@@ -134,7 +135,7 @@ export async function loadProjectAutomationFromRuntime({
 export async function syncProjectAutomationToRuntime({
   document,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForIdentity(state, storage);
@@ -178,7 +179,7 @@ export async function controlRuntimeProjectAutomation({
   projectKey,
   interactionProfileId,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const config = runtimeConfigForIdentity(state, storage);

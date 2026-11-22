@@ -7,8 +7,8 @@ const fail = (code, statusCode = 422) => {
 
 /** Account-owned defaults. Explicit Session/Run models are resolved separately. */
 export class AccountModelSelection {
-  constructor({ marketplace, listProfiles, interactionProfiles, resolveModel, fallbackModel }) {
-    Object.assign(this, { marketplace, listProfiles, interactionProfiles, resolveModel, fallbackModel });
+  constructor({ marketplace, listProfiles, interactionProfiles, resolveModel, fallbackModel, sharedSpaces = null }) {
+    Object.assign(this, { marketplace, listProfiles, interactionProfiles, resolveModel, fallbackModel, sharedSpaces });
   }
   profile(id = DEFAULT_INTERACTION_PROFILE_ID) {
     const profile = this.interactionProfiles.get(id);
@@ -17,6 +17,14 @@ export class AccountModelSelection {
   }
   async get(principal, id = DEFAULT_INTERACTION_PROFILE_ID) {
     const profile = this.profile(id);
+    if (this.sharedSpaces) {
+      await this.sharedSpaces.member(principal.userId || principal.user?.id, principal.spaceId || principal.space?.id);
+      const space = await this.sharedSpaces.policy(principal.spaceId || principal.space?.id);
+      const selectedProfileId = space.defaultBindingId ? `space.${space.defaultBindingId}` : null;
+      return { interactionProfileId: id, selectedProfileId,
+        modelProfileId: selectedProfileId || profile.modelProfileId || this.fallbackModel?.profileId,
+        model: selectedProfileId ? { profileId: selectedProfileId } : profile.model || this.fallbackModel };
+    }
     const accountId = extensionAccountId(principal);
     const state = accountId && this.marketplace ? await this.marketplace.account(accountId) : null;
     const selectedProfileId = state?.modelSelections?.[id]?.profileId || null;
@@ -30,6 +38,15 @@ export class AccountModelSelection {
     const selected = profileId === null ? null : profileId.trim();
     if (selected && !(await this.listProfiles(principal)).some((profile) => profile.id === selected)) {
       fail("model_profile_unavailable");
+    }
+    if (this.sharedSpaces) {
+      if (selected && !selected.startsWith("space.")) fail("shared_default_requires_capability");
+      const spaceId = principal.spaceId || principal.space?.id;
+      const space = await this.sharedSpaces.policy(spaceId);
+      await this.sharedSpaces.updatePolicy(principal.userId || principal.user?.id, spaceId, {
+        expectedRevision: space.revision, defaultBindingId: selected ? selected.slice(6) : null
+      });
+      return this.get(principal, id);
     }
     if (this.marketplace) {
       const accountId = extensionAccountId(principal);

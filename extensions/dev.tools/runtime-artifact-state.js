@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
@@ -49,7 +50,7 @@ export function getCachedRuntimeArtifacts(sessionId) {
 export async function refreshRuntimeSessionArtifacts({
   sessionId,
   state = globalThis.window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 } = {}) {
   const id = String(sessionId || "").trim();

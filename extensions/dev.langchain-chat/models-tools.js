@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 /**
  * dev.langchain-chat: models tools for LLM (CRUD + set active)
  * - Registers a single aggregated tool "modelsManage" to list/check/get/add/update/delete/set_active/import/export models.

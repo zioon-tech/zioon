@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { ViewPlugin, EditorView } from "@codemirror/view";
 
 const I18N_NS = "dev.sticky-user-header";
@@ -195,8 +196,9 @@ function roleTheme(role) {
   return { fg: "var(--role-user-fg)", bg: "var(--role-user-bg)", bd: "var(--role-user-border)" };
 }
 
-function stickyUserHeaderView() {
-  const prefixes = getEffectivePrefixes();
+export function stickyUserHeaderView(options = {}) {
+  const prefixes = options.prefixes || getEffectivePrefixes();
+  const enabled = options.enabled || isEnabled;
   const targetRole = "user";
 
   return ViewPlugin.fromClass(
@@ -216,7 +218,9 @@ this.view = view;
           window.addEventListener("resize", this.resizeHandler, { passive: true });
         } catch {}
         try {
-          this.widthModeSub = window?.zion?.state?.onDidChange?.("ui.editorWidthMode", () => this.scheduleSync());
+          this.widthModeSub = options.subscribe
+            ? options.subscribe(() => this.scheduleSync())
+            : window?.zion?.state?.onDidChange?.("ui.editorWidthMode", () => this.scheduleSync());
         } catch {}
         this.syncRaf = null;
         this.indexTimer = 0;
@@ -310,7 +314,7 @@ this.view = view;
       sync() {
         if (this.root?.dataset?.zionStickyUserHeaderOwner !== this.ownerId) return;
         this.syncLayout();
-        if (!isEnabled()) {
+        if (!enabled()) {
           this.headerEl.classList.add("is-empty");
           this.updateHeight(0);
           return;

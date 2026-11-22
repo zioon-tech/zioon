@@ -41,9 +41,13 @@ export class I18nManager {
   private locale: ZionLocale = readStoredLocale();
   private namespaces = new Map<string, ZionI18nBundle>();
 
+  constructor(private readonly standalone = false) {}
+
   init(): void {
-    this.exposeApi();
-    this.registerCommands();
+    if (!this.standalone) {
+      this.exposeApi();
+      this.registerCommands();
+    }
     this.applyLocale(this.locale, { emit: false });
   }
 
@@ -126,6 +130,7 @@ export class I18nManager {
 
   private applyLocale(locale: ZionLocale, opts: { previousLocale?: ZionLocale; emit: boolean }): void {
     try { document.documentElement.setAttribute("lang", locale); } catch {}
+    if (this.standalone) return;
     try { window.zion.state.set("ui.locale", locale); } catch {}
     if (!opts.emit) return;
     try {

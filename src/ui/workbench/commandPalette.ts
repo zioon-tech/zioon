@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../runtime/workbench-space";
 import { matchSorter, rankings } from "match-sorter";
 import { BUILT_IN_THEME_OPTIONS, getRegisteredThemeOptions } from "../../theme/themes";
 import { EXTERNALIZED_BUILTIN_PLUGIN_IDS } from "../../plugin/externalized";

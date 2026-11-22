@@ -173,8 +173,9 @@ export class AssetService {
           statusCode: 415
         });
       }
-      const blob = await staged.commit();
-      return await this.metadata.create({
+      const commit = async metadata => {
+        const blob = await staged.commit();
+        return metadata.create({
         id: this.createId(),
         ownerId: String(ownerId || "runtime-local"),
         state: "ready",
@@ -185,7 +186,10 @@ export class AssetService {
         blobKey: blob.key,
         originalName: safeOriginalName(originalName),
         createdAt: this.now()
-      });
+        });
+      };
+      return await (this.metadata.withBlobLock
+        ? this.metadata.withBlobLock(staged.sha256, commit) : commit(this.metadata));
     } catch (error) {
       await staged.abort();
       throw error;
@@ -194,6 +198,20 @@ export class AssetService {
 
   async get(assetId) {
     return await this.metadata.get(String(assetId || ""));
+  }
+
+  async collectGarbage(options) {
+    if (!this.metadata.withBlobLock || !this.metadata.isBlobReferenced || !this.blobs.garbageCandidates) return { checked: 0, deleted: 0 };
+    let checked = 0, deleted = 0;
+    for (const key of await this.blobs.garbageCandidates(options)) {
+      checked++;
+      await this.metadata.withBlobLock(key.split("/").at(-1), async metadata => {
+        if (await metadata.isBlobReferenced(key)) return;
+        await this.blobs.remove(key);
+        deleted++;
+      });
+    }
+    return { checked, deleted };
   }
 
   async requireReady(assetId) {

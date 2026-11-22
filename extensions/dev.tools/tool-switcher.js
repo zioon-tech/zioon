@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 /**
  * 工具切换器面板（与模型选择器交互保持一致：搜索、键盘导航、Enter/Esc）
  * 行为差异：Enter/点击为“切换启用状态”（多选），Esc 关闭。

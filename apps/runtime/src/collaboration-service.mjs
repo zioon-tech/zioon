@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createDocumentVisitorRegistry } from "./sharing/document-visitor-registry.mjs";
 import { Hocuspocus } from "@hocuspocus/server";
 import { WebSocketServer } from "ws";
 import * as Y from "yjs";
@@ -105,6 +106,7 @@ export function createRuntimeCollaborationService({
   authenticate = null,
   reauthorize = null,
   authorizeOutbound = null,
+  withPersistence = null,
   allowOrigin = loopbackOriginAllowed,
   debounceMs = 250,
   maxDebounceMs = 2_000,
@@ -126,6 +128,40 @@ export function createRuntimeCollaborationService({
   }
   let activeDocumentProjector = documentProjector;
   let closing = false;
+  const readerVisits = createDocumentVisitorRegistry();
+  const visitorSalt = randomBytes(32);
+  const visitorId = (documentId, person) => createHmac("sha256", visitorSalt)
+    .update(JSON.stringify([documentId, person.kind, person.id])).digest("base64url");
+  const pendingAuthorizations = new Set();
+  const authorize = async action => {
+    if (closing) throw new Error("Collaboration is closing");
+    const promise = Promise.resolve().then(action);
+    pendingAuthorizations.add(promise);
+    try { return await promise; }
+    finally { pendingAuthorizations.delete(promise); }
+  };
+  const persist = (input, action) => withPersistence ? withPersistence(input, action) : action(undefined);
+  const contributors = new Map();
+  const persistenceFailures = new Map();
+  const failedDocuments = new Set();
+  let persistenceEpoch = 0;
+  let contributionVersion = 0;
+  const mutateDirect = (sessionId, connection, action) => {
+    connection.persistenceEpoch = persistenceEpoch;
+    return persist({
+      sessionId, context: connection.context, contributors: [...(contributors.get(sessionId)?.keys() || [])], kind: "projection"
+    }, () => connection.transact(action));
+  };
+  const disconnectDirect = async (sessionId, connection, options) => {
+    const epoch = connection.persistenceEpoch ?? persistenceEpoch;
+    // The upstream's debounced disconnect returns before the scheduled store.
+    // Force this direct write to finish before acknowledging a projection.
+    await connection.disconnect({ ...options, unloadImmediately: true });
+    const failure = persistenceFailures.get(sessionId);
+    // Hocuspocus deliberately swallows hook errors to retain the buffer. A Run
+    // completion must still see the failed persistence and keep its retry task.
+    if (failure?.epoch > epoch) throw failure.error;
+  };
 
   const pendingDocumentCheckpoints = new Map();
   const flushDocumentCheckpoint = async (sessionId) => {
@@ -133,10 +169,9 @@ export function createRuntimeCollaborationService({
     if (!pending) return null;
     if (pending.timer) clearTimeout(pending.timer);
     pendingDocumentCheckpoints.delete(sessionId);
-    await store.checkpointSessionRevision?.(sessionId, {
-      reason: "collaboration-checkpoint"
-    });
-    return await store.appendEvent?.("document.checkpointed", {
+    return persist({ sessionId, context: pending.context, kind: "checkpoint" }, async (tx) => {
+      await store.checkpointSessionRevision?.(sessionId, { reason: "collaboration-checkpoint" }, tx);
+      return await store.appendEvent?.("document.checkpointed", {
       sessionId,
       revision: await store.revision?.(),
       sessionRevision: pending.sessionRevision,
@@ -145,9 +180,10 @@ export function createRuntimeCollaborationService({
         version: pending.version,
         stateHash: pending.stateHash
       }
-    }) || null;
+      }, tx) || null;
+    });
   };
-  const scheduleDocumentCheckpoint = (result, sourceClientId) => {
+  const scheduleDocumentCheckpoint = (result, sourceClientId, context) => {
     if (!result?.sessionId || result.duplicate) return;
     const sessionId = String(result.sessionId);
     const previous = pendingDocumentCheckpoints.get(sessionId);
@@ -158,6 +194,7 @@ export function createRuntimeCollaborationService({
       stateHash: result.stateHash,
       sessionRevision: result.session_revision,
       sourceClientId: String(sourceClientId || ""),
+      context,
       timer: null
     };
     if (closing) {
@@ -187,12 +224,13 @@ export function createRuntimeCollaborationService({
         || ""
       );
       const authorization = typeof authenticate === "function"
-        ? await authenticate({
+        ? await authorize(() => authenticate({
             documentName,
             token: input.token,
             headers: input.requestHeaders,
+            parameters: input.requestParameters,
             clientId
-          })
+          }))
         : {};
       if (authorization?.readOnly === true) input.connectionConfig.readOnly = true;
       input.context?.authorizationState?.contexts.add(authorization);
@@ -203,9 +241,19 @@ export function createRuntimeCollaborationService({
       };
     },
     async beforeHandleMessage({ context }) {
-      if (reauthorize) await reauthorize(context);
+      if (closing) return;
+      if (reauthorize) await authorize(() => reauthorize(context));
     },
-    async onLoadDocument({ documentName }) {
+    beforeUnloadDocument({ documentName }) {
+      if (failedDocuments.has(documentName)) throw new Error("Document persistence is still pending");
+    },
+    onChange({ documentName, context, transactionOrigin }) {
+      if (transactionOrigin?.skipStoreHooks) return;
+      const pending = contributors.get(documentName) || new Map();
+      pending.set(context, ++contributionVersion);
+      contributors.set(documentName, pending);
+    },
+    async onLoadDocument({ documentName, context }) {
       const sessionId = collaborationDocumentName(documentName);
       const [stored, session] = await Promise.all([
         store.readCollaborationDocument(sessionId),
@@ -233,14 +281,10 @@ export function createRuntimeCollaborationService({
       const document = new Y.Doc();
       const text = session && !session.deleted ? String(session.text || "") : "";
       if (text) document.getText(COLLABORATION_TEXT_KEY).insert(0, text);
-      await store.writeCollaborationDocument(
-        sessionId,
-        Y.encodeStateAsUpdate(document),
-        {
-          text,
-          sourceClientId: "runtime-bootstrap"
-        }
-      );
+      await persist({ sessionId, context, kind: "bootstrap", text }, tx =>
+        store.writeCollaborationDocument(sessionId, Y.encodeStateAsUpdate(document), {
+          text, sourceClientId: "runtime-bootstrap"
+        }, tx));
       return document;
     },
     async onStoreDocument({
@@ -253,12 +297,41 @@ export function createRuntimeCollaborationService({
       const ytext = document.getText(COLLABORATION_TEXT_KEY);
       const nextText = ytext.toString();
       const state = Y.encodeStateAsUpdate(document);
-      const result = await store.writeCollaborationDocument(sessionId, state, {
-        text: nextText,
-        sourceClientId,
-        emitEvent: false
-      });
-      scheduleDocumentCheckpoint(result, sourceClientId);
+      const contexts = new Map(contributors.get(sessionId) || []);
+      try {
+        const result = await persist({ sessionId, context: lastContext, contributors: [...contexts.keys()], kind: "store", text: nextText }, tx =>
+          store.writeCollaborationDocument(sessionId, state, { text: nextText, sourceClientId, emitEvent: false }, tx));
+        failedDocuments.delete(sessionId);
+        for (const [context, version] of contexts) {
+          if (contributors.get(sessionId)?.get(context) === version) contributors.get(sessionId).delete(context);
+        }
+        scheduleDocumentCheckpoint(result, sourceClientId, lastContext);
+      } catch (error) {
+        persistenceFailures.set(sessionId, { epoch: ++persistenceEpoch, error });
+        if (![401, 403, 404].includes(error.statusCode) && error.code !== "collaboration_snapshot_changed") {
+          failedDocuments.add(sessionId);
+          throw error;
+        }
+        failedDocuments.delete(sessionId);
+        // A rejected aggregate must never be saved later under another editor.
+        // Drop peers and reload from the committed snapshot on their next join.
+        hocuspocus.closeConnections(sessionId);
+        const snapshot = await store.readSession(sessionId);
+        const committed = await store.readCollaborationDocument(sessionId);
+        const restored = new Y.Doc();
+        if (committed?.state?.length) Y.applyUpdate(restored, committed.state);
+        document.transact(() => {
+          replaceYText(document.getText(COLLABORATION_TEXT_KEY), snapshot?.text || "");
+          for (const [key, type] of document.share) {
+            if (key === COLLABORATION_TEXT_KEY || !(type instanceof Y.Map)) continue;
+            type.clear();
+            for (const [name, value] of restored.getMap(key)) type.set(name, value);
+          }
+        }, { source: "local", skipStoreHooks: true });
+        contributors.delete(sessionId);
+        restored.destroy();
+        throw error;
+      }
     }
   });
   const webSocketServer = new WebSocketServer({
@@ -283,10 +356,10 @@ export function createRuntimeCollaborationService({
     pending.flushing = (async () => {
       const connection = await hocuspocus.openDirectConnection(
         pending.sessionId,
-        { clientId: "runtime" }
+        { clientId: "runtime", runtimeRunId: pending.runId }
       );
       try {
-        await connection.transact((document) => {
+        await mutateDirect(pending.sessionId, connection, (document) => {
           if (
             activeDocumentProjector?.projectEvents
           ) {
@@ -320,7 +393,7 @@ export function createRuntimeCollaborationService({
           });
         });
       } finally {
-        await connection.disconnect({ unloadImmediately: false });
+        await disconnectDirect(pending.sessionId, connection, { unloadImmediately: false });
       }
     })().catch((error) => {
       failed = true;
@@ -340,14 +413,16 @@ export function createRuntimeCollaborationService({
   const replaceDocument = async (sessionId, text, context = {}) => {
     const name = collaborationDocumentName(sessionId);
     const connection = await hocuspocus.openDirectConnection(name, {
-      clientId: String(context.clientId || "runtime")
+      clientId: String(context.clientId || "runtime"), committedSnapshot: true
     });
     try {
-      await connection.transact((document) => {
+      connection.persistenceEpoch = persistenceEpoch;
+      await persist({ sessionId: name, context: connection.context, kind: "projection", text: String(text || "") },
+        () => connection.transact((document) => {
         replaceYText(document.getText(COLLABORATION_TEXT_KEY), text);
-      });
+      }));
     } finally {
-      await connection.disconnect();
+      await disconnectDirect(name, connection);
     }
     return await store.readCollaborationDocument(name);
   };
@@ -429,7 +504,8 @@ export function createRuntimeCollaborationService({
       });
       const authorizationState = { contexts: new Set() };
       if (authorizeOutbound) {
-        authorizeCollaborationSends(webSocket, authorizationState.contexts, authorizeOutbound);
+        authorizeCollaborationSends(webSocket, authorizationState.contexts,
+          context => authorize(() => authorizeOutbound(context)));
       }
       const connection = hocuspocus.handleConnection(
         webSocket,
@@ -452,6 +528,28 @@ export function createRuntimeCollaborationService({
     return true;
   };
 
+  const collectDocumentPresence = async sessionId => {
+    if (closing) return [];
+    const document = hocuspocus.documents.get(collaborationDocumentName(sessionId));
+    const people = new Map();
+    for (const connection of document?.getConnections() || []) {
+      const context = connection.context, principal = context?.principal;
+      // Awareness is client-controlled. Identity comes only from authenticated sockets.
+      if (connection.webSocket.readyState !== 1 || principal?.kind !== "account" || !principal.user?.id) continue;
+      try {
+        if (authorizeOutbound) await authorize(() => authorizeOutbound(context));
+        else if (reauthorize) await authorize(() => reauthorize(context));
+        if (connection.webSocket.readyState === 1 && document.getConnections().includes(connection)) people.set(`account:${principal.user.id}`,
+          { kind: "account", id: principal.user.id, name: principal.user.name || "未命名用户", role: context.readOnly ? "viewer" : "editor" });
+      } catch { /* Revoked and expired connections are not present. */ }
+    }
+    for (const person of await readerVisits.list(sessionId)) {
+      const key = `${person.kind}:${person.id}`;
+      if (!people.has(key)) people.set(key, person);
+    }
+    return [...people.values()];
+  };
+
   return {
     path,
     hocuspocus,
@@ -465,11 +563,29 @@ export function createRuntimeCollaborationService({
         connections: hocuspocus.getConnectionsCount()
       };
     },
+    async listDocumentPresence(sessionId) {
+      return (await collectDocumentPresence(sessionId)).filter(person => person.kind === "account").map(person => person.id);
+    },
+    async listDocumentVisitors(sessionId, options = {}) {
+      const people = await collectDocumentPresence(sessionId);
+      return {
+        selfVisitorId: options.self ? visitorId(sessionId, options.self) : null,
+        visitors: people.slice(0, 100).map(person => ({
+          id: visitorId(sessionId, person), kind: person.kind, online: true,
+          name: options.public && person.kind === "account" ? "已登录访客" : person.name,
+          role: options.public ? "visitor" : person.role,
+          ...(options.accountIds && person.kind === "account" ? { accountId: person.id } : {})
+        }))
+      };
+    },
+    registerDocumentVisit: (documentId, input) => readerVisits.register(documentId, input),
+    renewDocumentVisit: (documentId, id, input) => readerVisits.renew(documentId, id, input),
+    removeDocumentVisit: (documentId, id, input) => readerVisits.remove(documentId, id, input),
     replaceDocument,
     async applyRunEvents(sessionId, { runId, events, includeReasoning, mode } = {}) {
-      const connection = await hocuspocus.openDirectConnection(collaborationDocumentName(sessionId), { clientId: "runtime" });
+      const connection = await hocuspocus.openDirectConnection(collaborationDocumentName(sessionId), { clientId: "runtime", runtimeRunId: runId });
       try {
-        await connection.transact(document => {
+        await mutateDirect(sessionId, connection, document => {
           if (["live", "final"].includes(mode)) {
             const projection = document.getMap("runProjection").get(runId);
             // A user-detached working copy needs no further document replay.
@@ -482,24 +598,24 @@ export function createRuntimeCollaborationService({
           activeDocumentProjector?.projectEvents?.({ document, runId, events, includeReasoning });
         });
       } finally {
-        await connection.disconnect({ unloadImmediately: false });
+        await disconnectDirect(sessionId, connection, { unloadImmediately: false });
       }
     },
     async prepareRun(sessionId, input = {}) {
       if (!activeDocumentProjector?.prepareRun) return null;
       const name = collaborationDocumentName(sessionId);
       const connection = await hocuspocus.openDirectConnection(name, {
-        clientId: "runtime"
+        clientId: "runtime", runtimeRunId: input.runId
       });
       try {
-        await connection.transact((document) => {
+        await mutateDirect(name, connection, (document) => {
           activeDocumentProjector.prepareRun({
             document,
             ...input
           });
         });
       } finally {
-        await connection.disconnect({ unloadImmediately: false });
+        await disconnectDirect(name, connection, { unloadImmediately: false });
       }
       return input.returnSnapshot === false ? null : await store.readCollaborationDocument(name);
     },
@@ -507,10 +623,10 @@ export function createRuntimeCollaborationService({
       if (!activeDocumentProjector?.projectRun) return null;
       const name = collaborationDocumentName(sessionId);
       const connection = await hocuspocus.openDirectConnection(name, {
-        clientId: "runtime"
+        clientId: "runtime", runtimeRunId: input.runId
       });
       try {
-        await connection.transact((document) => {
+        await mutateDirect(name, connection, (document) => {
           activeDocumentProjector.projectRun({
             document,
             ...input,
@@ -520,25 +636,25 @@ export function createRuntimeCollaborationService({
           });
         });
       } finally {
-        await connection.disconnect();
+        await disconnectDirect(name, connection);
       }
       return await store.readCollaborationDocument(name);
     },
-    async reconcileTranscript(sessionId, messages = []) {
+    async reconcileTranscript(sessionId, messages = [], runId) {
       if (!activeDocumentProjector?.reconcileTranscript) return null;
       const name = collaborationDocumentName(sessionId);
       const connection = await hocuspocus.openDirectConnection(name, {
-        clientId: "runtime"
+        clientId: "runtime", runtimeRunId: runId
       });
       try {
-        await connection.transact((document) => {
+        await mutateDirect(name, connection, (document) => {
           activeDocumentProjector.reconcileTranscript({
             document,
             messages
           });
         });
       } finally {
-        await connection.disconnect({ unloadImmediately: false });
+        await disconnectDirect(name, connection, { unloadImmediately: false });
       }
       return await store.readCollaborationDocument(name);
     },
@@ -634,6 +750,7 @@ export function createRuntimeCollaborationService({
     },
     async close() {
       closing = true;
+      readerVisits.close();
       storeSubscription?.dispose?.();
       for (const pending of pendingRunProjections.values()) {
         if (pending.timer) clearTimeout(pending.timer);
@@ -645,6 +762,7 @@ export function createRuntimeCollaborationService({
       }
       hocuspocus.closeConnections();
       for (const client of webSocketServer.clients) client.terminate();
+      await Promise.allSettled([...pendingAuthorizations]);
       hocuspocus.flushPendingStores();
       for (let attempt = 0; attempt < 1_000; attempt += 1) {
         const busy = [...hocuspocus.documents.values()].some((document) => {

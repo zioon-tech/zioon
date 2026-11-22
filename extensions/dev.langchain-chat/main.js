@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { createElement } from "react";
 import { runStream } from "./chat-service.js";
 import { accountCan } from "../../packages/account-ui/src/client";
@@ -647,14 +648,17 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dispUserProv);
 
   // 模型目录与激活模型状态
-  async function refreshCatalog() {
+  async function refreshCatalog(options = {}) {
     try {
-      return await rebuildModelCatalog();
+      return await rebuildModelCatalog(options);
     } catch (e) {
       console.warn("[langchain-chat] refreshCatalog error", e);
       return [];
     }
   }
+  ctx.subscriptions.push(window.zion.events.on("sharing/changed", () => {
+    void refreshCatalog({ forceRuntime: true });
+  }));
   function getResolvedModelSnapshot(source) {
     const active = source || window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
     const providerId = String(active?.providerId || "deepseek");
@@ -1184,7 +1188,7 @@ export async function activate(ctx) {
     const tools = window.zion?.commands?.executeCommand("tools.parseFromContent", contentBeforeCursor) || null;
     const runtimeConfig = readInteractiveRuntimeConfig({
       state: window.zion?.state,
-      storage: globalThis.localStorage
+      storage: localStorage
     });
     if (runtimeConfig.mode !== "browser") {
       const requestSource = opts?.requestSource || inferRequestSource({
@@ -3419,7 +3423,7 @@ export async function activate(ctx) {
   // 打开/关闭模型切换器
   const dispOpenSwitcher = window.zion.commands.registerCommand("models.openSwitcher", () => {
     modelSwitcher?.open?.();
-    void refreshCatalog();
+    void refreshCatalog({ forceRuntime: true });
   });
   const dispCloseSwitcher = window.zion.commands.registerCommand("models.closeSwitcher", () => {
     modelSwitcher?.close?.();

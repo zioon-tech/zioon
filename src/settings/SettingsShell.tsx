@@ -377,6 +377,8 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
   useEffect(() => {
     if (setting.kind === "action") return;
     void reload();
+    const subscription = setting.subscribeValue?.(() => { void reload(); });
+    return () => subscription?.dispose();
   }, [setting]);
 
   const dirty = !valuesEqual(savedValue, draftValue);
@@ -615,7 +617,7 @@ function StandardSettingBody({ setting }: { setting: SettingContribution }) {
   );
 }
 
-function SettingCard({ setting }: { setting: SettingContribution }) {
+export function SettingCard({ setting }: { setting: SettingContribution }) {
   const isCustom = isCustomSetting(setting);
   const controlLayout = getControlLayout(setting);
   const label = settingLabel(setting);

@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../../src/runtime/workbench-space.ts";
 import {
   SESSION_DERIVED_TAGS_STATE_KEY,
   collectSessionDerivedTags
@@ -672,6 +673,28 @@ export function createSessionsSidebarViewManager(opts) {
 
     container.appendChild(headerMenu);
     container.addEventListener("click", () => { headerMenu.style.display = "none"; });
+    const sharingFilters = document.createElement("div");
+    sharingFilters.className = "session-sharing-filters";
+    sharingFilters.setAttribute("role", "group");
+    sharingFilters.setAttribute("aria-label", "会话分享筛选");
+    const sharingStatus = document.createElement("p");
+    sharingStatus.className = "session-sharing-status";
+    const updateSharingFilters = () => {
+      for (const button of sharingFilters.children) {
+        button.setAttribute("aria-pressed", String(opts.sharingView?.filter === button.dataset.filter));
+      }
+      sharingStatus.textContent = opts.sharingView?.error || "";
+      sharingStatus.hidden = !sharingStatus.textContent;
+    };
+    if (opts.sharingView) {
+      for (const [value, label] of [["all", "全部"], ["sent", "我分享的"], ["received", "收到的"]]) {
+        const button = document.createElement("button");
+        button.type = "button"; button.textContent = label; button.dataset.filter = value;
+        button.onclick = () => { opts.sharingView.setFilter(value); updateSharingFilters(); };
+        sharingFilters.appendChild(button);
+      }
+      container.append(sharingFilters, sharingStatus); updateSharingFilters();
+    }
 
     let selectedDay = (() => {
       try { return localStorage.getItem(LS_SELECTED_DAY) || ""; } catch { return ""; }
@@ -1522,6 +1545,7 @@ export function createSessionsSidebarViewManager(opts) {
     };
 
     const renderAll = (opts = {}) => {
+      updateSharingFilters();
       const preserveListScroll = opts?.preserveListScroll !== false;
       const listScrollTop = preserveListScroll ? Math.max(0, Number(listWrap.scrollTop) || 0) : null;
       applySplitLayout();

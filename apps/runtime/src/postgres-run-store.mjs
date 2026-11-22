@@ -149,7 +149,8 @@ export class PostgresRunStore {
     this.eventListeners = new Set();
   }
 
-  async transaction(action) {
+  async transaction(action, { client: externalClient } = {}) {
+    if (externalClient) return action(externalClient);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -717,9 +718,9 @@ export class PostgresRunStore {
     return payload(result.rows[0]);
   }
 
-  async createSession(record) {
+  async createSession(record, { client = this.pool } = {}) {
     try {
-      await this.pool.query(
+      await client.query(
         `INSERT INTO runtime_sessions (space_id, id, payload_json, status, updated_at)
          VALUES ($1, $2, $3::jsonb, $4, $5)`,
         [this.spaceId, record.id, JSON.stringify(record), record.status, record.updatedAt]
@@ -772,6 +773,13 @@ export class PostgresRunStore {
       [this.spaceId, runId]
     );
     return result.rows[0]?.messages_json ?? null;
+  }
+
+  async completionTaskState(runId, attemptId) {
+    const row = (await this.pool.query(`SELECT status,completed_steps FROM runtime_run_completion_tasks
+      WHERE space_id=$1 AND run_id=$2 AND attempt_id=$3 ORDER BY terminal_sequence DESC LIMIT 1`,
+    [this.spaceId, runId, attemptId])).rows[0];
+    return row ? { status: row.status, completedSteps: row.completed_steps || [] } : null;
   }
 
   async updateCompletionTask(task, { step, complete = false, retryMs, leaseMs = 180_000 } = {}) {
@@ -889,15 +897,16 @@ export class PostgresRunStore {
     );
   }
 
-  async listSessions({ limit = 100, offset = 0 } = {}) {
+  async listSessions({ limit = 100, offset = 0, allowedSessionIds = null } = {}) {
     const result = await this.pool.query(
       `SELECT payload_json FROM runtime_sessions
-       WHERE space_id = $1
+       WHERE space_id = $1 AND ($4::text[] IS NULL OR id=ANY($4))
        ORDER BY updated_at DESC, id LIMIT $2 OFFSET $3`,
       [
         this.spaceId,
         Math.min(500, Math.max(1, Number(limit) || 100)),
-        Math.max(0, Number(offset) || 0)
+        Math.max(0, Number(offset) || 0),
+        allowedSessionIds
       ]
     );
     return result.rows.map(payload);
@@ -955,7 +964,7 @@ export class PostgresRunStore {
     title,
     createdAt = Date.now(),
     createId = () => `message_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
-  } = {}) {
+  } = {}, transactionOptions) {
     const source = await this.getSession(sourceSessionId);
     if (!source) throw new Error(`Session not found: ${sourceSessionId}`);
     const targetId = String(id || "").trim();
@@ -1023,7 +1032,7 @@ export class PostgresRunStore {
           ]
         );
       }
-    });
+    }, transactionOptions);
     return {
       session,
       copiedSeedTranscriptEntries: sourceSeedTranscript.length,
@@ -1501,15 +1510,20 @@ export class PostgresRunStore {
     return payload(result.rows[0]);
   }
 
-  async listTodoLists({ limit = 100, updatedAfter = 0 } = {}) {
+  async listTodoLists({ limit = 100, updatedAfter = 0, allowedSessionIds = null } = {}) {
     const result = await this.pool.query(
       `SELECT payload_json FROM runtime_todo_lists
        WHERE space_id = $1 AND updated_at > $2
+         AND ($4::text[] IS NULL OR COALESCE(payload_json->>'sessionId',
+           (SELECT r.payload_json->>'sessionId' FROM runtime_runs r
+            WHERE r.space_id=runtime_todo_lists.space_id AND r.id=runtime_todo_lists.payload_json->>'runId'),
+           owner_id)=ANY($4::text[]))
        ORDER BY updated_at DESC LIMIT $3`,
       [
         this.spaceId,
         Math.max(0, Math.floor(Number(updatedAfter) || 0)),
-        Math.min(500, Math.max(1, Math.floor(Number(limit) || 100)))
+        Math.min(500, Math.max(1, Math.floor(Number(limit) || 100))),
+        allowedSessionIds
       ]
     );
     return result.rows.map(payload);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import { accountError, roleScopes } from "./account-policy.mjs";
+import { resolveMemoryScope } from "../spaces/memory-scope.mjs";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const keyBytes = (secret) => {
@@ -12,13 +13,14 @@ export async function createMemoryDelegation(secret, { context, method, path, bo
   return `zm_${await new SignJWT({
     context: { principal: context.principal || context.request?.principal,
       policy: context.policy || context.request?.policy,
+      sessionId: context.sessionId || context.request?.sessionId,
       interactionProfileId: context.interactionProfileId || context.request?.interactionProfileId },
     method, path, bodyHash: digest(body || ""), filePath, filePaths, toolName, write: write === true
   }).setProtectedHeader({ alg: "HS256" }).setIssuer("zion-memory-bridge")
     .setAudience("zion-memory-service").setIssuedAt().setExpirationTime("30s").sign(keyBytes(secret))}`;
 }
 
-export async function verifyMemoryDelegation(accessControl, secret, token, requestBinding) {
+export async function verifyMemoryRequestPayload(secret, token, requestBinding) {
   let payload;
   try {
     ({ payload } = await jwtVerify(String(token || "").replace(/^zm_/, ""), keyBytes(secret), {
@@ -50,6 +52,11 @@ export async function verifyMemoryDelegation(accessControl, secret, token, reque
     || payload.write !== requestBinding.write
     || JSON.stringify(payload.filePaths) !== JSON.stringify(requestBinding.filePaths)
   )) throw accountError(403, "memory_tool_binding_mismatch");
+  return payload;
+}
+
+export async function verifyMemoryDelegation(accessControl, secret, token, requestBinding) {
+  const payload = await verifyMemoryRequestPayload(secret, token, requestBinding);
   return await authorizeMemoryContext(accessControl, payload);
 }
 
@@ -87,5 +94,11 @@ export async function authorizeMemoryContext(accessControl, payload) {
   const space = await accessControl.accounts.space(spaceId);
   const membership = await accessControl.accounts.membership(userId, spaceId);
   const accountIdentity = await accessControl.accounts.identityForUser?.(userId, accessControl.sharedAccountIssuer || accessControl.oidc?.issuer) || null;
-  return { authenticated: true, user, space, membership, scopes, accountIdentity };
+  const memoryScope = await resolveMemoryScope(accessControl, {
+    principal, sessionId: context.sessionId, write: payload.write
+  });
+  return { authenticated: true, user, space, membership, scopes, accountIdentity, memoryScope,
+    ...(principal.contentScope ? { contentScope: {
+      originSpaceId: memoryScope.spaceId, documentId: memoryScope.documentId
+    } } : {}) };
 }

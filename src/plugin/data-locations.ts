@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../runtime/workbench-space";
 import { readWorkbenchRuntimeConfig } from "../runtime/workbench-runtime-config";
 import {
   normalizeDataLocation,
@@ -11,7 +12,7 @@ export type PluginLocations = {
 
 export function createPluginLocations(pluginId: string, {
   state = (globalThis as any).window?.zion?.state,
-  storage = globalThis.localStorage,
+  storage = localStorage,
   fetchImpl = globalThis.fetch
 }: any = {}): PluginLocations {
   const id = validatePluginId(pluginId);

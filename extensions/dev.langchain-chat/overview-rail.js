@@ -413,7 +413,10 @@ function createUserHistoryItem(item, current, onSelect) {
   return button;
 }
 
-export function createChatOverviewRail(editor) {
+export function createChatOverviewRail(editor, options = {}) {
+  const state = options.state || window.zion?.state;
+  const events = options.events || window.zion?.events;
+  const getSessionId = () => options.documentId || getEditorSessionId(editor);
   const view = editor?.getView?.();
   if (!view?.dom) {
     return { dispose() {} };
@@ -553,12 +556,12 @@ export function createChatOverviewRail(editor) {
       clearUserScrollIntent();
       setConversationViewportFollowing(view, true, {
         sessionId,
-        state: window.zion?.state,
-        mirrorLegacy: true
+        state,
+        mirrorLegacy: options.mirrorLegacy !== false
       });
     }
     const activeRun = sessionId
-      ? window.zion?.state?.get?.(`chat.runs.${sessionId}`)
+      ? state?.get?.(`chat.runs.${sessionId}`)
       : null;
     if (
       activeRun?.streaming
@@ -572,10 +575,10 @@ export function createChatOverviewRail(editor) {
       return;
     }
     const preferredHeadLine = sessionId
-      ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
+      ? state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
     const assistantBlockId = sessionId
-      ? window.zion?.state?.get?.(`chat.assistantBlockId.${sessionId}`)
+      ? state?.get?.(`chat.assistantBlockId.${sessionId}`)
         || activeRun?.runId
       : "";
     const docText = view.state.doc.toString();
@@ -596,7 +599,7 @@ export function createChatOverviewRail(editor) {
         try {
           const suppressUntil = Date.now() + 120;
           if (sessionId) {
-            window.zion?.state?.set?.(
+            state?.set?.(
               `chat.followSuppressUntil.${sessionId}`,
               suppressUntil
             );
@@ -625,11 +628,11 @@ export function createChatOverviewRail(editor) {
     e.stopPropagation();
     const nav = computeUserNavState(view);
     if (nav.prevLine == null) return;
-    const sessionId = getEditorSessionId(editor);
+    const sessionId = getSessionId();
     if (sessionId) {
       setConversationViewportFollowing(view, false, {
         sessionId,
-        state: window.zion?.state
+        state
       });
     }
     jumpToLine(view, nav.prevLine);
@@ -642,11 +645,11 @@ export function createChatOverviewRail(editor) {
     e.stopPropagation();
     const nav = computeUserNavState(view);
     if (nav.nextLine == null) return;
-    const sessionId = getEditorSessionId(editor);
+    const sessionId = getSessionId();
     if (sessionId) {
       setConversationViewportFollowing(view, false, {
         sessionId,
-        state: window.zion?.state
+        state
       });
     }
     jumpToLine(view, nav.nextLine);
@@ -658,13 +661,13 @@ export function createChatOverviewRail(editor) {
     e.preventDefault();
     e.stopPropagation();
     closeUserHistory();
-    const sessionId = getEditorSessionId(editor);
+    const sessionId = getSessionId();
     if (!sessionId) return;
     revealLatestAnswer(sessionId, true);
   };
 
   const revealLatestForActiveEditor = () => {
-    const sessionId = getEditorSessionId(editor);
+    const sessionId = getSessionId();
     if (!sessionId) return false;
     revealLatestAnswer(sessionId, true);
     return true;
@@ -687,7 +690,7 @@ export function createChatOverviewRail(editor) {
         if (sessionId) {
           setConversationViewportFollowing(view, false, {
             sessionId,
-            state: window.zion?.state
+            state
           });
         }
         jumpToLine(view, line);
@@ -779,15 +782,15 @@ export function createChatOverviewRail(editor) {
     cursorEl.style.top = `${cursorTop}px`;
     cursorEl.title = `光标: 第 ${cursorLine + 1} 行`;
 
-    const sessionId = getEditorSessionId(editor);
+    const sessionId = getSessionId();
     const preferredHeadLine = sessionId
-      ? window.zion?.state?.get?.(`chat.answerHeadLine.${sessionId}`)
+      ? state?.get?.(`chat.answerHeadLine.${sessionId}`)
       : undefined;
     const activeRun = sessionId
-      ? window.zion?.state?.get?.(`chat.runs.${sessionId}`)
+      ? state?.get?.(`chat.runs.${sessionId}`)
       : null;
     const assistantBlockId = sessionId
-      ? window.zion?.state?.get?.(`chat.assistantBlockId.${sessionId}`)
+      ? state?.get?.(`chat.assistantBlockId.${sessionId}`)
         || activeRun?.runId
       : "";
     const lines = getOverviewLines(doc.toString());
@@ -800,7 +803,7 @@ export function createChatOverviewRail(editor) {
     const followLatest = sessionId
       ? isConversationViewportFollowing(view, {
           sessionId,
-          state: window.zion?.state
+          state
         })
       : false;
     const userMessages = collectUserMessageItemsFromLines(lines);
@@ -857,7 +860,7 @@ export function createChatOverviewRail(editor) {
   try {
     editor.addVisualExtension(
       EditorView.updateListener.of((update) => {
-        const updateSessionId = getEditorSessionId(editor);
+        const updateSessionId = getSessionId();
         if (
           updateSessionId
           && userScrollIntentUntil <= Date.now()
@@ -866,7 +869,7 @@ export function createChatOverviewRail(editor) {
         ) {
           restoreConversationViewportStability(view, {
             sessionId: updateSessionId,
-            state: window.zion?.state,
+            state,
             update
           });
         }
@@ -891,24 +894,24 @@ export function createChatOverviewRail(editor) {
   } catch {}
 
   if (scrollDOM) {
-    const initialSessionId = getEditorSessionId(editor);
+    const initialSessionId = getSessionId();
     if (initialSessionId) {
       initializeConversationViewport(view, {
         sessionId: initialSessionId,
-        state: window.zion?.state
+        state
       });
     }
     const onWheel = () => {
       markUserScrollIntent(900);
-      const sessionId = getEditorSessionId(editor);
+      const sessionId = getSessionId();
       if (!sessionId) return;
       if (!isConversationViewportFollowing(view, {
         sessionId,
-        state: window.zion?.state
+        state
       })) return;
       setConversationViewportFollowing(view, false, {
         sessionId,
-        state: window.zion?.state
+        state
       });
       scheduleRender();
     };
@@ -950,13 +953,13 @@ export function createChatOverviewRail(editor) {
     };
     const onScroll = () => {
       scheduleRender();
-      const sessionId = getEditorSessionId(editor);
+      const sessionId = getSessionId();
       if (!sessionId || suppressScrollTracking) return;
-      const isStreaming = !!window.zion?.state?.get?.(`chat.runs.${sessionId}`)?.streaming;
+      const isStreaming = !!state?.get?.(`chat.runs.${sessionId}`)?.streaming;
       if (!isStreaming) return;
       if (!isConversationViewportFollowing(view, {
         sessionId,
-        state: window.zion?.state
+        state
       })) return;
       const domSuppressUntil = Number(scrollDOM.__zionProgrammaticScrollUntil || 0);
       const distanceToBottom = scrollDOM.scrollHeight - scrollDOM.scrollTop - scrollDOM.clientHeight;
@@ -966,7 +969,7 @@ export function createChatOverviewRail(editor) {
         && userScrollIntentUntil <= Date.now()
         && restoreConversationViewportStability(view, {
           sessionId,
-          state: window.zion?.state
+          state
         })
       ) {
         return;
@@ -975,7 +978,7 @@ export function createChatOverviewRail(editor) {
       if (distanceToBottom > 12) {
         setConversationViewportFollowing(view, false, {
           sessionId,
-          state: window.zion?.state
+          state
         });
         scheduleRender();
       }
@@ -1014,8 +1017,8 @@ export function createChatOverviewRail(editor) {
   for (const topic of rerenderEvents) {
     try {
       subscriptions.push(
-        window.zion.events.on(topic, (payload) => {
-          const targetSessionId = getEditorSessionId(editor);
+        events.on(topic, (payload) => {
+          const targetSessionId = getSessionId();
           if (!payload?.sessionId || !targetSessionId || payload.sessionId === targetSessionId) {
             if (
               (topic === "chat/preparing" || topic === "chat/runStarted")
@@ -1028,13 +1031,13 @@ export function createChatOverviewRail(editor) {
                 payload?.assistantBlockId || payload?.runId || ""
               );
               if (blockId) {
-                window.zion?.state?.set?.(
+                state?.set?.(
                   `chat.assistantBlockId.${targetSessionId}`,
                   blockId
                 );
               }
               if (Number.isFinite(Number(payload?.answerHeadLine))) {
-                window.zion?.state?.set?.(
+                state?.set?.(
                   `chat.answerHeadLine.${targetSessionId}`,
                   Number(payload.answerHeadLine)
                 );
@@ -1049,7 +1052,7 @@ export function createChatOverviewRail(editor) {
 
   try {
     subscriptions.push(
-      window.zion.events.on("panel/tabActivated", (payload) => {
+      events.on("panel/tabActivated", (payload) => {
         if (!panelId || payload?.panelId === panelId) {
           scheduleRender();
         }
@@ -1059,7 +1062,7 @@ export function createChatOverviewRail(editor) {
 
   try {
     subscriptions.push(
-      window.zion.state.onDidChange("sessions.currentId", () => {
+      state.onDidChange("sessions.currentId", () => {
         if (!panelId) scheduleRender();
       })
     );
@@ -1067,14 +1070,14 @@ export function createChatOverviewRail(editor) {
 
   try {
     subscriptions.push(
-      window.zion.state.onDidChange("chat.streaming", () => {
+      state.onDidChange("chat.streaming", () => {
         scheduleRender();
       })
     );
   } catch {}
   try {
     subscriptions.push(
-      window.zion.state.onDidChange("sessions.currentId", () => {
+      state.onDidChange("sessions.currentId", () => {
         scheduleRender();
       })
     );

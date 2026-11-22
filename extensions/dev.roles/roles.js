@@ -1,3 +1,4 @@
+import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
 import { Prec, RangeSetBuilder, StateField } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, keymap, gutter, GutterMarker, WidgetType } from "@codemirror/view";
 import { foldService } from "@codemirror/language";
@@ -14,7 +15,8 @@ import {
  */
 
 // 默认内置角色
-const BASE_ROLE_PREFIXES = ["user", "assistant", "system"];
+export const BASE_ROLE_PREFIXES = ["user", "assistant", "system", "tool"];
+const localIndexes = new WeakMap();
 const ASSISTANT_BLOCK_ID_RE = /^assistant\s+(<!--\s*zion-assistant:id=[^>\s]+\s*-->)\s?/;
 
 /**
@@ -76,14 +78,14 @@ function normalizePrefixes(list) {
 }
 
 /** 计算有效角色前缀：内置 + 传入 + 环境 */
-function getEffectivePrefixes(opts) {
+export function getEffectivePrefixes(opts = {}) {
   const extra = Array.isArray(opts?.prefixes) ? opts.prefixes : [];
-  return normalizePrefixes([...BASE_ROLE_PREFIXES, ...extra, ...readCustomPrefixesFromEnv()]);
+  return normalizePrefixes([...BASE_ROLE_PREFIXES, ...extra, ...(opts?.readOnly ? [] : readCustomPrefixesFromEnv())]);
 }
 
 /** 计算需要块级高亮的角色（默认 ["user"]，可被配置覆盖） */
 function getHighlightBlockRoles(opts) {
-  const fromEnv = readHighlightBlockRolesFromEnv();
+  const fromEnv = opts?.readOnly ? [] : readHighlightBlockRolesFromEnv();
   let list = Array.isArray(opts?.highlightBlockRoles) ? opts.highlightBlockRoles : fromEnv;
   list = Array.isArray(list) && list.length ? list : ["user"];
   return normalizePrefixes(list);
@@ -381,6 +383,9 @@ function getRoleIndexScopeFromTarget(target) {
 }
 
 function readPublishedRolesIndex(target) {
+  const view = target?.state?.doc ? target : target?.getView?.();
+  const local = view && localIndexes.get(view);
+  if (local && local.doc === view.state.doc) return local.index;
   try {
     const state = window?.zion?.state;
     if (!state?.get) return null;
@@ -433,7 +438,7 @@ function publishRolesIndex(index, scope = {}) {
 }
 
 /** Build roles index (blocks ranges) for other extensions via StateBus */
-function buildRolesIndexFromState(state, prefixes, scope = {}) {
+function buildRolesIndexFromState(state, prefixes, scope = {}, publish = true) {
   try {
     const doc = state.doc;
     const blocks = [];
@@ -537,16 +542,22 @@ function buildRolesIndexFromState(state, prefixes, scope = {}) {
     }
 
     const index = { prefixes, blocks, scope, updatedAt: Date.now() };
-    publishRolesIndex(index, scope);
+    if (publish) publishRolesIndex(index, scope);
     return index;
   } catch {
     return null;
   }
 }
 
+/** The reader uses the native parser without publishing into workbench state. */
+export function readConversationRoleBlocks(state, prefixes = BASE_ROLE_PREFIXES) {
+  return buildRolesIndexFromState(state, prefixes, {}, false)?.blocks || [];
+}
+
 function buildRolesIndexFromView(view, prefixes) {
-  ensureRolesApi();
-  return buildRolesIndexFromState(view.state, prefixes, getRoleIndexScopeFromView(view));
+  const index = buildRolesIndexFromState(view.state, prefixes, getRoleIndexScopeFromView(view), false);
+  localIndexes.set(view, { doc: view.state.doc, index });
+  return index;
 }
 
 class RoleRailMarker extends GutterMarker {
@@ -633,7 +644,10 @@ function rolesView(opts = {}) {
             this.indexTimer = 0;
             const refresh = () => {
               this.indexIdle = 0;
-              try { buildRolesIndexFromView(this.view, prefixes); } catch {}
+              try {
+                const index = buildRolesIndexFromView(this.view, prefixes);
+                if (!opts.readOnly) publishRolesIndex(index, getRoleIndexScopeFromView(this.view));
+              } catch {}
             };
             if (typeof window.requestIdleCallback === "function") {
               this.indexIdle = window.requestIdleCallback(refresh, { timeout: 400 });
@@ -662,18 +676,21 @@ function rolesView(opts = {}) {
           }, 900);
         };
         try { window.addEventListener(ROLES_NAV_FLASH_EVENT, this.onFlash); } catch {}
+        const index = buildRolesIndexFromView(view, prefixes);
+        if (!opts.readOnly) publishRolesIndex(index, getRoleIndexScopeFromView(view));
         this.decorations = buildDecorations(view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
-        try { buildRolesIndexFromView(view, prefixes); } catch {}
       }
       update(update) {
+        if (update.docChanged) buildRolesIndexFromView(update.view, prefixes);
         if (update.docChanged || update.viewportChanged) {
           this.decorations = buildDecorations(update.view, prefixes, highlightBlockRoles, atRegex, this.flashLineIndex, this.flashSerial);
         }
-        if (update.docChanged) {
+        if (update.docChanged && !opts.readOnly) {
           this.scheduleIndexRefresh();
         }
       }
       destroy() {
+        localIndexes.delete(this.view);
         try { window.removeEventListener(ROLES_NAV_FLASH_EVENT, this.onFlash); } catch {}
         if (this.flashTimer) {
           try { window.clearTimeout(this.flashTimer); } catch {}

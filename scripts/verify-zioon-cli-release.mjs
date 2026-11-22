@@ -21,6 +21,7 @@ const environment = { ...process.env, ZION_RUNTIME_CLI_CONFIG: join(directory, "
 const site = createSiteServer();
 let requests = [];
 let installedFixture = false;
+const personalSpace = { id: "fixture-personal", kind: "personal" };
 const installation = { id: "private:fixture:skill", name: "Fixture Skill", version: "0.1.0",
   versions: [{ version: "0.1.0", digest: "fixture-source" }],
   installation: { version: "0.1.0", executionEpoch: "fixture-epoch", enabled: true } };
@@ -29,6 +30,7 @@ const server = createServer(async (req, res) => {
   let body = "";
   for await (const chunk of req) body += chunk;
   requests.push({ path: req.url, method: req.method, authenticated: Boolean(req.headers.authorization),
+    spaceId: req.headers["x-zioon-space-id"],
     body: body ? JSON.parse(body) : undefined });
   if (req.url === "/v1/account/device/start") {
     res.end(JSON.stringify({ flowToken: "fixture-flow", verificationUriComplete: "https://identity.test/activate?code=TEST-CODE",
@@ -36,7 +38,8 @@ const server = createServer(async (req, res) => {
   } else if (req.url === "/v1/account/device/poll") {
     res.end(JSON.stringify({ token: "zion_account_v1.fixture", expiresAt: Date.now() + 60000 }));
   } else if (req.url === "/v1/account/me") {
-    res.end(JSON.stringify({ user: { id: "fixture-user" }, expiresAt: Date.now() + 60000 }));
+    res.end(JSON.stringify({ user: { id: "fixture-user" }, space: personalSpace,
+      spaces: [personalSpace], expiresAt: Date.now() + 60000 }));
   } else if (req.url === "/v1/runs" && req.method === "POST") {
     assert.ok(req.headers.authorization);
     res.writeHead(202); res.end('{"runId":"fixture-run"}');
@@ -114,7 +117,9 @@ try {
   ]) {
     requests = [];
     assert.equal(JSON.parse((await cli("extensions", action, installation.id, ...options, "--url", runtimeUrl, "--account")).stdout).status, "completed");
-    const invocation = requests.find((req) => req.path === "/v1/runs" && req.method === "POST")?.body?.metadata?.extensionInvocation;
+    const request = requests.find((req) => req.path === "/v1/runs" && req.method === "POST");
+    assert.equal(request?.spaceId, personalSpace.id);
+    const invocation = request?.body?.metadata?.extensionInvocation;
     assert.equal(invocation.action, expectedAction);
     assert.equal(invocation.epoch, "fixture-epoch");
     if (action === "write") assert.deepEqual(invocation.arguments,

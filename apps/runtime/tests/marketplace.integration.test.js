@@ -22,14 +22,14 @@ describe("Marketplace account and Runtime integration", () => {
     reviewer = await accounts.resolveIdentity({ issuer: "https://identity.test", subject: "reviewer" });
     await accounts.acceptInvitation(bob.id, (await accounts.invite(alice.id, {}, "space:marketplace")).token);
     const tokens = new Map(await Promise.all([alice, bob].map(async (user) => [user.id,
-      (await accounts.createSession(user.id, { activeSpaceId: "space:marketplace" })).token])));
+      (await accounts.createSession(user.id)).token])));
     headers = (user) => ({ authorization: `Bearer ${tokens.get(user.id)}`, "content-type": "application/json" });
     marketplace = await new MarketplaceService({ pool: database.pool,
       artifactStore: createMemoryArtifactStore(), reviewerIds: [reviewer.id] }).initialize();
     workbench = await new PostgresWorkbenchStateStore(database.pool, { spaceId: "space:marketplace" }).initialize();
     access = new AccountAccessControl({
       accounts, store: new PostgresAccessStore(database.pool, { spaceId: "space:marketplace" }),
-      publicBaseUrl: "https://workbench.test", oidc: { secureCookies: true }, servedSpaceId: "space:marketplace"
+      publicBaseUrl: "https://workbench.test", oidc: { secureCookies: true }
     });
     const handlers = [createMarketplaceHttpHandler({ service: marketplace }),
       createSkillsCatalogHttpHandler({ store: workbench, marketplace })];
@@ -68,7 +68,7 @@ describe("Marketplace account and Runtime integration", () => {
     category: "研究写作", version, license: "MIT", sourceUrl: "https://github.com/example/skills",
     body: "---\nname: test-skill\ndescription: Review evidence\n---\n\n# Instructions\nCheck sources." });
 
-  it("requires account authentication and keeps personal installs separate inside a shared Space", async () => {
+  it("requires account authentication, isolates personal installs and blocks private extension management in a team Space", async () => {
     expect((await call(null, "/v1/marketplace/snapshot")).status).toBe(401);
     const entry = (await marketplace.snapshot(alice.id)).entries[0];
     const added = await call(alice, `/v1/marketplace/installations/${entry.id}`, "POST", {
@@ -82,6 +82,14 @@ describe("Marketplace account and Runtime integration", () => {
       version: entry.version, digest: entry.digest, expectedRevision: 0
     });
     expect(member.status).toBe(200);
+    const teamHeaders = { ...headers(alice), "x-zioon-space-id": "space:marketplace" };
+    const team = await fetch(url + "/v1/marketplace/snapshot", { headers: teamHeaders });
+    expect((await team.json()).entries.every(e => !e.installation)).toBe(true);
+    const denied = await fetch(url + `/v1/marketplace/installations/${entry.id}`, {
+      method: "POST", headers: teamHeaders, body: JSON.stringify({ version: entry.version, digest: entry.digest })
+    });
+    expect(denied.status).toBe(409);
+    expect((await denied.json()).code).toBe("personal_extension_requires_personal_space");
   });
 
   it("serializes duplicate additions and rejects stale mutations and mismatched artifacts", async () => {

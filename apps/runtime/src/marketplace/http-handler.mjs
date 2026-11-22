@@ -34,6 +34,15 @@ export function createMarketplaceHttpHandler({ service, jobs, connections }) {
       const userId = principal?.kind === "account" ? principal.user?.id : "";
       if (!userId) throw Object.assign(new Error("请先登录账户"), { statusCode: 401, code: "authentication_required" });
       const path = url.pathname.slice("/v1/marketplace/".length);
+      if (principal.space?.kind === "team") {
+        if (request.method === "GET" && path === "snapshot") {
+          json(response, 200, await service.snapshot(""));
+          return true;
+        }
+        throw Object.assign(new Error("请在私人空间管理自己的扩展，再明确分享到当前空间"), {
+          statusCode: 409, code: "personal_extension_requires_personal_space"
+        });
+      }
       const resource = path.match(/^releases\/([^/]+)\/([^/]+)\/(artifact|files\/(.+))$/);
       const revisionResource = path.match(/^installations\/([^/]+)\/revisions\/([a-f0-9]{64})\/files\/(.+)$/);
       const match = path.match(/^installations\/([^/]+)$/);

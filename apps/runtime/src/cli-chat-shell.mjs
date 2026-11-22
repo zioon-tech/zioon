@@ -5,6 +5,7 @@ import { completeFilePath, localPath, readTextAttachment } from "./cli-files.mjs
 import { cacheImage, clipboardImage, droppedImagePaths, imageCapability, imageLabel, MAX_IMAGES, MAX_TOTAL_IMAGE_BYTES, messageText, openImage, readCachedImage, readImageAttachment } from "./cli-images.mjs";
 import { createActivity, createAnswerRenderer, safeText, terminalTheme, truncate } from "./cli-terminal.mjs";
 import { createActivityFeed, printToolDetail, toolLabel, toolTarget } from "./cli-activity-feed.mjs";
+import { printSharingResult, resolveSharedChatTarget } from "./sharing-cli.mjs";
 
 export function friendlyCliError(error) {
   const message = safeText(error?.message || String(error));
@@ -22,13 +23,16 @@ export function friendlyCliError(error) {
 
 export async function runChatShell({
   client, session: initialSession, sessionOptions, baseUrl, composer, output,
-  environment = process.env, signal, requestedSessionId, state, defaults = {}, modelSource = "Runtime", initialImages = []
+  environment = process.env, signal, requestedSessionId, state, defaults = {}, modelSource = "Runtime", initialImages = [],
+  space = null, spacesClient = null, sharingClient = null, contentTarget = null
 }) {
   let session = initialSession, activeRunId = "", lastRunId = "", stopping = false;
   let followController = null, abortTask = null, commandController = null;
   let sending = false, cancelAfterSend = false;
   let local = {}, draftTimer, connection = "Ready", modelCatalog;
   let tools = [], lastEventAt = 0, liveFeed;
+  let switchSpaceId = "";
+  let switchTarget = null;
   const cursors = new Map();
   const theme = terminalTheme(output, environment);
   if (!composer.rich) theme.interactive = false;
@@ -145,6 +149,9 @@ export async function runChatShell({
   const announce = () => {
     output.write(`\n  ${theme.bold("zioon")} ${theme.dim(" / ")} ${theme.bold(truncate(session.title || "Conversation", 60))}\n`);
     output.write(`  ${theme.dim(`${baseUrl} · ${session.model?.profileId || sessionOptions.model?.profileId || "default model"}`)}\n`);
+    if (contentTarget) output.write(`  ${theme.dim(`Shared: ${contentTarget.name} · ${contentTarget.owner?.name || "provider"} · ${contentTarget.role}`)}\n`);
+    else if (space?.kind === "team") output.write(`  ${theme.dim(`Space: ${space.name} · ${space.id}`)}\n`);
+    else if (sharingClient) output.write(`  ${theme.dim("Private conversation · /shares received · /model")}\n`);
     output.write(`  ${theme.dim(session.id ? `Session: ${session.id}` : "New conversation · created on first send")}\n`);
     output.write(`  ${theme.dim("/help commands · Ctrl+V image (/paste fallback) · Alt+I attachments")}\n\n`);
   };
@@ -258,6 +265,18 @@ export async function runChatShell({
   };
   const reconcile = async () => {
     if (!local.pending) { write("No uncertain send.\n"); return true; }
+    if (client.getSubmission) {
+      const found = await client.getSubmission(local.pending.id);
+      if (found?.runId) {
+        const pending = local.pending;
+        await save({ pending: null, attachments: [], images: [], lastSubmission: { ...pending, runId: found.runId } });
+        write("The previous message was accepted. It will not be sent again.\n");
+        await follow(found.runId);
+        return true;
+      }
+      write("Acceptance is still unconfirmed. /recover retry reuses the saved request and ID.\n");
+      return false;
+    }
     let messages;
     try { messages = await client.getTranscript(session.id); }
     catch (error) {
@@ -282,6 +301,10 @@ export async function runChatShell({
     return false;
   };
   const send = async (content, retry = false) => {
+    if (contentTarget?.role === "viewer") {
+      composer.setDraft?.(content); await save({ draft: content });
+      write("This shared conversation is view-only. /new opens your private conversation.\n"); return;
+    }
     if (local.pending && !retry) {
       composer.setDraft?.(content); await save({ draft: content });
       write("Resolve the previous send with /recover first. New draft retained.\n"); return;
@@ -347,6 +370,7 @@ export async function runChatShell({
         write(`Session: ${session.id}\n`);
       }
       pending = { id: randomUUID(), content: payload, draft: content, images, attachments, branch: Boolean(local.branchHistory), status: "unconfirmed" };
+      if (client.prepareMessage) pending.request = await client.prepareMessage(payload, pending.id);
       await save({ pending, draft: "" }, true);
     }
     if (retry && pending.branch) throw new Error("Seeded branch sends cannot be retried safely. Use /recover to check it, or /open its Session after recovery.");
@@ -358,7 +382,7 @@ export async function runChatShell({
           policy: session.policy || sessionOptions.policy, projectId: session.projectId || sessionOptions.projectId,
           metadata: { ...sessionOptions.metadata, ...session.metadata }
         })
-        : await client.sendMessage(session.id, pending.content, pending.id);
+        : await client.sendMessage(session.id, pending.content, pending.id, pending.request);
       if (!accepted.runId) throw new Error("Runtime did not return a Run ID; acceptance is unconfirmed");
       await save({ pending: null, branchHistory: null, attachments: [], images: [], lastRunId: accepted.runId,
         lastSubmission: { ...pending, runId: accepted.runId }, failedSend: null });
@@ -394,20 +418,67 @@ export async function runChatShell({
       const command = content.match(/^\S+/)?.[0] || "";
       const arg = content.slice(command.length).trim(), parts = arg.split(/\s+/);
       try {
-        if (command === "/help") {
+        if (command === "/space") {
+          if (!spacesClient) throw new Error("Sign in with account authentication to choose a Space.");
+          if (local.pending) throw new Error("Resolve the uncertain send with /recover before switching Spaces.");
+          const list = (await spacesClient.list()).spaces;
+          let selected = arg;
+          if (!selected && composer.rich) selected = await composer.choose(list.map(s => ({ id: s.id, label: `${s.name}${s.id === space.id ? " · current" : ""} · ${s.membership.role}` })));
+          if (!selected) for (const s of list) write(`${s.id === space.id ? "›" : " "} ${s.name} · ${s.id} · ${s.membership.role}\n`);
+          else {
+            const candidates = list.filter(s => s.id === selected || s.name === selected);
+            if (candidates.length !== 1) throw new Error("Choose a unique Space ID from /space.");
+            const candidate = candidates[0];
+            if (candidate.id === space.id) write(`Already in ${space.name}.\n`);
+            else { switchSpaceId = candidate.id; break; }
+          }
+        } else if (["/members", "/resources", "/usage"].includes(command)) {
+          if (!spacesClient) throw new Error("These commands require account authentication.");
+          const value = await spacesClient.get(command === "/resources" ? "capabilities" : command.slice(1));
+          if (command === "/usage") write(`${JSON.stringify(value, null, 2)}\n`);
+          else for (const row of value.members || value.capabilities || []) write(`${row.name} · ${row.role || row.kind} · ${row.status} · ${row.id}\n`);
+        } else if (command === "/shares") {
+          if (!sharingClient) throw new Error("Sign in with account authentication to manage sharing.");
+          if (arg && !["received", "sent"].includes(arg)) throw new Error("Use /shares received|sent");
+          printSharingResult(output, await sharingClient.list(arg || "received"));
+        } else if (command === "/accept") {
+          if (!sharingClient || !arg) throw new Error("Use /accept <invitation-link> after signing in.");
+          const reviewed = await sharingClient.preview(arg);
+          write(`${reviewed.share.name} · ${reviewed.share.role} · provided by ${reviewed.share.owner.name}\n`);
+          if (composer.rich) {
+            const choice = await composer.choose([{ id: "accept", label: "Accept invitation" }, { id: "cancel", label: "Cancel" }]);
+            if (choice !== "accept") continue;
+          }
+          printSharingResult(output, await sharingClient.accept(arg));
+          modelCatalog = null;
+        } else if (command === "/shared") {
+          if (!sharingClient || !parts[0]) throw new Error("Use /shared <share-id> [document-id]. /shares lists received shares.");
+          if (local.pending) throw new Error("Resolve the previous send with /recover before switching conversations.");
+          await resolveSharedChatTarget(sharingClient, parts[0], parts[1] || "");
+          switchTarget = { shareId: parts[0], documentId: parts[1] || "" }; break;
+        } else if (command === "/share") {
+          if (!sharingClient || !session.id) throw new Error("Send a message in your account before sharing this conversation.");
+          if (contentTarget) throw new Error("Only the owner can invite people to this shared conversation.");
+          if (arg && !["viewer", "editor"].includes(arg)) throw new Error("Use /share viewer|editor");
+          printSharingResult(output, await sharingClient.create({ kind: "document", sourceId: session.id,
+            name: session.title || "CLI conversation", role: arg || "viewer" }));
+        } else if (command === "/help") {
           for (const [name, description] of CHAT_COMMANDS) write(`  ${name.padEnd(12)} ${description}\n`);
           write("\nEnter sends · Alt+Enter / Ctrl+J inserts a newline · \\ + Enter continues\nTab opens commands, ↑↓ selects, Tab fills · Ctrl+R searches input history\nCtrl+G opens VISUAL/EDITOR · /file <path> attaches text; Tab completes paths\nCtrl+V / Alt+V or /paste imports a clipboard image · drag image files to attach\n/image <path> adds images · /images open|remove <number> manages them\nPNG/JPEG/GIF/WebP/AVIF · 16 MiB each · 8 images / 32 MiB total\nCtrl+A/E line start/end · Ctrl+W delete word\nEsc stops a Run · Ctrl+C clears a draft, stops a Run, or exits when empty\nCtrl+D exits when empty · Bracketed paste keeps multiple lines together\n\n");
         } else if (command === "/session") {
-          write(session.id ? `${session.id}\nzioon chat --session ${session.id}\n\n` : "New conversation · sends will create a Session.\n");
+          write(session.id ? `${session.id}\nzioon chat ${contentTarget ? `--shared ${contentTarget.id}${contentTarget.kind === "folder" ? ` --document ${contentTarget.documentId}` : ""}` : `--session ${session.id}`}\n\n` : "New conversation · sends will create a Session.\n");
         } else if (command === "/status") {
-          write(`Endpoint: ${baseUrl}\nConnection: ${connection}\nSession: ${session.id || "new"}\nModel: ${session.model?.profileId || sessionOptions.model?.profileId || "default"} (${modelSource})\nLast Run: ${lastRunId || "none"}\nPending send: ${local.pending?.status || "none"}\n\n`);
+          write(`Endpoint: ${baseUrl}\nContent: ${contentTarget ? `shared · ${contentTarget.name} · ${contentTarget.role}` : "private"}\nConnection: ${connection}\nSession: ${session.id || "new"}\nModel: ${session.model?.profileId || sessionOptions.model?.profileId || "default"} (${modelSource})\nLast Run: ${lastRunId || "none"}\nPending send: ${local.pending?.status || "none"}\n\n`);
         } else if (command === "/model") {
           if (arg) {
             const [first, second] = parts;
             await useModel(first === "default" ? second : first, first === "default");
           } else {
             const catalog = await getModels();
-            const items = catalog.profiles.map((model) => ({ id: model.id, label: `${model.label || model.id}${model.id === (session.model?.profileId || catalog.activeProfileId) ? " · current" : ""} · ${unavailable(model) ? "unavailable" : "configured"}${imageCapability(model) ? " · images" : ""}${model.providerId ? ` · ${model.providerId}` : ""}` }));
+            const items = catalog.profiles.map((model) => {
+              const provider = model.providerName || model.metadata?.providerName || model.sharedModel?.provider?.name;
+              return { id: model.id, label: `${model.label || model.id}${model.id === (session.model?.profileId || catalog.activeProfileId) ? " · current" : ""} · ${unavailable(model) ? "unavailable" : "configured"}${imageCapability(model) ? " · images" : ""}${provider ? ` · ${provider} 分享` : model.providerId ? ` · ${model.providerId}` : ""}` };
+            });
             write("Model configuration comes from Runtime; availability is configuration status, not a live provider probe.\n");
             if (composer.rich) {
               const id = await composer.choose(items);
@@ -546,6 +617,7 @@ export async function runChatShell({
             else await send(local.pending.content, true);
           } else await reconcile();
         } else if (command === "/fork") {
+          if (contentTarget) throw new Error("Use /new to start a private conversation; shared content stays in its original document.");
           if (!session.id) throw new Error("Start a conversation before branching.");
           if (local.pending) throw new Error("Resolve the pending send with /recover first.");
           if (!arg) {
@@ -571,6 +643,7 @@ export async function runChatShell({
             write(`Branch prepared through message ${count}. The next message starts its own Run.\n`);
           }
         } else if (command === "/new") {
+          if (contentTarget) { switchTarget = {}; break; }
           await switchSession({ title: arg || sessionOptions.title, model: defaults.modelProfileId ? { profileId: defaults.modelProfileId } : sessionOptions.model });
         } else if (command === "/open" || command === "/sessions") {
           let id = arg;
@@ -587,6 +660,7 @@ export async function runChatShell({
             }
           }
           if (!id) throw new Error("Usage: /open <session-id>");
+          if (contentTarget) { switchTarget = { sessionId: id }; break; }
           await switchSession(await client.getSession(id));
           await showHistory(6);
         } else if (command === "/history") {
@@ -631,5 +705,5 @@ export async function runChatShell({
     activity.stop(); signal?.removeEventListener("abort", detach);
   }
   write(session.id ? `\nSaved in Session ${session.id}.\n` : "\nDraft saved locally. No conversation created.\n");
-  return session;
+  return switchTarget ? { switchTarget } : switchSpaceId ? { switchSpaceId } : session;
 }
