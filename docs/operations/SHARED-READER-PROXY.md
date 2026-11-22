@@ -17,3 +17,5 @@ Preflight requires one unambiguous canonical Workbench site, preserves the exist
 Backups and an fsync-backed operation journal are retained under `/var/backups/zioon-share-proxy/`. Concurrent edits, an ambiguous site, an unexpected existing matcher or an unknown cloud invocation outcome require reconciliation rather than another blind command submission. Repeated application of the expected configuration performs validation without another reload.
 
 Release Memory first, then Runtime, then the proxy route, then Workbench. Workbench and Runtime must continue to use the same successful main CI artifacts. This route operation does not restart either application service, change account data or modify another site's routing.
+
+If a maintenance-only fix lands after the product artifacts were built, select the successful main CI for that exact maintenance commit when dispatching this workflow. Retain the already verified product CI for both Runtime and Workbench; the proxy workflow validates its own source commit and does not consume or replace either product artifact.

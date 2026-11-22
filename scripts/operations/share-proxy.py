@@ -45,10 +45,18 @@ def candidate(text):
     return text[:position] + "\n" + BLOCK.rstrip("\n") + text[position:]
 
 
+def route_matches(value):
+    matches = value.get("match")
+    if not isinstance(matches, list):
+        return []
+    return [match for match in matches
+            if isinstance(match, dict) and isinstance(match.get("host"), list)]
+
+
 def host_routes(value):
     result = []
     if isinstance(value, dict):
-        if any(HOST in match.get("host", []) for match in value.get("match", [])):
+        if any(HOST in match["host"] for match in route_matches(value)):
             result.append(value)
         for item in value.values():
             result.extend(host_routes(item))
@@ -61,8 +69,8 @@ def host_routes(value):
 def planned_json(config):
     planned = copy.deepcopy(config)
     routes = [route for route in host_routes(planned)
-              if any(HOST in match.get("host", []) and not match.get("path")
-                     for match in route.get("match", []))
+              if any(HOST in match["host"] and not match.get("path")
+                     for match in route_matches(route))
               and any(handler.get("handler") == "subroute" for handler in route.get("handle", []))]
     if len(routes) != 1:
         raise RuntimeError("Expected exactly one adapted canonical Workbench route")
@@ -226,6 +234,13 @@ def self_test():
     planned = planned_json(original)
     assert len(host_routes(original)[0]["handle"][0]["routes"]) == 1
     assert len(host_routes(planned)[0]["handle"][0]["routes"]) == 2
+    mixed = copy.deepcopy(original)
+    mixed["unrelated"] = {"match": "a string used outside a route",
+                          "children": [{"match": None}, {"match": ["string", None]},
+                                       {"match": [{"host": None}]}]}
+    mixed_planned = planned_json(mixed)
+    assert mixed_planned["unrelated"] == mixed["unrelated"]
+    assert len(host_routes(mixed_planned)[0]["handle"][0]["routes"]) == 2
     with tempfile.TemporaryDirectory() as directory:
         path = pathlib.Path(directory) / "site.caddy"
         backup = pathlib.Path(directory) / "backup.caddy"
@@ -251,7 +266,8 @@ def self_test():
         assert path.read_text() == source
         assert events == ["prepared", "rolled_back"] and len(reloads) == 2
     print(json.dumps({"passed": True, "checks": ["route insertion", "idempotency", "existing route preservation",
-          "ambiguous source rejection", "adapted route preservation", "atomic application", "failed routing rollback"]}))
+          "ambiguous source rejection", "adapted route preservation", "non-route match field shapes",
+          "atomic application", "failed routing rollback"]}))
 
 
 if __name__ == "__main__" and "--self-test" in sys.argv:
