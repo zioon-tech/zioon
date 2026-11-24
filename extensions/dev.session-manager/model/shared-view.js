@@ -13,6 +13,7 @@ export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange
   let filter = workbenchStorage.getItem("zion.sessions.sharingFilter") || "all";
   if (!["all", "sent", "received"].includes(filter)) filter = "all";
   let loading = false, error = "";
+  const moving = new Map();
   const project = node => {
     const sharing = { received: true, providerName: node.providerName, shareId: node.shareId, role: node.role,
       folderShareId: node.folderShareId, editable: node.role === "editor" && !!node.folderShareId };
@@ -37,6 +38,12 @@ export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange
     get filter() { return filter; },
     get loading() { return loading; },
     get error() { return error; },
+    get moving() { return moving; },
+    setMoving(id, parent, active) {
+      if (active) { moving.set(id, parent); error = ""; }
+      else moving.delete(id);
+      revision++; onChange?.();
+    },
     entry(id) { return index.get(id); },
     openAncestors(id, setOpen) {
       const walk = (node, parents) => {

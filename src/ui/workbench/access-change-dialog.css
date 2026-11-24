@@ -1,0 +1,24 @@
+.zion-access-change-dialog {
+  box-sizing: border-box; width: min(440px, calc(100vw - 32px)); margin: auto;
+  padding: 28px; color: var(--fg); background: var(--panel);
+  border: 1px solid var(--border); border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--elevation-3, 0 20px 60px #0003); font: inherit;
+}
+.zion-access-change-dialog::backdrop { background: #0006; backdrop-filter: blur(3px); }
+.zion-access-change-icon {
+  display: flex; align-items: center; justify-content: center; width: 36px; height: 36px;
+  margin-bottom: 16px; border-radius: 10px; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.zion-access-change-dialog h2 { margin: 0 0 10px; font-size: 18px; font-weight: 600; line-height: 1.4; }
+.zion-access-change-dialog p { margin: 0; font-size: 13px; line-height: 1.7; color: var(--dim); }
+.zion-access-change-dialog .zion-access-change-retained { margin-top: 16px; color: var(--fg); }
+.zion-access-change-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
+.zion-access-change-actions button {
+  min-height: 36px; padding: 7px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--fg);
+}
+.zion-access-change-actions button:hover { background: var(--hover-bg); }
+.zion-access-change-actions button.is-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); }
+.zion-access-change-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.zion-access-change-actions button:disabled { opacity: .45; cursor: default; }

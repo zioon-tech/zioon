@@ -4,6 +4,10 @@ import { PostgresSharingStore } from "../src/sharing/postgres-sharing-store.mjs"
 import { AccountModelSharing } from "../src/sharing/model-sharing.mjs";
 import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-store.mjs";
 import { CancellationController } from "../../../packages/runtime/dist/index.js";
+import { createSessionManagerSharingService } from "../src/sharing/session-manager-sharing-service.mjs";
+import { createAuthorizedWorkbenchStore } from "../src/spaces/authorized-workbench-store.mjs";
+import { PostgresSharedSpaceStore } from "../src/spaces/postgres-shared-space-store.mjs";
+import { activateRuntimePlugin } from "../../../extensions/dev.session-manager/runtime.js";
 
 const cleanup = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -49,6 +53,46 @@ async function fixture() {
 }
 
 describe("independent account sharing", () => {
+  it("lists and gets received folder content through the actual session tools without exposing private owner metadata", async () => {
+    const h = await fixture(), spaces = new PostgresSharedSpaceStore({ accounts: h.db.accounts });
+    spaces.sharing = h.sharing;
+    await spaces.registerDocument(h.alice.id, h.personal.id, "same");
+    await h.store.updateSession("same", { text: "user 共享内容", meta: { title: "共享会话", modelProfileId: "PRIVATE_MODEL", privateIdentity: "PRIVATE_ID" } });
+    await h.store.updateSession("private", { text: "PRIVATE_CONTENT", meta: { title: "PRIVATE_TITLE" } });
+    await h.store.writeTree({ id: "root", type: "folder", children: [
+      { id: "folder", type: "folder", title: "分享目录", children: [{ id: "same", type: "session" }] },
+      { id: "private", type: "session" }
+    ] });
+    const share = await h.sharing.create(h.alice.id, { kind: "folder", sourceId: "folder", recipient: h.bob.id, role: "viewer" });
+    const own = new PostgresWorkbenchStateStore(h.db.pool, { spaceId: h.receiver.id });
+    await own.updateSession("same", { text: "user 我的内容", meta: { title: "自己的同名会话" } });
+    const principal = { kind: "account", user: h.bob, space: h.receiver };
+    const service = createSessionManagerSharingService({
+      store: own, sharing: h.sharing, principal,
+      readSharedSession: (scope, id) => createAuthorizedWorkbenchStore({ store: h.store, spaces, principal: scope }).readSession(id)
+    });
+    const tools = new Map();
+    const plugin = activateRuntimePlugin({ config: { sessionService: service },
+      documents: { registerProjector: () => ({ dispose() {} }) },
+      tools: { registerTool: tool => { tools.set(tool.name, tool); return { dispose() {} }; } } });
+    try {
+      const list = JSON.parse((await tools.get("sessionList").invoke({})).content);
+      const received = list.find(item => item.sharing?.received);
+      expect(received).toMatchObject({ id: `shared-document:${encodeURIComponent(h.personal.id)}:same`,
+        title: "共享会话", sharing: { role: "viewer", originSpaceId: h.personal.id } });
+      expect(list.find(item => item.id === "same").title).toBe("自己的同名会话");
+      const tree = JSON.parse((await tools.get("sessionList").invoke({ view_type: "tree" })).content);
+      expect(tree.children.find(node => node.sharing?.received)).toMatchObject({ title: "分享目录", children: [{ id: received.id }] });
+      const payload = JSON.parse((await tools.get("sessionGet").invoke({ id: received.id })).content);
+      expect(payload.doc).toContain("共享内容"); expect(payload.meta.title).toBe("共享会话");
+      expect(JSON.stringify([list, tree, payload])).not.toMatch(/PRIVATE_MODEL|PRIVATE_ID|PRIVATE_CONTENT|PRIVATE_TITLE/);
+      expect(JSON.parse((await tools.get("sessionGet").invoke({ id: "same" })).content).doc).toContain("我的内容");
+      await expect(service.readSession(`shared-document:${encodeURIComponent(h.personal.id)}:private`)).rejects.toMatchObject({ statusCode: 404 });
+      await h.sharing.revoke(h.alice.id, share.share.id);
+      expect(JSON.parse((await tools.get("sessionList").invoke({})).content)).toHaveLength(1);
+      await expect(service.readSession(received.id)).rejects.toMatchObject({ statusCode: 404 });
+    } finally { plugin.dispose(); }
+  });
   it("follows original folder and document renames across shares, invitations, inherited grants and stable links", async () => {
     const h = await fixture();
     await h.store.updateSession("rename-doc", { text: "user 内容", meta: { title: "原会话" } });

@@ -1,4 +1,5 @@
 import { zionIconHtml } from "./icons";
+import "./context-menu.css";
 import type { SplitDirection } from "../panel/types";
 
 export function createEditorHeaderAction(title: string, icon: string, extraClass = "", size = 16) {

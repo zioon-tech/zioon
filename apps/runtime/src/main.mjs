@@ -29,6 +29,7 @@ import { createSharedCollaborationPersistence } from "./spaces/collaboration-per
 import { createDocumentTransfer } from "./spaces/document-transfer.mjs";
 import { createSharedFolderTransfer } from "./sharing/shared-folder-transfer.mjs";
 import { createAuthorizedWorkbenchStore } from "./spaces/authorized-workbench-store.mjs";
+import { createSessionManagerSharingService } from "./sharing/session-manager-sharing-service.mjs";
 import { createSpaceHttpHandler } from "./spaces/space-http-handler.mjs";
 import { SpaceCapabilityBroker, SharedSpaceRuntime, sharedModelBinding } from "./spaces/space-runtime.mjs";
 import { createProviderCapabilities } from "./spaces/provider-capabilities.mjs";
@@ -1434,7 +1435,17 @@ function createSessionManagerPluginService({ workbenchState }) {
         principal = { kind: "account", user: { id: principal.userId },
           space: await accountStore.space(principal.spaceId), contentScope: principal.contentScope };
       }
-      return createAuthorizedWorkbenchStore({ store: workbenchState, spaces: sharedSpaces, principal });
+      const store = createAuthorizedWorkbenchStore({ store: workbenchState, spaces: sharedSpaces, principal });
+      return createSessionManagerSharingService({ store, sharing, principal,
+        readSharedSession: async (contentPrincipal, id) => {
+          const lease = await spaceBroker.acquireRuntime(contentPrincipal.contentScope.originSpaceId);
+          try {
+            return await createAuthorizedWorkbenchStore({
+              store: lease.app.documentStore, spaces: sharedSpaces, principal: contentPrincipal
+            }).readSession(id);
+          } finally { lease.release(); }
+        }
+      });
     },
     async readSnapshot() {
       return await workbenchState.readSnapshot() || {

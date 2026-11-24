@@ -8,6 +8,7 @@ import {
 } from "../../packages/account-ui/src/client";
 import { installWorkbenchSpaceTransport, pinWorkbenchSpace, lockWorkbenchSpace, requestedWorkbenchSpace } from "./workbench-space";
 import { captureSharingInvitation } from "../ui/workbench/SharingWorkbench";
+import { showAccessChangeDialog } from "../ui/workbench/access-change-dialog";
 
 const WORKBENCH_DEVICE_ID_KEY = "zion.access.deviceId";
 
@@ -384,30 +385,11 @@ export async function ensureWorkbenchRuntimeAccess(
         localStorage.setItem(`zion.access.drafts:${identity.user.id}:${identity.space.id}`, JSON.stringify(drafts));
       } catch {}
       window.zion?.state?.set?.("workbench.accessChanged", true);
-      const gate = document.createElement("dialog");
-      const message = document.createElement("p");
-      message.textContent = "账户或访问权限已变化。当前内容已保留，请重新进入工作台。";
-      const button = document.createElement("button");
-      button.textContent = "重新进入";
-      button.onclick = () => {
+      showAccessChangeDialog(drafts, () => {
         const url = new URL(location.href);
         for (const key of ["space", "session", "zionSession"]) url.searchParams.delete(key);
         location.assign(url);
-      };
-      const download = document.createElement("button");
-      download.textContent = "下载保留的内容";
-      download.onclick = () => {
-        const url = URL.createObjectURL(new Blob([JSON.stringify(drafts, null, 2)], { type: "application/json" }));
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "zion-session-drafts.json";
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-      };
-      gate.append(message, download, button);
-      gate.addEventListener("cancel", event => event.preventDefault());
-      document.body.appendChild(gate);
-      gate.showModal();
+      });
     };
     const checkIdentity = () => {
       if (accessChanged) return;

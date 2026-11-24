@@ -151,7 +151,8 @@ function normalizeSessionIndexItem(item = {}) {
     size: Number(item.size || 0),
     hash: String(item.hash || ""),
     ...(item.documentPreview ? { documentPreview: String(item.documentPreview) } : {}),
-    ...(Array.isArray(item.tags) ? { tags: item.tags.map(String).filter(Boolean) } : {})
+    ...(Array.isArray(item.tags) ? { tags: item.tags.map(String).filter(Boolean) } : {}),
+    ...(item.sharing ? { sharing: item.sharing } : {})
   };
 }
 
@@ -240,6 +241,7 @@ export function sessionPayloadFromRuntimeRecord(record, {
   if (!record || record.deleted) return null;
   return {
     id: record.id,
+    ...(record.sharing ? { sharing: record.sharing } : {}),
     ...(includeMeta ? { meta: record.meta || {} } : {}),
     ...(includeDoc ? { doc: String(record.text || "") } : {}),
     session_revision: Number(record.session_revision || 0),

@@ -8,6 +8,26 @@ import {
 const originalFetch = globalThis.fetch;
 
 describe("model catalog Runtime credentials", () => {
+  it("uses Runtime profiles as the catalog, hides phantom presets and includes configured custom Claude models", async () => {
+    const values = new Map();
+    const profiles = [
+      { id: "deepseek-live", providerId: "deepseek", model: "deepseek-v4-flash", credentialConfigured: true },
+      { id: "custom-claude", providerId: "anthropic", model: "custom-claude", label: "我的 Claude", credentialConfigured: true,
+        capabilities: { supportsThinking: true } }
+    ];
+    globalThis.fetch = vi.fn(async () => Response.json({ profiles }));
+    window.zion = { models: { listProviders: () => ["deepseek", "anthropic", "gemini"],
+      getProvider: id => ({ list: async () => [{ id: id === "deepseek" ? "deepseek-v4-flash" : id === "anthropic" ? "claude-opus-4-8" : "gemini-3-pro" }],
+        resolve: async () => ({ _requiresConfig: true }) }) }, state: {
+      get: key => key === "runtime.mode" ? "runtime" : key === "runtime.connection"
+        ? { backend: "runtime", baseUrl: "http://runtime.test" } : values.get(key),
+      set: (key, value) => values.set(key, value)
+    } };
+    const models = await rebuildModelCatalog();
+    expect(models.map(model => model.runtimeProfileId).sort()).toEqual(profiles.map(profile => profile.id).sort());
+    expect(models.some(model => ["claude-opus-4-8", "gemini-3-pro"].includes(model.id))).toBe(false);
+    expect(models.find(model => model.id === "custom-claude")).toMatchObject({ label: "我的 Claude", requiresConfig: false, supportsThinking: true });
+  });
   it("combines own and received models without requiring a browser provider for the received model", async () => {
     const values = new Map();
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ profiles: [{
