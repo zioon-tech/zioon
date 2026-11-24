@@ -382,6 +382,28 @@ describe("shared Spaces with real PostgreSQL transactions", () => {
     expect(usage.budgets.find((r) => r.scopeKey === "space")).toMatchObject({ reserved: 0, committed: 1 });
     expect((await h.db.pool.query("SELECT 1 FROM space_usage_ledger WHERE reservation_id=$1 AND event_type='settled'", [r.id])).rowCount).toBe(1);
   });
+  it("releases a projected terminal model writer while retaining uncertain billing and keeps unknown tools blocked", async () => {
+    const h = await setup(), d = await h.document(), content = await h.spaces.content(h.team.id, d);
+    for (const runId of ["cancelled-model", "next", "after-tool"]) await h.execution.enqueue({
+      userId: h.bob.id, spaceId: h.team.id, documentId: d, runId, inputRevision: content.revision
+    });
+    await h.execution.claim(h.team.id, "cancelled-model");
+    const model = await h.execution.reserve({ userId: h.bob.id, spaceId: h.team.id, documentId: d,
+      runId: "cancelled-model", stepId: "model:1", input: "model input" });
+    await h.execution.dispatch(h.team.id, model.id);
+    await h.execution.pending(h.team.id, model.id);
+    expect((await h.execution.finish(h.team.id, "cancelled-model", "cancelled", { allowPendingModels: true })).status).toBe("cancelled");
+    expect((await h.db.pool.query("SELECT state FROM space_usage_reservations WHERE id=$1", [model.id])).rows[0].state).toBe("pending");
+    expect((await h.execution.usage(h.alice.id, h.team.id)).budgets.find(row => row.scopeKey === "space").reserved).toBe(1);
+    expect((await h.execution.claim(h.team.id, "next")).status).toBe("running");
+    const tool = await h.execution.reserve({ userId: h.bob.id, spaceId: h.team.id, documentId: d,
+      runId: "next", stepId: "tool:1", input: "tool input" });
+    await h.execution.dispatch(h.team.id, tool.id);
+    await h.execution.pending(h.team.id, tool.id);
+    expect((await h.execution.finish(h.team.id, "next", "cancelled", { allowPendingModels: true })).status).toBe("outcome_unknown");
+    await expect(h.execution.waitForTurn(h.team.id, "after-tool")).rejects.toMatchObject({ code: "previous_run_outcome_unknown" });
+    expect((await h.db.pool.query("SELECT state FROM space_usage_reservations WHERE id=$1", [tool.id])).rows[0].state).toBe("pending");
+  });
 
   it("rechecks document and capability authority immediately before dispatch", async () => {
     const h = await setup(), d = await h.document(), b = await h.borrow(), c = await h.spaces.content(h.team.id, d);
@@ -507,7 +529,8 @@ describe("shared Spaces with real PostgreSQL transactions", () => {
     const recovered = await reopened.recover(h.team.id);
     expect(recovered.find((q) => q.runId === "unsubmitted").status).toBe("failed");
     expect((await reopened.usage(h.alice.id, h.team.id)).budgets.find((b) => b.scopeKey === "space").reserved).toBe(0);
-    // A fresh dispatch with a lost owner remains unresolved after another restart.
+    // Model billing stays unresolved after restart; the lost model cannot keep
+    // writing the document and therefore does not retain its writer lock.
     await h.execution.enqueue({ userId: h.bob.id, spaceId: h.team.id, documentId: d,
       runId: "unknown", inputRevision: content.revision, resume: true });
     await h.execution.claim(h.team.id, "unknown");
@@ -515,7 +538,7 @@ describe("shared Spaces with real PostgreSQL transactions", () => {
       runId: "unknown", stepId: "model:2", input: "sent" });
     await h.execution.dispatch(h.team.id, r.id);
     const afterRestart = await new SpaceExecutionStore({ spaces: h.spaces }).recover(h.team.id);
-    expect(afterRestart.find((q) => q.runId === "unknown").status).toBe("outcome_unknown");
+    expect(afterRestart.find((q) => q.runId === "unknown").status).toBe("failed");
     expect((await h.execution.usage(h.alice.id, h.team.id)).reservations.find((item) => item.id === r.id).state).toBe("pending");
   });
 

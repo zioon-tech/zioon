@@ -287,7 +287,11 @@ export class SharedSpaceRuntime {
           }
           const run = await runtime.runs.get(context.runId);
           await runtime.execution.finish(runtime.runtimeSpaceId, context.runId,
-            run?.status === "aborted" ? "cancelled" : run?.status === "failed" ? "failed" : "completed");
+            run?.status === "aborted" ? "cancelled" : run?.status === "failed" ? "failed" : "completed",
+            // A closed model stream may have unknown billing, but cannot make
+            // further document/tool writes after terminal projection. Preserve
+            // its reservation without holding the document's writer forever.
+            { allowPendingModels: true });
         } finally { runtime.active.delete(context.runId); }
       }
     };
