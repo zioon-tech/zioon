@@ -2,6 +2,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAccountOidcFixture } from "./helpers/account-oidc-fixture.mjs";
@@ -45,6 +46,104 @@ async function setup(options = {}) {
 }
 
 describe("account sharing through real OIDC and independent Runtime instances", () => {
+  it.each([false, true])("uses the initiating account's tools in own and received documents (legacy=%s)", async legacyWorkspace => {
+    const requests = [];
+    const provider = createServer(async (req, res) => {
+      let text = ""; for await (const part of req) text += part;
+      const body = JSON.parse(text); requests.push(body);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const toolResult = body.messages.findLast(message => message.role === "tool");
+      const delta = toolResult ? { content: toolResult.content } : {
+        tool_calls: [{ index: 0, id: "account-session-get", type: "function",
+          function: { name: "sessionGet", arguments: JSON.stringify({ id: "private-probe" }) } },
+        { index: 1, id: "account-extensions-list", type: "function",
+          function: { name: "extensionsCall", arguments: JSON.stringify({ action: "list" }) } }]
+      };
+      res.end("data: " + JSON.stringify({ choices: [{ delta,
+        finish_reason: toolResult ? "stop" : "tool_calls" }] }) + "\n\ndata: [DONE]\n\n");
+    });
+    await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise(resolve => provider.close(resolve)));
+    const h = await setup({ legacyWorkspace, engine: "openai", prepare: async ({ dataDirectory, accounts, owner }) => {
+      await mkdir(dataDirectory, { recursive: true });
+      const profiles = JSON.stringify({ profiles: [{
+        id: "echo", label: "Tool fixture", providerId: "fixture", providerType: "openai",
+        model: "tool-fixture", endpoint: `http://127.0.0.1:${provider.address().port}/chat`,
+        credentialRequired: false
+      }] });
+      await writeFile(join(dataDirectory, "model-profiles.json"), profiles);
+      if (!legacyWorkspace) {
+        const personal = await accounts.personalSpace(owner.id);
+        const folder = join(dataDirectory, "accounts", createHash("sha256").update(personal.id).digest("hex"));
+        await mkdir(folder, { recursive: true });
+        await writeFile(join(folder, "model-profiles.json"), profiles);
+      }
+    }, environment: { ZION_RUNTIME_MODEL_PROFILE: "echo",
+      ZION_RUNTIME_DEFAULT_INTERACTION_MODEL_PROFILE: "echo" } });
+    for (const account of [h.owner, h.receiver]) {
+      const current = await h.api(account, "/v1/interaction-profiles/interactive.default");
+      expect((await h.api(account, "/v1/interaction-profiles/interactive.default", {
+        policy: { ...current.value.profile.policy, preset: "trusted-automation",
+          allowedTools: [...new Set([...current.value.profile.policy.allowedTools, "extensionsCall"])] }
+      }, "PATCH")).status).toBe(200);
+    }
+    for (const [account, content] of [[h.owner, "OWNER_PRIVATE_RESOURCE"], [h.receiver, "RECEIVER_PRIVATE_RESOURCE"]]) {
+      expect((await h.api(account, "/v1/workbench-state/sessions/private-probe", { text: content }, "PUT")).status).toBe(200);
+    }
+    const documentId = "tools-shared-document";
+    expect((await h.api(h.owner, `/v1/workbench-state/sessions/${documentId}`, { text: "shared content" }, "PUT")).status).toBe(200);
+    const grant = await h.api(h.owner, "/v1/sharing", {
+      kind: "document", sourceId: documentId, recipient: h.receiver.user.id, role: "editor"
+    });
+    expect(grant.status).toBe(201);
+    const scoped = { ...h.receiver, contentScope: { originSpaceId: h.owner.spaceId, documentId } };
+    const modelShare = await h.api(h.owner, "/v1/sharing", {
+      kind: "model", sourceId: "echo", recipient: h.receiver.user.id
+    });
+    expect(modelShare.status, JSON.stringify(modelShare.value)).toBe(201);
+    const policy = { preset: "trusted-automation", allowedTools: ["sessionGet", "sessionList", "skillsList", "extensionsCall"] };
+    const results = [];
+    for (const [account, id, expected, forbidden] of [
+      [h.owner, "private-probe", "OWNER_PRIVATE_RESOURCE", "RECEIVER_PRIVATE_RESOURCE"],
+      [h.owner, documentId, "OWNER_PRIVATE_RESOURCE", "RECEIVER_PRIVATE_RESOURCE"],
+      [h.receiver, "private-probe", "RECEIVER_PRIVATE_RESOURCE", "OWNER_PRIVATE_RESOURCE"],
+      [scoped, documentId, "RECEIVER_PRIVATE_RESOURCE", "OWNER_PRIVATE_RESOURCE"]
+    ]) {
+      const before = requests.length;
+      const started = await h.api(account, "/v1/runs", { sessionId: id, prompt: "Read my account's private-probe",
+        policy, model: { profileId: account.user.id === h.receiver.user.id ? `share.${modelShare.value.share.id}` : "echo" } });
+      expect(started.status, JSON.stringify(started.value)).toBe(202);
+      const completed = await h.run(account, started.value.runId);
+      expect(completed.value.run.status, JSON.stringify(completed.value) + h.runtime.logs()).toBe("completed");
+      expect(completed.value.run.policy.allowedTools).toEqual(policy.allowedTools);
+      const calls = requests.slice(before);
+      expect(calls[0].tools.map(tool => tool.function.name)).toEqual(expect.arrayContaining(policy.allowedTools));
+      const tool = calls.flatMap(call => call.messages).find(message => message.role === "tool");
+      expect(tool?.content).toContain(expected);
+      expect(tool?.content).not.toContain(forbidden);
+      results.push(completed.value.run);
+    }
+    const foreign = results.at(-1);
+    const receipt = (await h.runtime.database.pool.query(`SELECT space_id,run_id FROM runtime_tool_invocation_receipts
+      WHERE space_id=$1 AND run_id=$2`, [h.owner.spaceId, foreign.id])).rows;
+    expect(receipt).toHaveLength(2);
+    expect((await h.runtime.database.pool.query(`SELECT count(*)::int AS count FROM runtime_tool_invocation_receipts
+      WHERE space_id=$1 AND run_id=$2`, [h.receiver.spaceId, foreign.id])).rows[0].count).toBe(0);
+    const profile = await h.api(h.receiver, "/v1/interaction-profiles/receiver-only", {
+      modelProfileId: `share.${modelShare.value.share.id}`, policy: { ...foreign.policy, allowedTools: ["sessionList"] }
+    }, "PUT");
+    expect(profile.status, JSON.stringify(profile.value)).toBe(200);
+    expect((await h.api(h.owner, "/v1/interaction-profiles/receiver-only")).status).toBe(404);
+    const narrowed = await h.api(scoped, "/v1/runs/preview", { sessionId: documentId, prompt: "preview selected tools",
+      interactionProfileId: "receiver-only",
+      model: { profileId: `share.${modelShare.value.share.id}` },
+      policy: { ...policy, allowedTools: ["sessionList"] } });
+    expect(narrowed.status, JSON.stringify(narrowed.value)).toBe(200);
+    expect(JSON.stringify(narrowed.value)).toContain("sessionList");
+    expect(JSON.stringify(narrowed.value)).not.toContain('"name":"sessionGet"');
+    await h.api(h.owner, `/v1/sharing/${grant.value.share.id}/revoke`, {});
+    expect((await h.api(scoped, "/v1/runs", { sessionId: documentId, prompt: "revoked", policy })).status).toBe(404);
+  }, 60000);
   it("does not block a received document after a missing-credential failure and preserves genuinely unknown dispatches", async () => {
     const calls = [];
     let pauseNext = false;
@@ -446,7 +545,7 @@ describe("account sharing through real OIDC and independent Runtime instances", 
     expect(completed.value.run.principal.userId).toBe(h.receiver.user.id);
     expect(completed.value.run.principal.spaceId).toBe(h.receiver.spaceId);
     expect(completed.value.run.principal.contentScope.documentId).toBe(id);
-    expect(completed.value.run.policy.allowedTools).not.toContain("read");
+    expect(completed.value.run.policy.allowedTools).toContain("read");
     expect(completed.value.run.policy.allowedTools).not.toContain("modelsManage");
     expect(completed.value.run.metadata.identity).toBeUndefined();
     const modelSource = (await h.api(h.owner, "/v1/sharing/sources")).value.sources.find(s => s.kind === "model");

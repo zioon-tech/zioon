@@ -21,7 +21,6 @@ export const sharedModelBinding = (model) => String(model?.profileId || "").star
   ? model.profileId.slice(6) : null;
 const MEMORY_TOOLS = [...AGENTFS_MCP_READ_NAMES, ...AGENTFS_MCP_WRITE_TOOLS.map(name => `${AGENTFS_MCP_PREFIX}${name}`)];
 const SAFE_TOOLS = new Set(["webSearch", "webFetch", "todoWrite", ...MEMORY_TOOLS]);
-export const SHARED_DOCUMENT_SAFE_TOOLS = SAFE_TOOLS;
 export const SPACE_CAPABILITY_TOOL = {
   name: "spaceCapabilityCall",
   description: "Use an explicitly shared Space capability. Only the listed binding and its permitted tool may be called. Device file paths use /shared as the root of the dedicated shared folder.",
@@ -387,6 +386,7 @@ export class SharedSpaceRuntime {
       getToolDefinitions: () => [...tools.getToolDefinitions(), SPACE_CAPABILITY_TOOL],
       async listTools(request) {
         if (!await runtime.shared(request.principal)) return tools.listTools(request);
+        if (request.principal?.contentScope) return tools.listTools(request);
         const allowed = new Set(request.policy?.allowedTools);
         const safe = tools.getToolDefinitions().filter((t) => SAFE_TOOLS.has(t.name) && allowed.has(t.name));
         if (allowed.has(SPACE_CAPABILITY_TOOL.name)) safe.push({
@@ -399,8 +399,15 @@ export class SharedSpaceRuntime {
         if (!await runtime.shared(invocation.principal)) return tools.invoke(invocation, signal);
         const state = runtime.active.get(invocation.runId);
         if (!state) throw accountError(409, "space_execution_binding_required");
+        await runtime.authorizeExecution?.(invocation);
+        await runtime.spaces.requireDocument(userId(invocation.principal), runtime.runtimeSpaceId, state.documentId, "edit");
         const name = invocation.toolCall.name, args = invocation.toolCall.arguments;
-        if (!SAFE_TOOLS.has(name) && name !== SPACE_CAPABILITY_TOOL.name) throw accountError(403, "tool_not_shared");
+        if (!invocation.principal?.contentScope && !SAFE_TOOLS.has(name) && name !== SPACE_CAPABILITY_TOOL.name) {
+          throw accountError(403, "tool_not_shared");
+        }
+        if (invocation.principal?.contentScope && name === SPACE_CAPABILITY_TOOL.name) {
+          throw accountError(403, "tool_not_shared");
+        }
         if (!invocation.policy.allowedTools.includes(name)) throw accountError(403, "tool_outside_grant");
         const bindingId = name === SPACE_CAPABILITY_TOOL.name ? args.bindingId : null;
         if (bindingId && !state.capabilities.some((c) => c.id === bindingId)) throw accountError(403, "capability_not_selected");
