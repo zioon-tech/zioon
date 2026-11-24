@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { accountError } from "../accounts/account-policy.mjs";
 import { isExtensionModel, SHARED_MODEL_EXECUTION } from "../marketplace/model-engine.mjs";
+import { createStreamAuthorization } from "../sharing/stream-authorization.mjs";
 
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const FILE_TOOLS = new Set(["read", "write", "edit", "glob", "grep", "tree"]);
@@ -142,24 +143,33 @@ export function createProviderCapabilities({
       if (source.version !== binding.sourceVersion) throw accountError(409, "capability_source_changed");
       const model = await resolveModel({ profileId: binding.originResourceId }, { userId: binding.providerId, spaceId: runtimeSpaceId });
       const { principal, policy } = await delegate(binding, ["write", "Bash"], []);
-      try {
+      const guard = createStreamAuthorization(async () => {
+        await accounts.validateGrant(principal);
         await request.authorize();
-        const providerRequest = { ...request, model, principal, policy, sessionId: undefined,
+      }, request.signal);
+      try {
+        await guard.check(true);
+        const providerRequest = { ...request, signal: guard.signal, model, principal, policy, sessionId: undefined,
           metadata: { sharedDestination: { spaceId: binding.spaceId, documentId: request.destinationId,
             requesterId: request.principal.userId, bindingId: binding.id } } };
         if (isExtensionModel(model)) {
           const prepared = await extensionModels.prepare(providerRequest, {
-            runId: request.runId, attemptId: request.attemptId, signal: request.signal, resumed: false
+            runId: request.runId, attemptId: request.attemptId, signal: guard.signal, resumed: false
           });
           providerRequest.metadata = { ...providerRequest.metadata, ...prepared.metadata };
           providerRequest[SHARED_MODEL_EXECUTION] = providerRequest;
         }
         for await (const event of (isExtensionModel(model) ? extensionModels : configuredEngine).streamTurn(providerRequest)) {
-          await accounts.validateGrant(principal);
-          await request.authorize();
+          guard.assert();
+          if (event.type === "model.request") await guard.check(true);
           yield event;
         }
-      } finally { await accounts.revokeGrant(binding.providerId, principal.grantId, runtimeSpaceId); }
+        await guard.check(true);
+      } catch (error) { throw guard.error || error; }
+      finally {
+        await guard.close();
+        await accounts.revokeGrant(binding.providerId, principal.grantId, runtimeSpaceId);
+      }
     },
     async invokeSharedCapability(binding, invocation, signal, authorize) {
       const args = invocation.toolCall.arguments;

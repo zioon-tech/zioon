@@ -5,6 +5,7 @@ import { createSharedSessionMover } from "../extensions/dev.session-manager/mode
 import { createSessionsListRendererFactory } from "../extensions/dev.session-manager/ui/list-renderer.js";
 import { createSessionsSidebarViewManager } from "../extensions/dev.session-manager/ui/sidebar-view.js";
 import { sharedWorkbenchDocument } from "../src/runtime/workbench-space";
+import { createNamedFolder } from "../extensions/dev.session-manager/commands/folder-create.js";
 
 let instance: any, subscription: any, view: any, manager: any, host: HTMLElement;
 let values: Map<string, any>, commands: any, ownMeta: any, move: any, response: any;
@@ -49,6 +50,44 @@ function openFolders() {
   for (const title of ["收到的目录", "收到的子目录"]) [...host.querySelectorAll<HTMLElement>(".is-folder")].find(row => row.querySelector(".zion-session-folder-name")?.textContent === title)!.click();
 }
 describe("received content in the native session list", () => {
+  it("keeps unchanged rows and an IME rename intact across background refresh and real list changes", async () => {
+    response.received.forEach((node: any) => {
+      const enable = (child: any) => { child.role = "editor"; child.folderShareId = "folder-grant"; child.children?.forEach(enable); };
+      enable(node);
+    });
+    await view.refresh(); filter("收到的"); openFolders();
+    const row = remoteRow(), revision = view.revision;
+    await view.refresh();
+    expect(view.revision).toBe(revision); expect(remoteRow()).toBe(row);
+    row.dispatchEvent(new KeyboardEvent("keydown", { key: "r", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement?.tagName).toBe("INPUT"));
+    const input = host.querySelector<HTMLInputElement>('[data-zion-inline-edit="1"]')!;
+    input.value = "写到一半的中文"; input.setSelectionRange(3, 5);
+    input.dispatchEvent(new CompositionEvent("compositionstart"));
+    response.received[0].title = "别人更改了文件夹";
+    await view.refresh(); instance.render();
+    expect(host.querySelector('[data-zion-inline-edit="1"]')).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([3, 5]);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+    expect(commands).not.toHaveBeenCalledWith("zion.sessions.rename", expect.anything());
+    input.dispatchEvent(new CompositionEvent("compositionend"));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(commands).toHaveBeenCalledWith("zion.sessions.rename", {
+      id: "shared-document:owner:same", title: "写到一半的中文"
+    }));
+    await vi.waitFor(() => expect(host.querySelector('[data-zion-inline-edit="1"]')).toBeNull());
+    expect(host.textContent).toContain("别人更改了文件夹");
+  });
+  it("always creates from the two visible root actions", async () => {
+    values.set("sessions.selectedFolderId", "mine");
+    const actions = host.querySelectorAll<HTMLButtonElement>(".zion-sessions-create-actions button");
+    expect(actions).toHaveLength(2);
+    actions.forEach(button => button.click());
+    expect(commands).toHaveBeenCalledWith("zion.sessions.new", { parentId: "root", targetView: "sidebar" });
+    expect(commands).toHaveBeenCalledWith("zion.sessions.newFolder", { parentId: "root", targetView: "sidebar" });
+    expect(host.querySelectorAll(".is-session .zion-session-icon")).toHaveLength(2);
+  });
   it("shows acknowledged CRUD immediately without waiting for a full index and coalesces reconciliation", async () => {
     const enable = (node: any) => { node.role = "editor"; node.folderShareId = "folder-grant"; node.children?.forEach(enable); };
     response.received.forEach(enable);
@@ -205,7 +244,8 @@ describe("received content in the native session list", () => {
     expect(remoteRow().textContent).toContain("原始共享会话");
     expect(sharedWorkbenchDocument(remoteRow().dataset.sessionId!)).toMatchObject({ documentId: "same", originSpaceId: "owner", role: "editor" });
     expect(ownMeta.mock.calls.every(([id]: string[]) => !id.startsWith("shared-"))).toBe(true);
-    expect(remoteRow().querySelector(".shared-resource-marker")?.getAttribute("title")).toContain("Alice");
+    expect(remoteRow().querySelector(".zion-session-icon")?.getAttribute("title")).toContain("Alice");
+    expect(remoteRow().querySelector(".shared-resource-marker")).toBeNull();
     filter("我分享的"); expect(host.textContent).toContain("已分享会话"); expect(host.textContent).not.toContain("原始共享会话");
     filter("全部"); expect(host.querySelectorAll(".is-session")).toHaveLength(3);
     expect(JSON.stringify(own)).toBe(before);
@@ -233,7 +273,7 @@ describe("received content in the native session list", () => {
     expect(host.querySelector('[data-sharing="received"]')).toBeNull();
     expect(host.textContent).toContain("自己的会话");
   });
-  it("exposes native editor folder controls and awaits folder creation before inline rename", async () => {
+  it("asks for a shared folder name before mutation and renders the acknowledged name", async () => {
     const enable = (node: any) => {
       node.role = "editor"; node.folderShareId = "folder-grant";
       node.children?.forEach(enable);
@@ -255,20 +295,26 @@ describe("received content in the native session list", () => {
     fetchMock.mockImplementation(async (url: any, options: any) => {
       if (String(url).endsWith("/folder-operations")) {
         const input = JSON.parse(options.body);
-        expect(input).toMatchObject({ action: "createFolder", id: "remote-folder", title: "New Folder" });
+        expect(input).toMatchObject({ action: "createFolder", id: "remote-folder", title: "已命名的目录" });
         expect(input.operationId).toBeTruthy();
-        response.received[0].children.push({ id: "created-folder", type: "folder", title: "New Folder", children: [],
+        response.received[0].children.push({ id: "created-folder", type: "folder", title: input.title, children: [],
           originSpaceId: "owner", role: "editor", folderShareId: "folder-grant", shareId: "folder-grant" });
-        return new Response(JSON.stringify({ ok: true, id: "created-folder", type: "folder", title: "New Folder" }));
+        return new Response(JSON.stringify({ ok: true, id: "created-folder", type: "folder", title: input.title }));
       }
       return new Response(JSON.stringify(response));
     });
-    commands.mockImplementation((name: string, input: any) =>
-      name === "zion.sessions.newFolder" ? view.mutate(input.parentId, { action: "createFolder", title: "New Folder" }) : true);
+    let confirm!: (title: string | null) => void;
+    commands.mockImplementation((name: string, input: any) => name === "zion.sessions.newFolder"
+      ? createNamedFolder(input, { readAccount: () => ({ user: { id: "me" } }),
+        prompt: () => new Promise(resolve => { confirm = resolve; }),
+        create: (parentId: string, title: string) => view.mutate(parentId, { action: "createFolder", title }) }) : true);
+    fetchMock.mockClear();
     [...menu.children].find(item => item.textContent === "New Folder")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    await vi.waitFor(() => expect(host.querySelector('input[data-zion-inline-edit="1"]')).toBeTruthy());
-    expect(host.querySelector('input[data-zion-inline-edit="1"]')?.closest(".zion-session-row")?.getAttribute("data-folder-id"))
-      .toBe("shared-folder:owner:created-folder");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(view.entry("shared-folder:owner:created-folder")).toBeUndefined();
+    confirm("已命名的目录");
+    await vi.waitFor(() => expect(host.textContent).toContain("已命名的目录"));
+    expect(host.querySelector('input[data-zion-inline-edit="1"]')).toBeNull();
     expect(host.textContent).not.toContain("[object Promise]");
     expect(JSON.stringify(own)).toBe(before);
   });

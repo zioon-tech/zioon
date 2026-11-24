@@ -348,7 +348,7 @@ export class AccountAccessControl extends RuntimeAccessControl {
         request.interactionProfileId || request.metadata?.interactionProfileId || grant.profileId
       ]);
       for (const id of profileIds) {
-        const profile = id && await this.resolveProfile(id, grant.principal);
+        const profile = id && await this.resolveProfile(id, grant.principal, client);
         if (!profile?.policy) throw accountError(403, "grant_profile_unavailable");
         const membership = await this.accounts.membership(
           grant.principal.userId,
@@ -692,9 +692,11 @@ export class AccountAccessControl extends RuntimeAccessControl {
         this.oidc.loginFailure(this, response, error);
         return true;
       }
-      json(response, Number(error?.statusCode) || 401, {
-        error: error?.statusCode ? error.message : "Account authentication failed",
-        code: error?.statusCode ? error.code : "authentication_failed"
+      // Database/network failures are availability errors. Reporting them as
+      // 401 makes an otherwise valid browser session lock the entire Workbench.
+      json(response, Number(error?.statusCode) || 503, {
+        error: error?.statusCode ? error.message : "Account service temporarily unavailable",
+        code: error?.statusCode ? error.code : "account_service_unavailable"
       });
     }
     return true;

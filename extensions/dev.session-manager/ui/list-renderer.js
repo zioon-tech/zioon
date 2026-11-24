@@ -1,5 +1,4 @@
 import { workbenchStorage as localStorage } from "../../../src/runtime/workbench-space.ts";
-import { sharedResourceMarker } from "../../../src/ui/workbench/shared-resource-marker";
 import { isReceivedNode } from "../model/shared-view.js";
 import {
   getSessionRunIndicatorStatus,
@@ -76,7 +75,7 @@ export function createSessionsListRendererFactory(deps) {
     const sid = String(sessionId || "");
     if (sid.startsWith("comment:")) return "comment-discussion";
     if (sid.startsWith("agent-task:")) return "hubot";
-    return "";
+    return "file-text";
   }
 
   const COMMENTS_THREADS_KEY = "zion.comments.threads.v1";
@@ -309,6 +308,8 @@ export function createSessionsListRendererFactory(deps) {
 
     const PENDING_INLINE_EDIT_KEY = "sessions.pendingInlineEdit";
     let pendingEdit = null; // { id, type: "session"|"folder", isNew?: boolean }
+    let activeInlineEdit = null;
+    let renderDeferred = false;
     let pendingConfirm = null; // { id, type: "session"|"folder" }
     let externalRootDropTarget = null;
     let draggedItems = [];
@@ -641,27 +642,43 @@ export function createSessionsListRendererFactory(deps) {
       const parent = titleEl.parentElement;
       if (!parent) return;
 
+      activeInlineEdit = input;
+      let composing = false, blurPending = false;
       let finished = false;
       const cleanup = () => {
+        activeInlineEdit = null;
         try { input.remove(); } catch {}
         try { titleEl.style.display = ""; } catch {}
+        if (renderDeferred) {
+          renderDeferred = false;
+          queueMicrotask(render);
+        }
       };
 
       const commit = async () => {
-        if (finished) return;
+        if (finished || composing) { blurPending = !finished; return; }
         finished = true;
         const v = String(input.value || "").trim();
-        cleanup();
         if (!v) {
+          cleanup();
           if (typeof onCancel === "function") onCancel({ reason: "empty" });
           return;
         }
-        try { if (typeof onCommit === "function") await onCommit(v); }
+        input.disabled = true;
+        row.querySelector("[data-inline-error]")?.remove();
+        try {
+          if (typeof onCommit === "function") await onCommit(v);
+          cleanup();
+          render();
+        }
         catch (error) {
+          finished = false; input.disabled = false;
           const alert = document.createElement("div");
+          alert.dataset.inlineError = "1";
           alert.setAttribute("role", "alert");
           alert.textContent = error?.message || "操作失败，请重试";
           row.appendChild(alert);
+          input.focus();
         }
       };
 
@@ -684,6 +701,7 @@ export function createSessionsListRendererFactory(deps) {
       };
       input.onkeydown = (e) => {
         try { e.stopPropagation(); } catch {}
+        if (composing || e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter") {
           e.preventDefault();
           commit();
@@ -695,6 +713,11 @@ export function createSessionsListRendererFactory(deps) {
       input.onkeyup = (e) => {
         try { e.stopPropagation(); } catch {}
       };
+      input.oncompositionstart = () => { composing = true; };
+      input.oncompositionend = () => {
+        composing = false;
+        if (blurPending) { blurPending = false; void commit(); }
+      };
       input.onblur = () => {
         if (commitOnBlur) commit();
         else cancel();
@@ -702,7 +725,7 @@ export function createSessionsListRendererFactory(deps) {
 
       setTimeout(() => {
         try {
-          row.scrollIntoView({ block: "nearest" });
+          row.scrollIntoView?.({ block: "nearest" });
           input.focus();
           input.select();
         } catch {}
@@ -711,6 +734,7 @@ export function createSessionsListRendererFactory(deps) {
 
     const render = () => {
       if (disposed) return;
+      if (activeInlineEdit?.isConnected) { renderDeferred = true; return; }
       hasMoreRows = false;
       // prevent flicker
       document.body.classList.add("zion-sessions-no-transitions");
@@ -952,14 +976,9 @@ export function createSessionsListRendererFactory(deps) {
 
       const createFolderInline = async (parentId) => {
         const pid = String(parentId || "root");
-        let id = "";
         try {
           try { setFolderOpen(pid, true); } catch {}
-          id = String(await window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: pid, targetView: viewId, skipRefresh: true }) || "");
-          if (id) {
-            pendingEdit = { id, type: "folder", isNew: true };
-            try { window.zion?.state?.set?.(PENDING_INLINE_EDIT_KEY, null); } catch {}
-          }
+          await window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: pid, targetView: viewId });
         } catch {}
         render();
       };
@@ -1373,7 +1392,9 @@ export function createSessionsListRendererFactory(deps) {
 
         const folderIcon = document.createElement("span");
         folderIcon.className = "zion-session-icon zion-session-folder-icon";
-        folderIcon.innerHTML = iconHtml(isFolderOpen(folder.id) ? "folder-opened" : "folder", 13);
+        folderIcon.innerHTML = iconHtml(folder.sharing?.received ? "folder-shared"
+          : isFolderOpen(folder.id) ? "folder-opened" : "folder", 13);
+        if (folder.sharing?.received) folderIcon.title = `来自 ${folder.sharing.providerName || "协作者"} 的共享文件夹`;
 
         const ttl = document.createElement("span");
         ttl.className = "zion-session-folder-name";
@@ -1391,7 +1412,6 @@ export function createSessionsListRendererFactory(deps) {
         labelWrap.appendChild(chevron);
         labelWrap.appendChild(folderIcon);
         labelWrap.appendChild(ttl);
-        if (folder.sharing?.received) labelWrap.appendChild(sharedResourceMarker(folder.sharing.providerName));
 
         const btns = document.createElement("div");
         btns.style.display = "flex";
@@ -1789,11 +1809,12 @@ export function createSessionsListRendererFactory(deps) {
               const meta = loadMeta(ch.id);
               const displayTitle = getSessionDisplayTitle(ch);
 
-              const sessionIconNameValue = sessionIconName(ch.id);
+              const sessionIconNameValue = ch.sharing?.received ? "file-shared" : sessionIconName(ch.id);
               if (sessionIconNameValue) {
                 const sessionIcon = document.createElement("span");
                 sessionIcon.className = "zion-session-icon";
                 sessionIcon.innerHTML = iconHtml(sessionIconNameValue, 13);
+                if (ch.sharing?.received) sessionIcon.title = `来自 ${ch.sharing.providerName || "协作者"} 的共享会话`;
                 titleLine.appendChild(sessionIcon);
               }
 
@@ -1806,7 +1827,6 @@ export function createSessionsListRendererFactory(deps) {
               ttl2.style.overflow = "hidden";
               ttl2.style.textOverflow = "ellipsis";
               titleLine.appendChild(ttl2);
-              if (ch.sharing?.received) titleLine.appendChild(sharedResourceMarker(ch.sharing.providerName));
 
               srow.title = `${t("ui.updated", "Updated")}: ${fmtTime(meta?.updatedAt || now())} · ${t("ui.chars", "{count} chars", { count: meta?.size || 0 })}`;
 

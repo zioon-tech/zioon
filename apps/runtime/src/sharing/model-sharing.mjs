@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { CancellationController } from "../../../../packages/runtime/dist/index.js";
 import { accountError } from "../accounts/account-policy.mjs";
+import { createStreamAuthorization } from "./stream-authorization.mjs";
 
 const userId = p => p?.userId || p?.user?.id;
 export const borrowedModelShare = model => String(model?.profileId || "").startsWith("share.")
@@ -81,25 +81,17 @@ export class AccountModelSharing {
   async *streamTurn(request) {
     const id = borrowedModelShare(request.model);
     const lease = await this.acquire(request.principal, id);
-    const cancellation = new CancellationController();
-    const parent = request.signal.onCancel(reason => cancellation.cancel(reason));
-    if (request.signal.cancelled) cancellation.cancel(request.signal.reason);
-    let guard, guardError, reservation, complete = false, dispatched = false, notSent = false, usage = {};
-    const validate = async () => {
+    let reservation, complete = false, dispatched = false, notSent = false, usage = {};
+    const guard = createStreamAuthorization(async () => {
       await this.authorize(request);
       const current = await this.sharing.requireGrant(userId(request.principal), id);
       if (current.revision !== lease.share.revision) throw accountError(409, "share_changed");
       const source = await lease.app.describeSharedSource(current.providerId, { kind: "model", originResourceId: current.originResourceId });
       if (source.version !== current.sourceVersion) throw accountError(409, "capability_source_changed");
-    };
-    const timer = setInterval(() => {
-      if (!guard) guard = validate().catch(error => {
-        guardError = error; cancellation.cancel("model-share-revoked");
-      }).finally(() => { guard = null; });
-    }, 500);
-    timer.unref();
+    }, request.signal);
+    const validate = () => guard.check();
     try {
-      await validate();
+      await guard.check(true);
       if (request.preview) {
         yield redactedRequest(lease.share, { messages: request.messages, tools: request.tools, ...request.modelOptions });
         return;
@@ -111,14 +103,14 @@ export class AccountModelSharing {
       // Private destination document IDs are deliberately omitted from provider metadata.
       for await (const event of lease.app.streamSharedModel({ ...lease.share,
         spaceId: request.principal.spaceId || request.principal.space?.id }, {
-        ...request, signal: cancellation.signal, destinationId: undefined, authorize: validate
+        ...request, signal: guard.signal, destinationId: undefined, authorize: validate
       })) {
-        await validate();
-        cancellation.signal.throwIfCancelled();
+        guard.assert();
         if (event.type === "model.request") {
+          await guard.check(true);
           yield redactedRequest(lease.share, event.request?.payload);
-          await validate();
-          cancellation.signal.throwIfCancelled();
+          await guard.check(true);
+          guard.assert();
           await this.sharing.dispatch(reservation.id);
           dispatched = true;
         } else {
@@ -128,16 +120,16 @@ export class AccountModelSharing {
             Object.entries(event.metadata || {}).filter(([key]) => ["reasoning", "reasoningDetails"].includes(key))) } : event;
         }
       }
-      await validate();
+      await guard.check(true);
       complete = true;
     } catch (error) {
       notSent = error?.modelDispatchState === "not_sent";
-      const failure = publicFailure(guardError || error);
+      const failure = publicFailure(guard.error || error);
       if (notSent) failure.modelDispatchState = "not_sent";
       throw failure;
     }
     finally {
-      clearInterval(timer); parent.dispose(); await guard; lease.release();
+      await guard.close(); lease.release();
       if (reservation) await this.sharing.finish(reservation.id, { complete, usage, notSent });
     }
   }

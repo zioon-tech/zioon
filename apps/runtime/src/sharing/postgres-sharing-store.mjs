@@ -51,10 +51,10 @@ export class PostgresSharingStore {
   async lockContent(client, spaceId) {
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`shared-space:${spaceId}`]);
   }
-  async transaction(action) {
+  async transaction(action, { readOnly = false } = {}) {
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN");
+      await client.query(readOnly ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" : "BEGIN");
       const result = await action(client);
       await client.query("COMMIT");
       return result;
@@ -511,7 +511,6 @@ export class PostgresSharingStore {
         JOIN account_share_grants g ON g.share_id=s.id
         WHERE g.user_id=$1 AND g.status='active' AND s.status='active' AND s.kind IN ('document','folder')`,
       [userId])).rows.map(row => row.origin_space_id);
-      for (const origin of [...new Set([own.id, ...origins])].sort()) await this.lockContent(client, origin);
       const rows = (await client.query(`SELECT s.*,
         CASE WHEN s.owner_id=$1 THEN s.role ELSE (SELECT g.role FROM account_share_grants g
           WHERE g.share_id=s.id AND g.user_id=$1) END AS role,u.name AS owner_name FROM account_shares s
@@ -530,7 +529,13 @@ export class PostgresSharingStore {
       for (const origin of [...new Set(rows.map(row => row.origin_space_id))]) {
         const shares = rows.filter(row => row.origin_space_id === origin);
         const tree = await this.tree(origin, client);
-        const grantedNodes = new Map(shares.map(grant => [grant.id, pathTo(tree, grant.source_id)?.at(-1)]));
+        const nodes = new Map();
+        const indexNodes = node => {
+          if (!node) return;
+          nodes.set(node.id, node); (node.children || []).forEach(indexNodes);
+        };
+        indexNodes(tree);
+        const grantedNodes = new Map(shares.map(grant => [grant.id, nodes.get(grant.source_id)]));
         const documentIds = new Set();
         const collect = node => {
           if (node?.type === "session") documentIds.add(node.id);
@@ -589,7 +594,7 @@ export class PostgresSharingStore {
         if (origin !== own.id) received.push(...[...roots.values()].filter(node => !contained.has(node.id)).map(applyRoles));
       }
       return { received, sentIds: [...sentIds] };
-    });
+    }, { readOnly: true });
   }
   async sharedMemory(originSpaceId, documentId) {
     if (!documentId) return false;

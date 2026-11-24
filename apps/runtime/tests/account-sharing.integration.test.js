@@ -365,6 +365,7 @@ describe("independent account sharing", () => {
     const stream = h.broker.streamTurn(h.request(share.id));
     await stream.next(); await stream.next();
     await h.sharing.revoke(h.alice.id, share.id);
+    await new Promise(resolve => setTimeout(resolve, 600));
     await expect(stream.next()).rejects.toMatchObject({ code: "share_access_revoked" });
     expect(await h.sharing.usage(h.alice.id, share.id)).toMatchObject({ calls: 1, pending: 1 });
     expect(h.releases()).toBeGreaterThan(0);
