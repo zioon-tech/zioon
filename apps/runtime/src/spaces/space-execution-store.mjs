@@ -304,7 +304,7 @@ export class SpaceExecutionStore {
     }
   }
 
-  async finish(spaceId, runId, status, { onlyQueued = false } = {}) {
+  async finish(spaceId, runId, status, { onlyQueued = false, allowPendingModels = false } = {}) {
     if (!["completed", "cancelled", "failed", "outcome_unknown"].includes(status)) throw accountError(400, "invalid_queue_status");
     return this.spaces.transaction(spaceId, async (client) => {
       const r = queue((await client.query("SELECT * FROM space_run_queue WHERE space_id=$1 AND run_id=$2", [spaceId, runId])).rows[0]);
@@ -312,7 +312,8 @@ export class SpaceExecutionStore {
       if (!["queued", "running", "cancelling", "outcome_unknown"].includes(r.status)) return r;
       if (r.ownerInstance && r.ownerInstance !== this.instanceId) throw accountError(409, "queue_owned_by_another_runtime");
       const pending = (await client.query(`SELECT 1 FROM space_usage_reservations
-        WHERE space_id=$1 AND run_id=$2 AND state IN ('dispatched','pending')`, [spaceId, runId])).rowCount;
+        WHERE space_id=$1 AND run_id=$2 AND state IN ('dispatched','pending')
+          AND ($3=FALSE OR step_id NOT LIKE 'model:%')`, [spaceId, runId, allowPendingModels])).rowCount;
       const next = pending ? "outcome_unknown" : status;
       await client.query("UPDATE space_run_queue SET status=$3,updated_at=$4 WHERE space_id=$1 AND run_id=$2",
         [spaceId, runId, next, this.now()]);
@@ -373,7 +374,8 @@ export class SpaceExecutionStore {
       const pendingProjection = (await this.pool.query(`SELECT 1 FROM runtime_run_completion_tasks
         WHERE space_id=$1 AND run_id=$2 AND status<>'completed'
           AND NOT completed_steps ? 'runtime.document'`, [spaceId, row.run_id])).rowCount;
-      const current = await this.finish(spaceId, row.run_id, pendingProjection ? "outcome_unknown" : status);
+      const current = await this.finish(spaceId, row.run_id, pendingProjection ? "outcome_unknown" : status,
+        { allowPendingModels: !pendingProjection });
       recovered.push(current);
     }
     return recovered;

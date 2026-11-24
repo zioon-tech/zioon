@@ -47,10 +47,16 @@ async function setup(options = {}) {
 describe("account sharing through real OIDC and independent Runtime instances", () => {
   it("does not block a received document after a missing-credential failure and preserves genuinely unknown dispatches", async () => {
     const calls = [];
+    let pauseNext = false;
     const provider = createServer(async (req, res) => {
       let body = ""; for await (const part of req) body += part;
       calls.push(JSON.parse(body).model);
       res.writeHead(200, { "content-type": "text/event-stream" });
+      if (pauseNext) {
+        pauseNext = false;
+        res.write('data: {"choices":[{"delta":{"content":"partial-before-cancel"}}]}\n\n');
+        return;
+      }
       res.end('data: {"choices":[{"delta":{"content":"borrowed-after-failure"}}]}\n\ndata: [DONE]\n\n');
     });
     await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
@@ -94,11 +100,31 @@ describe("account sharing through real OIDC and independent Runtime instances", 
       status: "completed", output: "borrowed-after-failure"
     });
     expect(calls).toEqual(["working-key"]);
-    expect((await h.api(scoped, `/v1/workbench-state/sessions/${id}`)).value.text).toContain("borrowed-after-failure");
-    expect((await h.api(h.receiver, `/v1/sessions/${id}`)).status).toBe(404);
     await expect.poll(async () => (await h.runtime.database.pool.query(
       "SELECT status FROM space_run_queue WHERE space_id=$1 AND run_id=$2",
       [h.owner.spaceId, borrowed.value.runId])).rows[0]?.status).toBe("completed");
+    expect((await h.api(scoped, `/v1/workbench-state/sessions/${id}`)).value.text).toContain("borrowed-after-failure");
+    expect((await h.api(h.receiver, `/v1/sessions/${id}`)).status).toBe(404);
+    pauseNext = true;
+    const cancelled = await h.api(scoped, "/v1/runs", { sessionId: id, prompt: "cancel this model",
+      model: { profileId: `share.${modelShare.value.share.id}` } });
+    expect(cancelled.status).toBe(202);
+    await expect.poll(() => calls.length).toBe(2);
+    expect((await h.api(scoped, `/v1/runs/${cancelled.value.runId}/abort`, { reason: "user" })).status).toBe(202);
+    expect((await h.run(scoped, cancelled.value.runId)).value.run.status).toBe("aborted");
+    await expect.poll(async () => (await h.runtime.database.pool.query(
+      "SELECT status FROM space_run_queue WHERE space_id=$1 AND run_id=$2",
+      [h.owner.spaceId, cancelled.value.runId])).rows[0]?.status).toBe("cancelled");
+    expect((await h.runtime.database.pool.query(
+      "SELECT state FROM space_usage_reservations WHERE space_id=$1 AND run_id=$2",
+      [h.owner.spaceId, cancelled.value.runId])).rows[0].state).toBe("pending");
+    const afterCancel = await h.api(scoped, "/v1/runs", { sessionId: id, prompt: "continue after cancel",
+      model: { profileId: `share.${modelShare.value.share.id}` } });
+    expect(afterCancel.status).toBe(202);
+    expect((await h.run(scoped, afterCancel.value.runId)).value.run.status).toBe("completed");
+    await expect.poll(async () => (await h.runtime.database.pool.query(
+      "SELECT status FROM space_run_queue WHERE space_id=$1 AND run_id=$2",
+      [h.owner.spaceId, afterCancel.value.runId])).rows[0]?.status).toBe("completed");
     // A durable ambiguous predecessor must be reported promptly, never replayed.
     await h.runtime.database.pool.query(
       "UPDATE space_run_queue SET status='outcome_unknown' WHERE space_id=$1 AND run_id=$2",
@@ -109,7 +135,7 @@ describe("account sharing through real OIDC and independent Runtime instances", 
     expect((await h.run(scoped, blocked.value.runId)).value.run).toMatchObject({
       status: "failed", error: expect.stringContaining("上一条任务的执行结果尚未确认")
     });
-    expect(calls).toEqual(["working-key"]);
+    expect(calls).toEqual(["working-key", "working-key", "working-key"]);
   }, 45000);
   it("moves a private session with images and visible cards into an editor folder, retains provider ownership and supports deletion", async () => {
     const h = await setup(), sourceId = "receiver-inward";

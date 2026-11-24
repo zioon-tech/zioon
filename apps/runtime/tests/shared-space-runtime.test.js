@@ -98,7 +98,7 @@ describe("shared Space execution through the actual Agent executor", () => {
     expect(h.events).not.toContain("transport");
     release();
     expect((await handle.completion).status).toBe("completed");
-    await vi.waitFor(() => expect(h.execution.finish).toHaveBeenCalledWith("together", handle.runId, "completed"));
+    await vi.waitFor(() => expect(h.execution.finish).toHaveBeenCalledWith("together", handle.runId, "completed", { allowPendingModels: true }));
     expect(h.events.indexOf("dispatch")).toBeLessThan(h.events.indexOf("transport"));
     expect(h.execution.settle).toHaveBeenCalledWith("together", expect.any(String),
       expect.objectContaining({ calls: 1, inputTokens: 12, outputTokens: 3 }));
