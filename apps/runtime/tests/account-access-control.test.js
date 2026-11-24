@@ -69,6 +69,17 @@ async function harness() {
 }
 
 describe("AccountAccessControl", () => {
+  it("reports a database timeout as availability failure and preserves real authentication denials", async () => {
+    const h = await harness(), authenticate = h.accounts.authenticate;
+    h.accounts.authenticate = async () => { throw new Error("timeout exceeded when trying to connect"); };
+    const unavailable = await h.call("/v1/account/me", h.owner);
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toMatchObject({ code: "account_service_unavailable" });
+    h.accounts.authenticate = authenticate;
+    const denied = await fetch(h.url + "/v1/account/me");
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toMatchObject({ code: "authentication_required" });
+  });
   it("uses explicit write routes and limits control-plane and relay access", () => {
     expect(accountRequestScope("POST", "/v1/runs")).toBe("run.execute");
     expect(accountRequestScope("POST", "/v1/sessions/s/messages")).toBe("run.execute");

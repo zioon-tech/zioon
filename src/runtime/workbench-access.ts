@@ -9,6 +9,7 @@ import {
 import { installWorkbenchSpaceTransport, pinWorkbenchSpace, lockWorkbenchSpace, requestedWorkbenchSpace } from "./workbench-space";
 import { captureSharingInvitation } from "../ui/workbench/SharingWorkbench";
 import { showAccessChangeDialog } from "../ui/workbench/access-change-dialog";
+import { createWorkbenchIdentityMonitor } from "./workbench-identity-monitor";
 
 const WORKBENCH_DEVICE_ID_KEY = "zion.access.deviceId";
 
@@ -391,15 +392,7 @@ export async function ensureWorkbenchRuntimeAccess(
         location.assign(url);
       });
     };
-    const checkIdentity = () => {
-      if (accessChanged) return;
-      void accountRequest<AccountSession>(config.baseUrl, "me").then(next => {
-        if (next.user.id !== identity.user.id || next.space.id !== identity.space.id
-          || next.membership?.status !== identity.membership?.status
-          || next.membership?.role !== identity.membership?.role
-          || JSON.stringify([...next.scopes].sort()) !== JSON.stringify([...identity.scopes].sort())) requireReentry();
-      }).catch((error) => { if ([401, 403, 404].includes(error.status)) requireReentry(); });
-    };
+    const checkIdentity = createWorkbenchIdentityMonitor(config.baseUrl, identity, requireReentry);
     window.setInterval(checkIdentity, 15_000);
     window.addEventListener("focus", checkIdentity);
     window.addEventListener("online", checkIdentity);

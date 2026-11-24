@@ -178,6 +178,7 @@ export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange
       if (!account || disposed) return Promise.resolve();
       const request = new AbortController(); controller = request; loading = true;
       const startedGeneration = generation;
+      const previous = JSON.stringify({ received, sentIds: [...sentIds], error });
       refreshPromise = (async () => { try {
         const result = await createSharingClient({ baseUrl: readWorkbenchRuntimeConfig().baseUrl,
           headers: { "x-zioon-space-id": account.space.id }, signal: request.signal }).content();
@@ -196,7 +197,10 @@ export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange
       } finally {
         refreshPromise = null;
         if (!disposed) {
-          loading = false; revision++; onChange?.();
+          loading = false;
+          if (JSON.stringify({ received, sentIds: [...sentIds], error }) !== previous) {
+            revision++; onChange?.();
+          }
           scheduleRefresh(request.signal.aborted || generation !== startedGeneration ? 150 : 15000);
         }
       } })();

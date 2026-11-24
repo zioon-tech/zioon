@@ -21,10 +21,11 @@ export class AccountHttpError extends Error {
 }
 
 export async function accountRequest<T>(
-  baseUrl: string, path: string, body?: unknown, method = body === undefined ? "GET" : "POST"
+  baseUrl: string, path: string, body?: unknown, method = body === undefined ? "GET" : "POST",
+  options: { signal?: AbortSignal } = {}
 ): Promise<T> {
   const response = await fetch(`${baseUrl}/v1/account/${path}`, {
-    method, credentials: "include",
+    method, credentials: "include", signal: options.signal,
     headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });

@@ -66,6 +66,10 @@ export function registerSharedWorkbenchDocument(input: Omit<SharedWorkbenchDocum
     if (!value || value.length > 256 || /[\x00-\x20]/.test(value)) throw new Error("分享文档地址无效");
   }
   const localId = `${documentPrefix}${encodeURIComponent(input.originSpaceId)}:${encodeURIComponent(input.documentId)}`;
+  const existing = documents.get(localId);
+  if (existing && ["originSpaceId", "documentId", "role", "title", "providerName"].every(
+    key => existing[key as keyof SharedWorkbenchDocument] === input[key as keyof typeof input]
+  )) return existing;
   const document = Object.freeze({ ...input, localId });
   documents.set(localId, document);
   workbenchStorage.setItem("zion.sharing.documents", JSON.stringify([...documents.values()]));

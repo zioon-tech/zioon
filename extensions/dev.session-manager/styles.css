@@ -1101,6 +1101,15 @@ body.zion-sessions-no-transitions .zion-session-row * {
   flex: 1 1 auto;
   min-width: 0;
 }
+.zion-sessions-create-actions { display: flex; flex: 0 0 auto; gap: 3px; margin-left: auto; }
+.zion-sessions-create-actions button {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 26px;
+  padding: 4px 6px; border: 0; border-radius: 4px; background: transparent;
+  color: color-mix(in srgb, var(--fg) 75%, transparent); font: inherit; font-size: 11px;
+  white-space: nowrap; cursor: pointer;
+}
+.zion-sessions-create-actions button:hover { background: color-mix(in srgb, var(--fg) 7%, transparent); color: var(--fg); }
+.zion-sessions-create-actions button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .zion-sessions-split-filterchip {
   display: inline-flex;
   align-items: center;

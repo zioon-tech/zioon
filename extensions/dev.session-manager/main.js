@@ -1,5 +1,6 @@
 import { workbenchStorage as localStorage, spaceScopedName, isSharedWorkbenchDocument, sharedDocumentEditable } from "../../src/runtime/workbench-space";
 import { currentAccountSession } from "../../packages/account-ui/src/client";
+import { createNamedFolder } from "./commands/folder-create.js";
 import { registerSessionTools } from "./session-tools.js";
 import { deriveSessionTitleFromContent } from "../../packages/runtime-client/src/session-title.mjs";
 import { localSessionAnnotationCopy } from "../../packages/runtime-client/src/session-annotations.mjs";
@@ -117,6 +118,8 @@ const I18N_MESSAGES = {
     "ui.sessions": "会话",
     "ui.createNew": "新建会话",
     "ui.newFolder": "新建文件夹",
+    "ui.create": "创建",
+    "ui.cancel": "取消",
     "ui.actions": "操作",
     "ui.toggleViewMode": "切换列表/卡片视图",
     "ui.toggleTagSplit": "切换标签分栏",
@@ -1872,8 +1875,9 @@ function postSaved(id, updatedAt, hash) {
 }
 
 /** ========== Shared List Renderer (Panel & Sidebar) ========== */
-function openModalInput({ title, value, placeholder, okText, cancelText }) {
+function openModalInput({ title, value, placeholder, okText, cancelText, required = false }) {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
     const overlay = document.createElement("div");
     overlay.style.position = "fixed";
     overlay.style.inset = "0";
@@ -1893,8 +1897,12 @@ function openModalInput({ title, value, placeholder, okText, cancelText }) {
     card.style.display = "flex";
     card.style.flexDirection = "column";
     card.style.gap = "10px";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-modal", "true");
 
     const header = document.createElement("div");
+    header.id = `zion-name-prompt-${crypto.randomUUID()}`;
+    card.setAttribute("aria-labelledby", header.id);
     header.textContent = title || "Input";
     header.style.fontSize = "13px";
     header.style.fontWeight = "600";
@@ -1904,6 +1912,7 @@ function openModalInput({ title, value, placeholder, okText, cancelText }) {
     input.type = "text";
     input.value = String(value || "");
     input.placeholder = placeholder || "";
+    input.setAttribute("aria-labelledby", header.id);
     input.style.width = "100%";
     input.style.boxSizing = "border-box";
     input.style.padding = "8px 10px";
@@ -1933,6 +1942,8 @@ function openModalInput({ title, value, placeholder, okText, cancelText }) {
 
     const cancel = mkBtn(cancelText || "Cancel", false);
     const ok = mkBtn(okText || "OK", true);
+    const syncValid = () => { ok.disabled = required && !input.value.trim(); ok.style.opacity = ok.disabled ? ".45" : "1"; };
+    input.oninput = syncValid; syncValid();
     actions.append(cancel, ok);
 
     let cleanup = () => {};
@@ -1944,15 +1955,23 @@ function openModalInput({ title, value, placeholder, okText, cancelText }) {
     cleanup = (v) => {
       try { document.removeEventListener("keydown", onKey, true); } catch {}
       try { overlay.remove(); } catch {}
+      try { previousFocus?.focus?.(); } catch {}
       resolve(v);
     };
 
     cancel.onclick = () => cleanup(null);
-    ok.onclick = () => cleanup(input.value);
+    ok.onclick = () => { if (!ok.disabled) cleanup(input.value); };
     overlay.onclick = (e) => { if (e.target === overlay) cleanup(null); };
     input.onkeydown = (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      e.stopPropagation();
       if (e.key === "Escape") cleanup(null);
-      if (e.key === "Enter") cleanup(input.value);
+      if (e.key === "Enter") { e.preventDefault(); if (!ok.disabled) cleanup(input.value); }
+      if (e.key === "Tab") {
+        const controls = [input, cancel, ok].filter(control => !control.disabled);
+        const index = controls.indexOf(document.activeElement);
+        e.preventDefault(); controls[(index + (e.shiftKey ? -1 : 1) + controls.length) % controls.length].focus();
+      }
     };
 
     card.append(header, input, actions);
@@ -3950,13 +3969,21 @@ export async function activate(ctx) {
 
   // Folder commands
   const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", async (opts) => {
-    const parentId = String(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root") || "root";
-    const title = String(opts?.title || "").trim() || "New Folder";
-    const shouldStartInlineRename = opts?.startInlineRename !== false;
+    const created = await createNamedFolder(opts, {
+      selectedFolderId: window.zion.state.get("sessions.selectedFolderId"),
+      readAccount: currentAccountSession,
+      prompt: () => openModalInput({
+        title: t("ui.newFolder", "New Folder"), value: "",
+        placeholder: t("ui.folderName", "Folder name"),
+        okText: t("ui.create", "Create"), cancelText: t("ui.cancel", "Cancel"), required: true
+      }),
+      create: (parentId, title) => isReceivedNode(parentId)
+        ? sharedSessionView.mutate(parentId, { action: "createFolder", title }) : insertFolder(parentId, title)
+    });
+    if (!created) return null;
+    const { id, parentId } = created;
+    const shouldStartInlineRename = opts?.startInlineRename === true;
     const targetView = String(opts?.targetView || "").trim() || null;
-    const id = isReceivedNode(parentId)
-      ? await sharedSessionView.mutate(parentId, { action: "createFolder", title })
-      : insertFolder(parentId, title);
     try {
       if (isReceivedNode(id)) sharedSessionView.openAncestors(id, setFolderOpen);
       else openAncestors(id);

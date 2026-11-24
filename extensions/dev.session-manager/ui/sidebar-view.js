@@ -797,6 +797,23 @@ export function createSessionsSidebarViewManager(opts) {
     const listHeaderChips = document.createElement("span");
     listHeaderChips.className = "zion-sessions-list-header-chips";
     listHeader.append(listHeaderCount, listHeaderChips);
+    const createActions = document.createElement("div");
+    createActions.className = "zion-sessions-create-actions";
+    for (const [command, label, icon] of [
+      ["zion.sessions.new", t("cmd.new", "New Session"), "file-plus"],
+      ["zion.sessions.newFolder", t("ui.newFolder", "New Folder"), "folder-plus"]
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button"; button.title = label; button.setAttribute("aria-label", label);
+      button.innerHTML = iconHtml(icon, 13);
+      const text = document.createElement("span"); text.textContent = label; button.append(text);
+      button.onclick = () => {
+        void Promise.resolve(zion.commands.executeCommand(command, { parentId: "root", targetView: "sidebar" }))
+          .catch(error => zion.notification?.show?.(error.message, { type: "error" }));
+      };
+      createActions.append(button);
+    }
+    listHeader.append(createActions);
     const updateListHeader = () => {
       const sessions = getSessionIndex();
       const total = sessions.length;

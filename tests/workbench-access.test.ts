@@ -218,7 +218,7 @@ describe("Workbench remote access bootstrap", () => {
     expect(fetchMock.mock.calls.filter(([url]) =>
       String(url).endsWith("/v1/account/me"))).toHaveLength(2);
   });
-  it("preserves old-account editor content and waits for explicit reentry when scopes change", async () => {
+  it("preserves old-account editor content and waits for explicit reentry when read access is lost", async () => {
     const identity = {
       user: { id: "old-user" }, space: { id: "old-space" },
       membership: { role: "owner", status: "active" },
@@ -229,7 +229,7 @@ describe("Workbench remote access bootstrap", () => {
       const path = new URL(String(input), window.location.origin).pathname;
       return new Response(JSON.stringify(path === "/health"
         ? { service: "zion-runtime", authRequired: true, authMode: "accounts-v1" }
-        : { ...identity, scopes: changed ? ["runtime.read"] : identity.scopes }), {
+        : { ...identity, scopes: changed ? [] : identity.scopes }), {
         status: 200, headers: { "content-type": "application/json" }
       });
     }));

@@ -256,7 +256,7 @@ describe("provider broker boundaries", () => {
       expect(request.principal).toMatchObject({ userId: "alice", kind: "service", grantId: "service-grant" });
       expect(request.metadata.sharedDestination.requesterId).toBe("bob");
       yield { type: "model.request", request: { payload: {} } };
-      yield { type: "message.delta", delta: "complete" };
+      for (let i = 0; i < 200; i++) yield { type: "message.delta", delta: "complete" };
     });
     const service = createProviderCapabilities({ accounts, runtimeSpaceId: "alice-private",
       listModels: async () => [sourceModel], resolveModel: () => ({ profileId: "source", modelId: "upstream" }),
@@ -268,6 +268,7 @@ describe("provider broker boundaries", () => {
       authorize: vi.fn(async () => {}), destinationId: "document" }));
     expect(accounts.issueGrant.mock.calls[0][2]).toMatchObject({ purpose: "task", sourceId: "shared-capability:together:shared" });
     expect(accounts.revokeGrant).toHaveBeenCalledWith("alice", "service-grant", "alice-private");
+    expect(accounts.validateGrant.mock.calls.length).toBeLessThan(6);
   });
 
   it("rejects filesystem-wide device sharing and unvalidated plugin tools", async () => {

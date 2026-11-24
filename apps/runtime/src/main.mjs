@@ -985,11 +985,11 @@ const interactionProfileStore = new FileInteractionProfileStore(
   interactionProfilePath
 );
 if (accountStore) {
-  accessControl.resolveProfile = async (id, principal) => {
+  accessControl.resolveProfile = async (id, principal, client) => {
     const requesterSpace = principal?.spaceId || principal?.space?.id;
     if (principal?.contentScope && requesterSpace !== runtimeSpaceId) {
       const lease = await spaceBroker.acquireRuntime(requesterSpace);
-      try { return await lease.app.resolveContentProfile(id, principal); }
+      try { return await lease.app.resolveContentProfile(id, principal, client); }
       finally { lease.release(); }
     }
     if (id === SANDBOX_TERMINAL_PROFILE_ID) {
@@ -2556,12 +2556,12 @@ return {
     }
     return run;
   },
-  async resolveContentProfile(id, principal) {
+  async resolveContentProfile(id, principal, client) {
     if ((principal?.spaceId || principal?.space?.id) !== runtimeSpaceId || !principal.contentScope) {
       throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
     }
     await sharing.documentAccess(principal.userId || principal.user?.id, contentSpaceId(principal),
-      principal.contentScope.documentId, "edit");
+      principal.contentScope.documentId, "edit", client);
     return id === SANDBOX_TERMINAL_PROFILE_ID
       ? { id, policy: SANDBOX_TERMINAL_POLICY } : interactionProfileStore.get(id);
   },

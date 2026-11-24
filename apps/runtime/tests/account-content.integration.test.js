@@ -55,6 +55,42 @@ async function fixture() {
   return { db, origin, owner, editor, viewer, sharing, spaces, store, runs, access, alice, bob, eve, scoped, invites };
 }
 describe("direct document authority through native PostgreSQL and WebSockets", () => {
+  it("reuses the collaboration transaction through cross-account profile authorization", async () => {
+    const h = await fixture();
+    const policy = { preset: "workspace-write", allowedTools: ["read"] };
+    const principal = await h.db.accounts.issueGrant(h.editor.id, policy, {
+      spaceId: h.bob.personal.id, profileId: "default",
+      contentScope: { originSpaceId: h.origin.id, documentId: "doc", ownerId: h.owner.id }
+    });
+    let lockClient;
+    h.access.resolveProfile = async (_id, actor, client) => {
+      expect(client).toBe(lockClient);
+      await h.sharing.documentAccess(actor.userId, h.origin.id, "doc", "edit", client);
+      return { policy };
+    };
+    await h.spaces.transaction(h.origin.id, async client => {
+      lockClient = client;
+      // A new memory marker remains uncommitted while nested authorization runs.
+      await client.query("DELETE FROM account_document_privacy WHERE origin_space_id=$1 AND document_id='doc'", [h.origin.id]);
+      await h.sharing.documentAccess(h.editor.id, h.origin.id, "doc", "edit", client);
+      const query = vi.spyOn(h.db.pool, "query").mockImplementation(() => { throw new Error("nested pool acquisition"); });
+      try { await h.access.authorizeRunExecution({ principal, sessionId: "doc", policy }, client); }
+      finally { query.mockRestore(); }
+    });
+    expect((await h.store.readSession("doc")).text).toBe("shared initial");
+  });
+  it("reads a consistent shared catalog while another writer holds the content lock", async () => {
+    const h = await fixture(), writer = await h.db.pool.connect();
+    try {
+      await writer.query("BEGIN");
+      await h.sharing.lockContent(writer, h.origin.id);
+      const catalog = await Promise.race([
+        h.sharing.contentIndex(h.editor.id),
+        new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("catalog blocked on writer")), 1500); timer.unref(); })
+      ]);
+      expect(catalog.received.some(node => node.id === "doc")).toBe(true);
+    } finally { await writer.query("ROLLBACK"); writer.release(); }
+  });
   it("derives participants from effective document and folder grants, respecting privacy and active accounts", async () => {
     const h = await fixture();
     const [follower, modelOnly, pending] = await Promise.all(["follower", "modelOnly", "pending"].map(subject =>
