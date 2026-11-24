@@ -21,7 +21,8 @@ const publicFailure = error => error?.statusCode && /^(share_|capability_|grant_
   ? accountError(error.statusCode, error.code, error.code === "capability_source_changed"
     ? "提供者的模型配置已变化，请重新分享" : error.message)
   : Object.assign(accountError(502, "shared_model_failed", "分享的模型暂时不可用，请联系提供者"),
-    error?.failureCode === "execution_outcome_unknown" ? { failureCode: "execution_outcome_unknown" } : {});
+    error?.failureCode === "execution_outcome_unknown" ? { failureCode: "execution_outcome_unknown" } : {},
+    error?.modelDispatchState === "not_sent" ? { modelDispatchState: "not_sent" } : {});
 
 /** Only a model's request/response crosses the provider boundary. Conversation
  * storage, tools, Memory and model defaults remain in the requester's account. */
@@ -83,7 +84,7 @@ export class AccountModelSharing {
     const cancellation = new CancellationController();
     const parent = request.signal.onCancel(reason => cancellation.cancel(reason));
     if (request.signal.cancelled) cancellation.cancel(request.signal.reason);
-    let guard, guardError, reservation, complete = false, dispatched = false, usage = {};
+    let guard, guardError, reservation, complete = false, dispatched = false, notSent = false, usage = {};
     const validate = async () => {
       await this.authorize(request);
       const current = await this.sharing.requireGrant(userId(request.principal), id);
@@ -129,10 +130,15 @@ export class AccountModelSharing {
       }
       await validate();
       complete = true;
-    } catch (error) { throw publicFailure(guardError || error); }
+    } catch (error) {
+      notSent = error?.modelDispatchState === "not_sent";
+      const failure = publicFailure(guardError || error);
+      if (notSent) failure.modelDispatchState = "not_sent";
+      throw failure;
+    }
     finally {
       clearInterval(timer); parent.dispose(); await guard; lease.release();
-      if (reservation) await this.sharing.finish(reservation.id, { complete, usage });
+      if (reservation) await this.sharing.finish(reservation.id, { complete, usage, notSent });
     }
   }
 }

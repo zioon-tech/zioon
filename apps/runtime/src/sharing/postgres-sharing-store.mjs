@@ -658,11 +658,11 @@ export class PostgresSharingStore {
       WHERE id=$1 AND state='reserved' RETURNING id`, [id, this.now()])).rows[0];
     if (!row) throw accountError(409, "share_dispatch_already_recorded");
   }
-  async finish(id, { complete = false, usage = null } = {}) {
+  async finish(id, { complete = false, usage = null, notSent = false } = {}) {
     await this.pool.query(`UPDATE account_share_model_calls SET
-      state=CASE WHEN state='reserved' THEN 'released' WHEN $2 THEN 'settled' ELSE 'pending' END,
+      state=CASE WHEN state='reserved' OR $6 THEN 'released' WHEN $2 THEN 'settled' ELSE 'pending' END,
       input_tokens=$3,output_tokens=$4,updated_at=$5 WHERE id=$1 AND state IN ('reserved','dispatched')`,
-    [id, complete, usage?.inputTokens ?? usage?.promptTokens ?? null, usage?.outputTokens ?? usage?.completionTokens ?? null, this.now()]);
+    [id, complete, usage?.inputTokens ?? usage?.promptTokens ?? null, usage?.outputTokens ?? usage?.completionTokens ?? null, this.now(), notSent]);
   }
   async usage(userId, shareId) {
     const share = await this.requireOwner(userId, shareId);

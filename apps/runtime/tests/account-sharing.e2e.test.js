@@ -45,6 +45,72 @@ async function setup(options = {}) {
 }
 
 describe("account sharing through real OIDC and independent Runtime instances", () => {
+  it("does not block a received document after a missing-credential failure and preserves genuinely unknown dispatches", async () => {
+    const calls = [];
+    const provider = createServer(async (req, res) => {
+      let body = ""; for await (const part of req) body += part;
+      calls.push(JSON.parse(body).model);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('data: {"choices":[{"delta":{"content":"borrowed-after-failure"}}]}\n\ndata: [DONE]\n\n');
+    });
+    await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise(resolve => provider.close(resolve)));
+    const h = await setup({ engine: "openai", legacyWorkspace: true,
+      environment: { ZION_RUNTIME_MODEL_PROFILE: "missing-key", ZION_RUNTIME_DEFAULT_INTERACTION_MODEL_PROFILE: "missing-key" },
+      prepare: async ({ dataDirectory }) => {
+        await mkdir(dataDirectory, { recursive: true });
+        await writeFile(join(dataDirectory, "model-profiles.json"), JSON.stringify({ profiles:
+          ["missing-key", "working-key"].map(id => ({ id, label: id, providerId: "fixture", providerType: "openai",
+            model: id, endpoint: `http://127.0.0.1:${provider.address().port}/chat`, credentialRef: `model.${id}`,
+            credentialRequired: true })) }));
+        await writeFile(join(dataDirectory, "credentials.json"), JSON.stringify({ "model.working-key": { value: "fixture-only" } }));
+      } });
+    const id = "failure-then-borrowed";
+    expect((await h.api(h.owner, `/v1/workbench-state/sessions/${id}`, { text: "user original" }, "PUT")).status).toBe(200);
+    const docShare = await h.api(h.owner, "/v1/sharing", { kind: "document", sourceId: id, recipient: h.receiver.user.id, role: "editor" });
+    expect(docShare.status).toBe(201);
+    const scoped = { ...h.receiver, contentScope: { originSpaceId: h.owner.spaceId, documentId: id } };
+    const failed = await h.api(h.owner, "/v1/runs", { sessionId: id, prompt: "missing credential", model: { profileId: "missing-key" } });
+    expect(failed.status, JSON.stringify(failed.value)).toBe(202);
+    expect((await h.run(h.owner, failed.value.runId)).value.run).toMatchObject({
+      status: "failed", error: "Credential is required: model.missing-key"
+    });
+    for (let i = 0; i < 100; i++) {
+      const queue = (await h.runtime.database.pool.query("SELECT status FROM space_run_queue WHERE space_id=$1 AND run_id=$2",
+        [h.owner.spaceId, failed.value.runId])).rows[0];
+      if (queue?.status === "failed") break;
+      await delay(25);
+    }
+    expect(calls).toEqual([]);
+    expect((await h.runtime.database.pool.query(
+      "SELECT state,actual FROM space_usage_reservations WHERE space_id=$1 AND run_id=$2",
+      [h.owner.spaceId, failed.value.runId])).rows).toEqual([{ state: "settled", actual: "0" }]);
+    const modelShare = await h.api(h.owner, "/v1/sharing", { kind: "model", sourceId: "working-key", recipient: h.receiver.user.id });
+    expect(modelShare.status).toBe(201);
+    const borrowed = await h.api(scoped, "/v1/runs", { sessionId: id, prompt: "use shared model",
+      model: { profileId: `share.${modelShare.value.share.id}` } });
+    expect(borrowed.status, JSON.stringify(borrowed.value)).toBe(202);
+    expect((await h.run(scoped, borrowed.value.runId)).value.run).toMatchObject({
+      status: "completed", output: "borrowed-after-failure"
+    });
+    expect(calls).toEqual(["working-key"]);
+    expect((await h.api(scoped, `/v1/workbench-state/sessions/${id}`)).value.text).toContain("borrowed-after-failure");
+    expect((await h.api(h.receiver, `/v1/sessions/${id}`)).status).toBe(404);
+    await expect.poll(async () => (await h.runtime.database.pool.query(
+      "SELECT status FROM space_run_queue WHERE space_id=$1 AND run_id=$2",
+      [h.owner.spaceId, borrowed.value.runId])).rows[0]?.status).toBe("completed");
+    // A durable ambiguous predecessor must be reported promptly, never replayed.
+    await h.runtime.database.pool.query(
+      "UPDATE space_run_queue SET status='outcome_unknown' WHERE space_id=$1 AND run_id=$2",
+      [h.owner.spaceId, failed.value.runId]);
+    const blocked = await h.api(scoped, "/v1/runs", { sessionId: id, prompt: "must not call provider",
+      model: { profileId: `share.${modelShare.value.share.id}` } });
+    expect(blocked.status).toBe(202);
+    expect((await h.run(scoped, blocked.value.runId)).value.run).toMatchObject({
+      status: "failed", error: expect.stringContaining("上一条任务的执行结果尚未确认")
+    });
+    expect(calls).toEqual(["working-key"]);
+  }, 45000);
   it("moves a private session with images and visible cards into an editor folder, retains provider ownership and supports deletion", async () => {
     const h = await setup(), sourceId = "receiver-inward";
     const initial = await h.api(h.owner, "/v1/workbench-state/tree");

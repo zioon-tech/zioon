@@ -14,7 +14,8 @@ const authorityErrors = new Set(["capability_source_changed", "capability_change
 const providerError = (error, kind) => authorityErrors.has(error?.code) ? accountError(error.statusCode || 403, error.code)
   : Object.assign(accountError(502, `shared_${kind}_failed`, kind === "model"
     ? "共享模型暂时不可用，请联系资源提供者。" : "共享工具执行失败，请联系资源提供者。"),
-  error?.failureCode === "execution_outcome_unknown" ? { failureCode: "execution_outcome_unknown" } : {});
+  error?.failureCode === "execution_outcome_unknown" ? { failureCode: "execution_outcome_unknown" } : {},
+  error?.modelDispatchState === "not_sent" ? { modelDispatchState: "not_sent" } : {});
 export const sharedModelId = (id) => `space.${id}`;
 export const sharedModelBinding = (model) => String(model?.profileId || "").startsWith("space.")
   ? model.profileId.slice(6) : null;
@@ -328,7 +329,7 @@ export class SharedSpaceRuntime {
         timer.unref();
         const scopedRequest = { ...modelRequest, signal: cancellation.signal };
         const source = bindingId ? runtime.broker.streamModel(scopedRequest, bindingId, documentId) : engine.streamTurn(scopedRequest);
-        let dispatched = false, complete = false, usage = {};
+        let dispatched = false, complete = false, notSent = false, usage = {};
         try {
           await validate();
           for await (const event of source) {
@@ -356,13 +357,19 @@ export class SharedSpaceRuntime {
             inputTokens: usage.inputTokens, outputTokens: usage.outputTokens
           });
           else await runtime.execution.releaseUndispatched(runtime.runtimeSpaceId, reservation.id);
-        } catch (error) { throw revoked || error; }
+        } catch (error) {
+          notSent = error?.modelDispatchState === "not_sent";
+          throw revoked || error;
+        }
         finally {
           clearInterval(timer);
           parent.dispose();
           await validating;
           if (!complete) {
-            if (dispatched) await runtime.execution.pending(runtime.runtimeSpaceId, reservation.id);
+            if (dispatched && notSent) await runtime.execution.settle(runtime.runtimeSpaceId, reservation.id, {
+              id: `model-not-sent:${reservation.id}`, verified: true, calls: 0
+            });
+            else if (dispatched) await runtime.execution.pending(runtime.runtimeSpaceId, reservation.id);
             else await runtime.execution.releaseUndispatched(runtime.runtimeSpaceId, reservation.id);
           }
         }

@@ -261,9 +261,13 @@ export class SpaceExecutionStore {
       const row = (await client.query("SELECT * FROM space_run_queue WHERE space_id=$1 AND run_id=$2", [spaceId, runId])).rows[0];
       const current = queue(row);
       if (!current || current.status !== "queued") throw accountError(409, "run_not_queued");
-      const earlier = (await client.query(`SELECT 1 FROM space_run_queue WHERE space_id=$1 AND document_id=$2
-        AND ((status='queued' AND sequence<$3) OR status IN ('running','cancelling','outcome_unknown')) LIMIT 1`,
-      [spaceId, current.documentId, current.sequence])).rowCount;
+      const earlier = (await client.query(`SELECT status FROM space_run_queue WHERE space_id=$1 AND document_id=$2
+        AND ((status='queued' AND sequence<$3) OR status IN ('running','cancelling','outcome_unknown'))
+        ORDER BY CASE WHEN status='outcome_unknown' THEN 0 ELSE 1 END,sequence LIMIT 1`,
+      [spaceId, current.documentId, current.sequence])).rows[0];
+      if (earlier?.status === "outcome_unknown") return {
+        ...current, status: "blocked", reason: "previous_run_outcome_unknown"
+      };
       if (earlier) return null;
       const { document } = await this.authorize(current.requesterId, spaceId, current.documentId, current.bindingId, client);
       const content = await this.spaces.content(spaceId, current.documentId, client);
@@ -288,6 +292,8 @@ export class SpaceExecutionStore {
       while (true) {
         signal?.throwIfAborted();
         const result = await this.claim(spaceId, runId);
+        if (result?.status === "blocked") throw accountError(409, result.reason,
+          "这段会话上一条任务的执行结果尚未确认，请联系管理员处理后重试。");
         if (result?.status === "failed") throw accountError(409, result.reason, "排队期间文档已变化，请检查最新内容后重试");
         if (result) return result;
         await delay(100, undefined, { signal });
