@@ -463,21 +463,25 @@ export class OpenAICompatibleEngine implements AgentEngine {
     };
 
     const credentialStartedAt = Date.now();
-    const credential = this.options.credentialProvider && this.options.credentialRef
-      ? await this.options.credentialProvider.acquire({
-          ref: this.options.credentialRef,
-          providerId: request.model?.providerId,
-          modelId: model
-        })
-      : null;
-    span.setAttribute("zion.model.credential.duration", (Date.now() - credentialStartedAt) / 1000);
-    if (this.options.credentialRequired && !credential && !this.options.apiKey) {
-      throw new Error(`Credential is required: ${this.options.credentialRef || "model"}`);
-    }
-
+    let transportStarted = false;
+    let credential: Awaited<ReturnType<CredentialProvider["acquire"]>> | null = null;
     try {
+      credential = this.options.credentialProvider && this.options.credentialRef
+        ? await this.options.credentialProvider.acquire({
+            ref: this.options.credentialRef,
+            providerId: request.model?.providerId,
+            modelId: model
+          })
+        : null;
+      span.setAttribute("zion.model.credential.duration", (Date.now() - credentialStartedAt) / 1000);
+      if (this.options.credentialRequired && !credential && !this.options.apiKey) {
+        throw new Error(`Credential is required: ${this.options.credentialRef || "model"}`);
+      }
+
+      request.signal.throwIfCancelled();
       const transportStartedAt = Date.now();
       const credentialMs = transportStartedAt - credentialStartedAt;
+      transportStarted = true;
       const response = await this.options.transport({
         url: this.options.endpoint,
         method: "POST",
@@ -583,6 +587,13 @@ export class OpenAICompatibleEngine implements AgentEngine {
           )
         };
       }
+    } catch (error) {
+      // model.request is a preview/observation, not evidence of a network call.
+      // Once transport begins, even a socket failure remains ambiguous.
+      if (!transportStarted && error instanceof Error) {
+        Object.assign(error, { modelDispatchState: "not_sent" });
+      }
+      throw error;
     } finally {
       await credential?.release?.();
     }

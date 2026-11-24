@@ -49,6 +49,62 @@ function openFolders() {
   for (const title of ["收到的目录", "收到的子目录"]) [...host.querySelectorAll<HTMLElement>(".is-folder")].find(row => row.querySelector(".zion-session-folder-name")?.textContent === title)!.click();
 }
 describe("received content in the native session list", () => {
+  it("shows acknowledged CRUD immediately without waiting for a full index and coalesces reconciliation", async () => {
+    const enable = (node: any) => { node.role = "editor"; node.folderShareId = "folder-grant"; node.children?.forEach(enable); };
+    response.received.forEach(enable);
+    await view.refresh(); filter("收到的"); instance.setViewMode("list"); openFolders();
+    let finishIndex: (value: Response) => void;
+    const requests: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (url: any, options: any) => {
+      requests.push(String(url));
+      if (String(url).endsWith("/folder-operations")) {
+        const body = JSON.parse(options.body);
+        return new Response(JSON.stringify({ ok: true, id: body.action === "createFolder" ? "new" : body.id,
+          ...(body.action === "createFolder" || body.action === "rename"
+            ? { type: body.action === "createFolder" ? "folder" : "session", title: body.title } : {}) }));
+      }
+      return new Promise(resolve => { finishIndex = resolve; });
+    });
+    await view.mutate("shared-document:owner:same", { action: "rename", title: "立即可见" });
+    expect(remoteRow().textContent).toContain("立即可见");
+    expect(sharedWorkbenchDocument("shared-document:owner:same")?.title).toBe("立即可见");
+    expect(await view.mutate("shared-folder:owner:remote-folder", { action: "createFolder", title: "立即创建" }))
+      .toBe("shared-folder:owner:new");
+    expect(host.textContent).toContain("立即创建");
+    await view.mutate("shared-document:owner:same", { action: "move", parentId: "shared-folder:owner:new" });
+    expect(view.entry("shared-folder:owner:new").children[0].id).toBe("shared-document:owner:same");
+    await view.mutate("shared-document:owner:same", { action: "delete" });
+    expect(view.entry("shared-document:owner:same")).toBeUndefined();
+    expect(requests.filter(url => url.endsWith("/content"))).toHaveLength(0);
+    await vi.waitFor(() => expect(requests.filter(url => url.endsWith("/content"))).toHaveLength(1));
+    const one = view.refresh(), two = view.refresh();
+    expect(one).toBe(two);
+    finishIndex!(new Response(JSON.stringify(response)));
+    await one;
+    expect(requests.filter(url => url.endsWith("/content"))).toHaveLength(1);
+  });
+  it("discards stale refreshes, retains content on failed mutations and reports errors without another network wait", async () => {
+    const enable = (node: any) => { node.role = "editor"; node.folderShareId = "folder-grant"; node.children?.forEach(enable); };
+    response.received.forEach(enable);
+    await view.refresh();
+    let finishIndex: (value: Response) => void;
+    vi.mocked(fetch).mockImplementation(async (url: any, options: any) => {
+      if (String(url).endsWith("/content")) return new Promise(resolve => { finishIndex = resolve; });
+      const body = JSON.parse(options.body);
+      return new Response(JSON.stringify(body.title === "failed"
+        ? { error: "名称冲突" } : { ok: true, id: body.id, type: "session", title: body.title }),
+      { status: body.title === "failed" ? 409 : 200 });
+    });
+    const stale = view.refresh();
+    await view.mutate("shared-document:owner:same", { action: "rename", title: "最新名称" });
+    finishIndex!(new Response(JSON.stringify(response)));
+    await stale;
+    expect(view.entry("shared-document:owner:same").title).toBe("最新名称");
+    await expect(view.mutate("shared-document:owner:same", { action: "rename", title: "failed" })).rejects.toThrow("名称冲突");
+    expect(view.entry("shared-document:owner:same").title).toBe("最新名称");
+    expect(view.error).toBe("名称冲突");
+    expect(host.textContent).toContain("名称冲突");
+  });
   it("allows private sessions to drop into editable received folders and rejects outward, viewer and private-folder drops", async () => {
     const enable = (node: any) => { node.role = "editor"; node.folderShareId = "folder-grant"; node.children?.forEach(enable); };
     response.received.forEach(enable);

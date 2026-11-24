@@ -9,6 +9,7 @@ export const isReceivedNode = id => /^shared-(?:document|folder):/.test(String(i
 /** Received operations use the original owner's authorized folder endpoint. */
 export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange }) {
   let received = [], sentIds = new Set(), index = new Map(), timer, controller, disposed = false;
+  let refreshPromise, mutations = 0, generation = 0;
   let revision = 0;
   let filter = workbenchStorage.getItem("zion.sessions.sharingFilter") || "all";
   if (!["all", "sent", "received"].includes(filter)) filter = "all";
@@ -32,6 +33,32 @@ export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange
     if (node.type === "session") return sentIds.has(node.id) ? node : null;
     const children = (node.children || []).map(pruneSent).filter(Boolean);
     return children.length || sentIds.has(node.id) ? { ...node, children } : null;
+  };
+  const rebuildIndex = () => {
+    index = new Map();
+    const visit = node => {
+      index.set(node.id, node);
+      if (node.type === "session") registerSharedWorkbenchDocument({
+        originSpaceId: node.originSpaceId, documentId: sharedWorkbenchDocument(node.id)?.documentId,
+        role: node.sharing.role, title: node.title, providerName: node.sharing.providerName
+      });
+      (node.children || []).forEach(visit);
+    };
+    received.forEach(visit);
+    revision++; onChange?.();
+  };
+  const update = (id, apply) => {
+    const visit = nodes => nodes.flatMap(node => {
+      if (node.id === id) return apply(node) || [];
+      return node.children ? [{ ...node, children: visit(node.children) }] : [node];
+    });
+    received = visit(received);
+  };
+  const scheduleRefresh = (milliseconds = 150) => {
+    clearTimeout(timer);
+    if (!disposed) timer = setTimeout(() => {
+      if (document.visibilityState !== "hidden") void view.refresh();
+    }, milliseconds);
   };
   const view = {
     get revision() { return revision; },
@@ -101,40 +128,79 @@ export function createSharedSessionView({ loadTree, getIndex, loadMeta, onChange
         const parent = received.map(parentOf).find(Boolean);
         if (parent) body.expectedParentId = original(parent).id;
       }
+      // Prevent an older full index from overwriting an acknowledged mutation.
+      mutations++; generation++; controller?.abort(); clearTimeout(timer); error = "";
       try {
         const result = await createSharingClient({ baseUrl: readWorkbenchRuntimeConfig().baseUrl,
           headers: { "x-zioon-space-id": account.space.id } }).mutateFolder(entry.sharing.folderShareId, body);
-        await view.refresh();
-        if (result.type === "folder") return `shared-folder:${encodeURIComponent(entry.originSpaceId)}:${encodeURIComponent(result.id)}`;
-        if (result.type === "session") return registerSharedWorkbenchDocument({ originSpaceId: entry.originSpaceId,
-          documentId: result.id, role: "editor", title: result.title, providerName: entry.sharing.providerName }).localId;
+        const current = currentAccountSession();
+        if (disposed || current?.sessionId !== account.sessionId || current?.space?.id !== account.space.id
+          || current?.user?.id !== account.user.id) return result;
+        let resultId;
+        if (["createFolder", "createDocument", "importDocument"].includes(input.action)) {
+          const node = project({ ...entry, ...result, sharing: undefined,
+            role: entry.sharing.role, folderShareId: entry.sharing.folderShareId,
+            shareId: entry.sharing.shareId, providerName: entry.sharing.providerName,
+            ...(result.type === "folder" ? { children: [] } : { children: undefined }) });
+          update(id, parent => ({ ...parent, children: [...(parent.children || []), node] }));
+          resultId = node.id;
+        } else if (input.action === "rename") {
+          update(id, node => ({ ...node, title: result.title ?? input.title }));
+          resultId = id;
+        } else if (input.action === "delete") update(id, () => null);
+        else if (input.action === "move") {
+          const node = index.get(id);
+          if (node && index.has(input.parentId)) {
+            update(id, () => null);
+            update(input.parentId, parent => ({ ...parent, children: [...(parent.children || []), node] }));
+          }
+        }
+        rebuildIndex();
+        if (resultId) return resultId;
         return result;
       } catch (cause) {
-        await view.refresh();
+        // Local changes happen only after the server acknowledges them.
+        // Access-denied rows are removed immediately; reconciliation confirms
+        // the remaining grants without delaying the error shown to the user.
+        if (cause?.status === 403 || cause?.statusCode === 403) { update(id, () => null); rebuildIndex(); }
         view.reportError(cause);
         throw cause;
+      } finally {
+        mutations--; generation++;
+        if (!mutations) scheduleRefresh();
       }
     },
-    async refresh() {
-      controller?.abort(); clearTimeout(timer);
+    refresh() {
+      if (mutations) return Promise.resolve();
+      if (refreshPromise) return refreshPromise;
+      clearTimeout(timer);
       const account = currentAccountSession();
-      if (!account || disposed) return;
+      if (!account || disposed) return Promise.resolve();
       const request = new AbortController(); controller = request; loading = true;
-      try {
+      const startedGeneration = generation;
+      refreshPromise = (async () => { try {
         const result = await createSharingClient({ baseUrl: readWorkbenchRuntimeConfig().baseUrl,
           headers: { "x-zioon-space-id": account.space.id }, signal: request.signal }).content();
-        if (disposed || request.signal.aborted) return;
-        index = new Map(); received = result.received.map(project); sentIds = new Set(result.sentIds); error = "";
+        const current = currentAccountSession();
+        if (disposed || request.signal.aborted || generation !== startedGeneration
+          || current?.sessionId !== account.sessionId || current?.space?.id !== account.space.id
+          || current?.user?.id !== account.user.id) return;
+        index = new Map(); received = result.received.map(project); sentIds = new Set(result.sentIds);
+        if (error === "分享列表暂不可用") error = "";
       } catch (cause) {
         if (disposed || request.signal.aborted) return;
-        received = []; index = new Map(); sentIds.clear();
+        if (cause?.status === 401 || cause?.status === 403) {
+          received = []; index = new Map(); sentIds.clear();
+        }
         error = "分享列表暂不可用";
       } finally {
-        if (!disposed && !request.signal.aborted) {
+        refreshPromise = null;
+        if (!disposed) {
           loading = false; revision++; onChange?.();
-          timer = setTimeout(() => { if (document.visibilityState !== "hidden") void view.refresh(); }, 15000);
+          scheduleRefresh(request.signal.aborted || generation !== startedGeneration ? 150 : 15000);
         }
-      }
+      } })();
+      return refreshPromise;
     },
     start(zion) {
       disposed = false;
