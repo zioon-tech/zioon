@@ -49,6 +49,8 @@ export function registerSessionAutoRenameCommand(opts) {
   return zion.commands.registerCommand("zion.sessions.autoRename", async (opts2) => {
     const id = opts2?.id || zion.state.get("sessions.currentId");
     if (!id) return false;
+    if (zion.state.get(`sessions.deleted.${id}`) === true
+      || zion.state.get(`sessions.deleting.${id}`) === true) return false;
     const silent = !!opts2?.silent;
     if (autoRenameInflight.has(id)) return false;
     if (opts2?.onlyIfAuto) {
@@ -106,8 +108,12 @@ export function registerSessionAutoRenameCommand(opts) {
 
       let out = "";
       let err = null;
+      const sourceRun = zion.state.get(`chat.runs.${id}`);
+      const activeModel = opts2?.activeModel || sourceRun?.model
+        || zion.state.get("chat.activeModel") || null;
       await runStream({
         messages,
+        activeModel,
         tools: null,
         onToken: (tk) => {
           out += String(tk || "");
@@ -122,6 +128,8 @@ export function registerSessionAutoRenameCommand(opts) {
         silentReasoning: true
       });
       if (err) throw err;
+      if (zion.state.get(`sessions.deleted.${id}`) === true
+        || zion.state.get(`sessions.deleting.${id}`) === true) return false;
 
       const title = cleanAutoTitle(out);
       if (!title) {
@@ -134,7 +142,7 @@ export function registerSessionAutoRenameCommand(opts) {
         const meta = zion.commands.executeCommand("zion.sessions.getMeta", id);
         if (!meta || meta.titleAuto !== true) return false;
       }
-      zion.commands.executeCommand("zion.sessions.rename", { id, title });
+      if (await zion.commands.executeCommand("zion.sessions.rename", { id, title }) === false) return false;
       if (!silent) {
         try { zion.notification?.show?.(`已重命名为：${title}`, { type: "success", duration: 1800 }); } catch {}
       }

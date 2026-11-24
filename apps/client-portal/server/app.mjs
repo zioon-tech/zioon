@@ -81,7 +81,9 @@ export function createClientPortal({ app, origin, runtimeOrigin, runtimeTarget,
       ].filter(Boolean).join("; ") };
     // Never accept caller Authorization, Host, or forwarding headers.
     for (const name of ["accept", "content-type", "content-length", "range", "if-none-match",
-      "if-match", "last-event-id", "user-agent", ...(upgrade ? [
+      "if-match", "last-event-id", "user-agent", "x-zion-workbench-protocol",
+      "x-zion-navigation-id", "x-zion-read-source",
+      "x-zioon-space-id", "x-zioon-content-space", "x-zioon-content-document", ...(upgrade ? [
         "sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions"
       ] : [])]) if (req.headers[name]) headers[name] = req.headers[name];
     if (upgrade) Object.assign(headers, { connection: "Upgrade", upgrade: "websocket" });
@@ -103,7 +105,8 @@ export function createClientPortal({ app, origin, runtimeOrigin, runtimeTarget,
       }
       const headers = { "cache-control": "no-store", "x-accel-buffering": "no" };
       for (const name of ["content-type", "content-length", "content-disposition", "etag", "content-range",
-        "accept-ranges", "content-encoding", "vary"]) if (result.headers[name]) headers[name] = result.headers[name];
+        "accept-ranges", "content-encoding", "vary", "x-zion-workbench-protocol",
+        "server-timing", "x-zion-request-id"]) if (result.headers[name]) headers[name] = result.headers[name];
       if (url.pathname.includes("/files/")) {
         headers["content-security-policy"] = "default-src 'none'; sandbox";
       }

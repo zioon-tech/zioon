@@ -115,8 +115,12 @@ export class PostgresSharingStore {
     return rows.map(row => ({ ...projection(row), name: names.get(row.id) || row.name }));
   }
   async contentExists(spaceId, id, client = this.pool) {
-    return (await client.query(`SELECT 1 FROM runtime_workbench_documents WHERE space_id=$1 AND id=$2
-      UNION ALL SELECT 1 FROM runtime_sessions WHERE space_id=$1 AND id=$2 LIMIT 1`, [spaceId, id])).rowCount > 0;
+    return (await client.query(`SELECT 1 WHERE
+      (EXISTS (SELECT 1 FROM runtime_workbench_documents WHERE space_id=$1 AND id=$2)
+        OR EXISTS (SELECT 1 FROM runtime_sessions WHERE space_id=$1 AND id=$2))
+      AND NOT EXISTS (SELECT 1 FROM runtime_workbench_tombstones WHERE space_id=$1 AND id=$2)
+      AND NOT EXISTS (SELECT 1 FROM space_documents WHERE space_id=$1 AND id=$2 AND lifecycle='deleted')`,
+    [spaceId, id])).rowCount > 0;
   }
   async markMemory(spaceId, documentId, client = this.pool) {
     await client.query(`INSERT INTO account_document_privacy (origin_space_id,document_id,updated_at)
@@ -282,6 +286,9 @@ export class PostgresSharingStore {
           WHERE p.origin_space_id=s.origin_space_id AND p.document_id=s.source_id AND p.private))
       ${lock ? "FOR UPDATE OF s,g" : ""}`, [id, userId, this.now()])).rows[0];
     if (!row) throw accountError(403, "share_access_revoked", "分享已失效，请联系提供者");
+    if (row.kind === "document" && !await this.contentExists(row.origin_space_id, row.source_id, client)) {
+      throw accountError(403, "share_access_revoked", "会话已删除或迁移");
+    }
     return { ...(await this.projectShares(userId, [row], client))[0], providerId: row.owner_id, originResourceId: row.source_id,
       sourceVersion: row.source_version };
   }
@@ -511,13 +518,14 @@ export class PostgresSharingStore {
         JOIN account_users u ON u.id=s.owner_id
         JOIN account_spaces a ON a.id=s.origin_space_id
         WHERE s.kind IN ('document','folder') AND s.status='active' AND u.status='active'
-          AND a.kind='personal' AND a.created_by=s.owner_id
+          AND (a.kind='personal' OR a.id=$4) AND a.created_by=s.owner_id
           AND s.origin_space_id=ANY($3::text[])
           AND (s.expires_at IS NULL OR s.expires_at>$2)
           AND (s.owner_id=$1 OR EXISTS (SELECT 1 FROM account_share_grants g
             JOIN account_users r ON r.id=g.user_id
             WHERE g.share_id=s.id AND g.user_id=$1 AND g.status='active' AND r.status='active'))
-        ORDER BY s.created_at DESC,s.id`, [userId, this.now(), [...new Set([own.id, ...origins])]])).rows;
+        ORDER BY s.created_at DESC,s.id`, [userId, this.now(), [...new Set([own.id, ...origins])],
+          this.accounts.legacyAccountSpaceId || ""])).rows;
       const received = [], sentIds = new Set();
       for (const origin of [...new Set(rows.map(row => row.origin_space_id))]) {
         const shares = rows.filter(row => row.origin_space_id === origin);
@@ -526,17 +534,21 @@ export class PostgresSharingStore {
           FROM (SELECT id,MAX(updated_at) AS updated_at FROM
             (SELECT id,updated_at FROM runtime_workbench_documents WHERE space_id=$1
               UNION ALL SELECT id,updated_at FROM runtime_sessions WHERE space_id=$1) content GROUP BY id) d
-          LEFT JOIN runtime_workbench_metadata m ON m.space_id=$1 AND m.id=d.id`,
+          LEFT JOIN runtime_workbench_metadata m ON m.space_id=$1 AND m.id=d.id
+          WHERE NOT EXISTS (SELECT 1 FROM runtime_workbench_tombstones t WHERE t.space_id=$1 AND t.id=d.id)
+            AND NOT EXISTS (SELECT 1 FROM space_documents s WHERE s.space_id=$1 AND s.id=d.id AND s.lifecycle='deleted')`,
         [origin])).rows.map(row => [row.id, row]));
         const privateIds = new Set((await client.query(`SELECT document_id FROM account_document_privacy
           WHERE origin_space_id=$1 AND private`, [origin])).rows.map(row => row.document_id));
         const roots = new Map();
         const roles = new Map();
+        const folderGrants = new Map();
         const project = (node, grant) => {
           if (!node || !["folder", "session"].includes(node.type)) return null;
           if (node.type === "session" && (!metadata.has(node.id) || privateIds.has(node.id))) return null;
           const previous = roles.get(node.id);
           roles.set(node.id, previous === "editor" || grant.role === "editor" ? "editor" : "viewer");
+          if (grant.kind === "folder" && grant.role === "editor") folderGrants.set(node.id, grant.id);
           if (origin === own.id) sentIds.add(node.id);
           const meta = metadata.get(node.id);
           const result = { id: node.id, type: node.type,
@@ -560,6 +572,7 @@ export class PostgresSharingStore {
         const descend = node => { for (const child of node.children || []) { contained.add(child.id); descend(child); } };
         for (const root of roots.values()) descend(root);
         const applyRoles = node => ({ ...node, role: roles.get(node.id),
+          folderShareId: folderGrants.get(node.id) || null,
           ...(node.children ? { children: node.children.map(applyRoles) } : {}) });
         if (origin !== own.id) received.push(...[...roots.values()].filter(node => !contained.has(node.id)).map(applyRoles));
       }

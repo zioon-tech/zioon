@@ -1,4 +1,4 @@
-import { workbenchStorage as localStorage } from "../runtime/workbench-space";
+import { workbenchStorage as localStorage, isWorkbenchStorageEvent } from "../runtime/workbench-space";
 import { readDisplayPreference, readMinimapPreference } from "../editor/display-preferences";
 import { settingsRegistry } from "../settings/registry";
 import { open as openSettingsPanel, close as closeSettingsPanel } from "../settings/SettingsPanel";
@@ -72,6 +72,7 @@ class Registry {
   private editorCores = new Map<string, EditorCore>();
   private editorProxies = new Map<string, EditorProxy>();
   private editorProxiesByEditorId = new Map<string, EditorProxy>();
+  private editorLifecycleDisposables = new Map<string, Disposable>();
   private activePanelId: string | null = null;
   private updateListenerAttached = new Set<string>();
 
@@ -117,6 +118,7 @@ class Registry {
   private lastPrompt: string | null = null;
 
   attachEditor(core: EditorCore, panelId = "panel-0") {
+    if (core.isDisposed) throw new Error("Cannot attach a disposed editor");
     const editorKey = core.getEditorId?.() || panelId;
     this.editorCores.set(panelId, core);
     let proxy = this.editorProxiesByEditorId.get(editorKey);
@@ -128,6 +130,9 @@ class Registry {
       proxy.setPanelId(panelId);
     }
     this.editorProxies.set(panelId, proxy);
+    if (!this.editorLifecycleDisposables.has(editorKey) && typeof core.onDispose === "function") {
+      this.editorLifecycleDisposables.set(editorKey, core.onDispose(() => this.releaseEditor(editorKey)));
+    }
 
     if (!this.activePanelId) {
       this.activePanelId = panelId;
@@ -342,6 +347,9 @@ class Registry {
   setActivePanel(panelId: string | null) {
     this.activePanelId = panelId;
     this.syncActiveEditor();
+    if (this.state.get("editors.activePanelId") !== panelId) {
+      this.state.set("editors.activePanelId", panelId);
+    }
   }
 
   private getActiveEditorCore(): EditorCore | null {
@@ -388,6 +396,34 @@ class Registry {
     return null;
   }
 
+  private releaseEditor(editorKey: string): void {
+    const proxy = this.editorProxiesByEditorId.get(editorKey);
+    this.editorProxiesByEditorId.delete(editorKey);
+    const lifecycle = this.editorLifecycleDisposables.get(editorKey);
+    this.editorLifecycleDisposables.delete(editorKey);
+    try { lifecycle?.dispose(); } catch {}
+    this.updateListenerAttached.delete(editorKey);
+    this.pasteAttached.delete(editorKey);
+    this.contextMenuAttached.delete(editorKey);
+    // A hidden tab may be destroyed while another tab in this panel is active.
+    // Only detach the panel's current editor when it is the destroyed one.
+    if (proxy?.panelId && this.editorProxies.get(proxy.panelId) === proxy) {
+      this.editorCores.delete(proxy.panelId);
+      this.editorProxies.delete(proxy.panelId);
+    }
+    if (this.editorCore?.getEditorId?.() === editorKey) this.editorCore = null;
+    for (const [key, disposable] of Array.from(this.decoratorDisposables)) {
+      if (!key.endsWith(`:${editorKey}`)) continue;
+      this.decoratorDisposables.delete(key);
+      try { disposable?.dispose(); } catch {}
+    }
+    if (this.activePanelId && !this.editorCores.has(this.activePanelId)) {
+      this.activePanelId = this.editorCores.keys().next().value || null;
+    }
+    this.syncActiveEditor();
+    this.applyKeymap();
+  }
+
   detachEditor(panelId: string) {
     const proxy = this.editorProxies.get(panelId) || null;
     const editorKeys = new Set<string>([panelId]);
@@ -398,7 +434,10 @@ class Registry {
     }
     this.editorCores.delete(panelId);
     this.editorProxies.delete(panelId);
+    if (this.editorCore?.getPanelId?.() === panelId) this.editorCore = null;
     for (const editorKey of editorKeys) {
+      try { this.editorLifecycleDisposables.get(editorKey)?.dispose(); } catch {}
+      this.editorLifecycleDisposables.delete(editorKey);
       this.updateListenerAttached.delete(editorKey);
       this.pasteAttached.delete(editorKey);
       this.contextMenuAttached.delete(editorKey);
@@ -2590,6 +2629,7 @@ try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
 (registry as any).saveMenuUsageStats = function() {
   try {
     localStorage.setItem('zion.menuUsageStats', JSON.stringify((registry as any).menuUsageStats || {}));
+    window.dispatchEvent(new CustomEvent("zion:menu-preferences-changed"));
   } catch (e) {
     console.error('[zion] 保存菜单使用统计失败', e);
   }
@@ -2609,6 +2649,10 @@ try { runLedger.reconcileActiveRuns([], "startup"); } catch {}
 
 // 加载统计
 (registry as any).loadMenuUsageStats();
+window.addEventListener("zion:menu-preferences-changed", () => (registry as any).loadMenuUsageStats());
+window.addEventListener("storage", event => {
+  if (isWorkbenchStorageEvent(event, "zion.menuUsageStats")) (registry as any).loadMenuUsageStats();
+});
 
 export function attachEditor(core: EditorCore, panelId?: string) {
   return (registry as any).attachEditor(core, panelId);

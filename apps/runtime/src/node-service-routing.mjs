@@ -9,6 +9,25 @@ import {
 
 export const DEVICE_SERVICE_TOOL_NAME = "zion.internal.deviceService";
 
+const INTERACTIVE_READ_PATHS = new Set([
+  "/sessions", "/machines", "/files/read", "/files/read-jsonl",
+  "/files/entries", "/files/glob", "/files/grep"
+]);
+
+// An HTTP method alone isn't a sufficient guarantee: e.g. a terminal
+// relay GET can drain a buffer. Only these explicit reads are eligible.
+export function isInteractiveDeviceRead(invocation) {
+  if (invocation.toolCall?.name !== DEVICE_SERVICE_TOOL_NAME) return false;
+  const args = invocation.toolCall.arguments || {};
+  if (args.service !== "local-tools" || args.method !== "GET" || args.bodyBase64) return false;
+  try {
+    const url = new URL(args.path, "http://device.invalid");
+    return url.origin === "http://device.invalid" && INTERACTIVE_READ_PATHS.has(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function serviceRoute(invocation) {
   if (invocation.toolCall?.name !== DEVICE_SERVICE_TOOL_NAME) return null;
   const args = invocation.toolCall.arguments || {};

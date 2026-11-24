@@ -100,6 +100,15 @@ test("metadata and epoch are validated before connecting or resuming", async () 
   assert.equal(f.calls.connects, 0);
 });
 
+test("managed command transport accepts ten-minute deadlines and rejects larger requests", async () => {
+  const f = fixture();
+  const handle = await f.provider.create(scope, "create:long-command");
+  assert.equal((await f.provider.exec(handle, scope, { command: "true", timeoutMs: 600_000 })).exitCode, 0);
+  assert.equal(f.calls.execs, 1);
+  await assert.rejects(f.provider.exec(handle, scope, { command: "true", timeoutMs: 600_001 }), /command timeout/);
+  assert.equal(f.calls.execs, 1);
+});
+
 test("file transport rejects traversal and enforces scope", async () => {
   const f = fixture();
   const handle = await f.provider.create(scope, "create:a");

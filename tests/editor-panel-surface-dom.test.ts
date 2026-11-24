@@ -11,6 +11,7 @@ import { mountEditorHeaderMenu } from "../src/ui/editor-header-menu";
 import { editorConfigurationMenuItems, editorCoreMenuItems } from "../src/ui/editor-display-contributions.js";
 import { readMinimapPreference } from "../src/editor/display-preferences";
 import { registerDisplayDocumentAlias } from "../src/editor/display-preferences";
+import { createConversationOutlineController } from "../extensions/dev.toc/main.js";
 const disposers: Array<() => void> = [];
 const source = "user 问题\n第一段\nassistant 回答\n正文\nuser 后续提问\n正文";
 const payload = (markdown = source): PublicDocument => ({
@@ -27,6 +28,29 @@ afterEach(() => {
   vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 describe("shared editor surface through real DOM interactions", () => {
+  it("keeps the same layout before TOC activation and after its disposal", () => {
+    const nativeHost = document.createElement("div"); document.body.append(nativeHost);
+    const native = createEditorPanelSurface(nativeHost, source, "native");
+    disposers.push(native.dispose);
+    const initialLayout = native.core.view.dom.parentElement!;
+    expect(initialLayout.classList.contains("zion-toc-layout")).toBe(true);
+    const readerHost = document.createElement("div"); document.body.append(readerHost);
+    const reader = createEditorPanelSurface(readerHost, source, "reader", { readOnly: true });
+    disposers.push(reader.dispose);
+    const readerLayout = reader.core.view.dom.parentElement!;
+    expect(readerLayout.className).toBe(initialLayout.className);
+    reader.outline!.dispose();
+    expect(reader.core.view.dom.parentElement).toBe(readerLayout);
+    expect(readerLayout.isConnected).toBe(true);
+    const outline = createConversationOutlineController({ subscriptions: [] }, reader.host, { readOnly: true });
+    disposers.push(() => outline.dispose());
+    expect(reader.core.view.dom.parentElement).toBe(readerLayout);
+    expect(readerHost.querySelectorAll(".zion-toc-layout")).toHaveLength(1);
+    outline.dispose();
+    reader.dispose();
+    expect(readerHost.querySelector(".zion-toc-layout")).toBeNull();
+  });
+
   it("shares a document override between native IDs and link aliases, reapplies on session changes and isolates documents and viewers", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     setDisplayPreferenceViewer("viewer");

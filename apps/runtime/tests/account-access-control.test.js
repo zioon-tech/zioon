@@ -73,6 +73,8 @@ describe("AccountAccessControl", () => {
     expect(accountRequestScope("POST", "/v1/runs")).toBe("run.execute");
     expect(accountRequestScope("POST", "/v1/sessions/s/messages")).toBe("run.execute");
     expect(accountRequestScope("POST", "/v1/assets")).toBe("runtime.write");
+    expect(accountRequestScope("POST", "/v1/workbench-state/sessions/s/card-details")).toBe("runtime.read");
+    expect(accountRequestScope("PUT", "/v1/workbench-state/sessions/s/card-details")).toBe("runtime.write");
     expect(accountRequestScope("PATCH", "/v1/sessions/s")).toBe("runtime.write");
     expect(accountRequestScope("POST", "/v1/unknown-future-endpoint")).toBe("runtime.manage");
     expect(accountRequestScope("GET", "/v1/workbench-state/kv/runtime.secret")).toBe("runtime.manage");

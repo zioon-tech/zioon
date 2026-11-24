@@ -1,6 +1,9 @@
+import { annotationPersistenceKey } from "./annotation-persistence-key.js";
+
 export function createAnnotationsLifecycle(opts) {
   const loadMeta = opts?.loadMeta;
   const loadMetaAsync = opts?.loadMetaAsync;
+  const peekMeta = opts?.peekMeta;
   const saveMeta = opts?.saveMeta;
   const now = opts?.now;
   const shouldSkipLifecyclePersistence = opts?.shouldSkipLifecyclePersistence;
@@ -36,19 +39,22 @@ export function createAnnotationsLifecycle(opts) {
       const meta = loadMeta(id);
       const ann = getAnnotationsState(id) || meta.annotations;
       if (ann) {
+        if (annotationPersistenceKey(ann) === annotationPersistenceKey(meta.annotations)) return true;
         meta.annotations = ann;
-        saveMeta(id, meta);
+        return saveMeta(id, meta);
       }
     } catch (e) {
       console.warn("[sessions] persistAnnotations error:", e);
+      return false;
     }
   }
 
   function persistCurrentAnnotations() {
     try {
-      persistAnnotations(getZion()?.state?.get("sessions.currentId"));
+      return persistAnnotations(getZion()?.state?.get("sessions.currentId"));
     } catch (e) {
       console.warn("[sessions] persistCurrentAnnotations error:", e);
+      return false;
     }
   }
 
@@ -133,10 +139,9 @@ export function createAnnotationsLifecycle(opts) {
         } catch {}
         let ann = null;
         try {
-          const meta = await loadMetaAsync(id);
+          const meta = peekMeta?.(id) || await loadMetaAsync(id);
           if (meta && meta.annotations) {
             ann = meta.annotations;
-            try { getZion()?.state?.set(`sessions.meta.${id}`, meta); } catch {}
           }
         } catch {}
         return ann || liveAnn;
@@ -217,7 +222,7 @@ export function createAnnotationsLifecycle(opts) {
         const ann = getAnnotationsState(id);
         if (!ann) return;
         let json = "";
-        try { json = JSON.stringify(ann); } catch { json = ""; }
+        try { json = annotationPersistenceKey(ann); } catch { json = ""; }
         if (json && json === lastJson) return;
         if (json) lastJson = json;
 
@@ -259,16 +264,20 @@ export function createAnnotationsLifecycle(opts) {
     const setWatch = (id) => {
       if (id === curId) return;
       curId = id || null;
-      lastJson = "";
+      lastJson = curId ? annotationPersistenceKey(
+        getZion()?.state?.get(`sessions.meta.${curId}`)?.annotations
+      ) : "";
       try { dispAnn?.dispose?.(); } catch {}
       dispAnn = null;
       if (!curId) return;
       try {
-        dispAnn = getZion()?.state?.onDidChange(`sessions.annotations.${curId}`, () => schedule(curId));
+        dispAnn = getZion()?.state?.onDidChange(`sessions.annotations.${curId}`, () => {
+          if (getZion()?.state?.get(`sessions.annotationsRestoring.${curId}`)) return;
+          schedule(curId);
+        });
       } catch {
         dispAnn = null;
       }
-      schedule(curId);
     };
 
     try {

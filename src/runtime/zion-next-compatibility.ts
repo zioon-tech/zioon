@@ -87,7 +87,7 @@ export function fromZionNextFunctionTool(
 ): ToolDefinition {
   const fn = tool?.function || {};
   const name = String(fn.name || "").trim();
-  if (!name) throw new Error("Zion tool definition has no function name");
+  if (!name) throw new Error("Zioon tool definition has no function name");
   return {
     name,
     description: String(fn.description || ""),

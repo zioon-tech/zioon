@@ -77,7 +77,7 @@ export function createProgrammaticExecutor(deps) {
 
     const runId = createId("run");
     const sessionId = String(request.sessionId || `scheduled:${runId}`);
-    const runModel = getActiveModel?.() || null;
+    let runModel = null;
     const policy = normalizeCapabilityPolicy(request.policy);
     const queue = createAsyncEventQueue();
     const controllerRef = { current: null };
@@ -122,6 +122,8 @@ export function createProgrammaticExecutor(deps) {
       let tools = [];
 
       try {
+        const selected = getActiveModel?.(request.sessionId || null);
+        runModel = (selected?.then ? await selected : selected) || null;
         runs?.start?.({
           id: runId,
           title: request.title || "",
@@ -133,9 +135,6 @@ export function createProgrammaticExecutor(deps) {
           policy,
           metadata: request.metadata || {}
         });
-      } catch {}
-
-      try {
         tools = filterToolsForPolicy(getTools?.() || [], policy);
         publish("run.started", {
           prompt,

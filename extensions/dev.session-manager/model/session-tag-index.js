@@ -44,6 +44,22 @@ export function validateSessionTagIndex(raw) {
   return { version: SESSION_TAG_INDEX_VERSION, sessions };
 }
 
+/** Document hashes and empty entries are local extraction bookkeeping. */
+export function sessionTagIndexContentsEqual(before, after) {
+  const contents = (index) => Object.entries(validateSessionTagIndex(index).sessions)
+    .filter(([, entry]) => entry.tags.length || entry.exclusions.length)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, entry]) => [
+      id,
+      entry.tags.slice().sort(),
+      entry.exclusions.map((rule) => [rule.path, rule.subtree])
+        .sort(([a, aSubtree], [b, bSubtree]) => (
+          a.localeCompare(b) || Number(aSubtree) - Number(bSubtree)
+        ))
+    ]);
+  return JSON.stringify(contents(before)) === JSON.stringify(contents(after));
+}
+
 export function extractSessionTagPaths(text) {
   return normalizeTags(
     extractObsidianMetadata(String(text || "")).tags.map((tag) => tag.label)

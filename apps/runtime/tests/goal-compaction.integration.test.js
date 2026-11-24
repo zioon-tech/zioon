@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 afterAll(async () => { await database.close(); });
 
-async function setup({ engine = null, generateText = vi.fn(async () => summary), stateStore = null } = {}) {
+async function setup({ engine = null, generateText = vi.fn(async () => summary), stateStore = null, modelLimits = null } = {}) {
   const spaceId = database.nextSpaceId();
   const runs = new PostgresRunStore(database.pool, { spaceId });
   const state = stateStore || await new PostgresWorkbenchStateStore(database.pool, { spaceId }).initialize();
@@ -35,7 +35,7 @@ async function setup({ engine = null, generateText = vi.fn(async () => summary),
     pluginRoots: [root], enabledPluginIds: ["dev.goal", "dev.context-compression"], stateStore: state,
     configByPluginId: {
       "dev.goal": { runStore: runs },
-      "dev.context-compression": { runStore: runs, modelService: { generateText } }
+      "dev.context-compression": { runStore: runs, modelService: { generateText }, ...(modelLimits ? { modelLimits } : {}) }
     }
   });
   const snapshot = await plugins.start();
@@ -379,6 +379,49 @@ const compressionContext = (input = {}) => ({ runId: "run", attemptId: "attempt"
   request: request(), signal: new CancellationController().signal, tools: [], ...input });
 
 describe("Durable model handoff", () => {
+  it("summarizes complete history groups above 16K, bounds each request and reuses the durable handoff", async () => {
+    const resource = await setup();
+    await resource.state.writeKV("runtime.plugins.dev.context-compression.compression.settings", {
+      contextLimitTokens: 128000, outputTokens: 4096, threshold: .5
+    });
+    const messages = longHistory();
+    messages.splice(2, 0, { role: "user", content: "完整历史资料与用户约束 ".repeat(3000) });
+    const original = JSON.stringify(messages);
+    const provider = resource.plugins.getContextProviders().find(item => item.id === "dev.context-compression");
+    const ctx = compressionContext();
+    const result = await provider.contribute(messages, ctx);
+    expect(result[0]).toEqual(messages[0]);
+    expect(result.at(-1)).toEqual(messages.at(-1));
+    expect(JSON.stringify(messages)).toBe(original);
+    expect(resource.generateText).toHaveBeenCalled();
+    const calls = resource.generateText.mock.calls.length;
+    const { estimateContextTokens } = await import("../../../extensions/dev.context-compression/runtime.js");
+    for (const [input] of resource.generateText.mock.calls) {
+      expect(estimateContextTokens(input.messages) + input.maxOutputTokens + 2048).toBeLessThanOrEqual(128000);
+      expect(input.maxOutputTokens).toBe(4096);
+    }
+    expect(JSON.stringify(result).length).toBeLessThan(original.length / 4);
+    expect(await provider.contribute(messages, ctx)).toEqual(result);
+    expect(resource.generateText).toHaveBeenCalledTimes(calls);
+  });
+
+  it("uses the summary's requested output budget when the main model has a large output reserve", async () => {
+    const resource = await setup({ modelLimits: () => ({
+      contextWindowTokens: 32000, maxInputTokens: 32000, defaultOutputTokens: 28000
+    }) });
+    await resource.state.writeKV("runtime.plugins.dev.context-compression.compression.settings", {
+      contextLimitTokens: 32000, outputTokens: 512, threshold: .5
+    });
+    const messages = [{ role: "system", content: "保留原始系统规则" }, { role: "user", content: "完整资料".repeat(1100) },
+      ...Array.from({ length: 8 }, (_, i) => ({ role: "assistant", content: `近期 ${i}` })),
+      { role: "user", content: "保留中文与更正后的目标" }];
+    const provider = resource.plugins.getContextProviders().find(item => item.id === "dev.context-compression");
+    const result = await provider.contribute(messages, compressionContext());
+    expect(result.at(-1)).toEqual(messages.at(-1));
+    expect(resource.generateText).toHaveBeenCalled();
+    expect(resource.generateText.mock.calls[0][0].maxOutputTokens).toBe(512);
+  });
+
   it("prunes only durably recorded successful outputs and provides scoped paged recovery", async () => {
     const resource = await setup();
     await resource.state.writeKV("runtime.plugins.dev.context-compression.compression.settings", {

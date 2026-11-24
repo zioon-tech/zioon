@@ -494,7 +494,7 @@ function importedProfileId(selectedModel) {
   return `workbench.${safe(selectedModel?.providerId)}.${safe(selectedModel?.modelId)}`;
 }
 
-function modelRequestOptions(selectedConfig = {}) {
+export function modelRequestOptions(selectedConfig = {}) {
   const thinkingMode = String(selectedConfig?.thinkingMode || "").toLowerCase();
   const thinkingEffort = String(selectedConfig?.thinkingEffort || "").toLowerCase();
   const options = {};

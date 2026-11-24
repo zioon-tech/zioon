@@ -86,6 +86,15 @@ export async function resetPostgresTestRuntime(database) {
     `"${String(tablename).replaceAll('"', '""')}"`
   );
   await database.pool.query(`TRUNCATE TABLE ${tables.join(", ")} CASCADE`);
+  if (result.rows.some(({ tablename }) => tablename === "runtime_model_detail_usage")) {
+    await database.pool.query("INSERT INTO runtime_model_detail_usage VALUES ('global',0,0)");
+  }
+  if (result.rows.some(({ tablename }) => tablename === "runtime_collaboration_storage_mode")) {
+    await database.pool.query("INSERT INTO runtime_collaboration_storage_mode VALUES ('global','incremental')");
+  }
+  if (result.rows.some(({ tablename }) => tablename === "runtime_session_card_storage_mode")) {
+    await database.pool.query("INSERT INTO runtime_session_card_storage_mode VALUES ('global','inline')");
+  }
 }
 
 export async function provisionTestTeam(database, {

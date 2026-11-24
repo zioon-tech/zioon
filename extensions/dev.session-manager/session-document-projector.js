@@ -251,10 +251,71 @@ function setDocumentCard(document, id, patch) {
   const cards = document.getMap(SESSION_DOCUMENT_CARDS_KEY);
   const previous = cards.get(id);
   const current = previous && typeof previous === "object" ? previous : {};
-  const next = { ...current, ...patch, id };
+  const next = { ...patch, id };
   if (JSON.stringify(current) === JSON.stringify(next)) return false;
   cards.set(id, next);
   return true;
+}
+
+function runEventCard(runId, event, projection, readCard, sequence, includeReasoning) {
+  const data = event.data && typeof event.data === "object" ? event.data : {};
+  const turnKey = String(data.turn ?? data.stepIndex ?? 0);
+  let id, patch;
+  if (includeReasoning && ["reasoning.started", "reasoning.delta", "reasoning.completed"].includes(event.type)) {
+    const segmentKey = String(data.reasoningSegmentId || (turnKey !== "0" ? `${runId}:step:${turnKey}` : runId));
+    id = projection.reasoningIds[segmentKey];
+    if (!id) {
+      id = reasoningCardId(runId, event, projection);
+      projection.reasoningIds[segmentKey] = id;
+      projection.reasoningCount = Math.max(0, Number(projection.reasoningCount || 0)) + 1;
+    }
+    const previous = readCard(id);
+    patch = { kind: "thinking", runId, segmentKey, assistantBlockId: runId,
+      text: event.type === "reasoning.completed" && typeof data.content === "string"
+        ? data.content : String(previous?.text || "") + (event.type === "reasoning.delta" ? String(data.delta || "") : ""),
+      requiresDocumentAnchor: false, status: event.type === "reasoning.completed" ? "completed" : "running", sequence };
+  } else if (event.type === "tool.requested") {
+    const callId = String(data.callId || data.id || "");
+    id = toolCardId(runId, callId);
+    patch = { kind: "tool", toolCallId: callId, runId, name: String(data.name || "tool"),
+      args: data.arguments ?? data.args ?? {}, result: null, ok: null, assistantBlockId: runId,
+      requiresDocumentAnchor: false, status: "running", sequence };
+  } else if (["tool.completed", "tool.denied"].includes(event.type)) {
+    const callId = String(data.callId || data.id || "");
+    id = toolCardId(runId, callId);
+    const previous = readCard(id);
+    patch = { kind: "tool", toolCallId: callId, runId, name: String(data.name || previous?.name || "tool"),
+      args: data.arguments ?? data.args ?? previous?.args ?? {}, result: data.result ?? data.error ?? data.reason ?? "",
+      ok: event.type === "tool.completed" && data.ok !== false && !data.error,
+      artifactIds: Array.isArray(data.artifactIds) ? data.artifactIds : previous?.artifactIds || [],
+      assistantBlockId: runId, requiresDocumentAnchor: false,
+      status: event.type === "tool.denied" ? "denied" : "completed", sequence };
+  }
+  return id && patch ? { ...readCard(id), ...patch, id } : null;
+}
+
+export function planRunEventCards(document, {
+  runId, events = [], includeReasoning = true, readCard
+} = {}) {
+  const id = String(runId || "");
+  const previous = document.getMap(SESSION_DOCUMENT_RUN_PROJECTION_KEY).get(id);
+  const projection = { ...(previous || {}), reasoningIds: { ...(previous?.reasoningIds || {}) } };
+  const cards = new Map();
+  const originals = new Map();
+  const read = cardId => {
+    if (cards.has(cardId)) return cards.get(cardId);
+    if (!originals.has(cardId)) originals.set(cardId, document.getMap(SESSION_DOCUMENT_CARDS_KEY).get(cardId));
+    return readCard ? readCard(cardId) : originals.get(cardId);
+  };
+  if (id && !projection.detached) for (const event of events) {
+    if (!event || String(event.runId || id) !== id) continue;
+    const sequence = Number(event.sequence) > 0 ? Number(event.sequence) : Number(projection.lastSequence || 0) + 1;
+    if (sequence <= Number(projection.lastSequence || 0)) continue;
+    const card = runEventCard(id, event, projection, read, sequence, includeReasoning);
+    if (card) cards.set(card.id, card);
+    projection.lastSequence = sequence;
+  }
+  return { cards, originals, originalProjection: previous };
 }
 
 function projectionStatus(eventType, current) {
@@ -268,7 +329,9 @@ function projectionStatus(eventType, current) {
 export function projectRunEventsToYDocument(document, {
   runId,
   events = [],
-  includeReasoning = true
+  includeReasoning = true,
+  readCard,
+  prepareCard = card => card
 } = {}) {
   const id = String(runId || "");
   if (!id || !Array.isArray(events) || !events.length) return false;
@@ -343,6 +406,9 @@ export function projectRunEventsToYDocument(document, {
     return true;
   };
   let changed = false;
+  const changedCards = new Map();
+  const currentCard = cardId => changedCards.get(cardId)
+    || (readCard ? readCard(cardId) : document.getMap(SESSION_DOCUMENT_CARDS_KEY).get(cardId));
 
   for (const event of events) {
     if (!event || String(event.runId || id) !== id) continue;
@@ -371,105 +437,16 @@ export function projectRunEventsToYDocument(document, {
         changed = appendOutput(content) || changed;
         projection.turnCharacters[turnKey] = content.length;
       }
-    } else if (
-      includeReasoning
-      && (
-        event.type === "reasoning.started"
-        || event.type === "reasoning.delta"
-        || event.type === "reasoning.completed"
-      )
-    ) {
-      const segmentKey = String(
-        data.reasoningSegmentId
-        || (turnKey !== "0" ? `${id}:step:${turnKey}` : id)
-      );
-      let cardId = projection.reasoningIds[segmentKey];
-      if (!cardId) {
-        cardId = reasoningCardId(id, event, projection);
-        projection.reasoningIds[segmentKey] = cardId;
-        projection.reasoningCount =
-          Math.max(0, Number(projection.reasoningCount || 0)) + 1;
+    } else {
+      const card = runEventCard(id, event, projection, currentCard, sequence, includeReasoning);
+      if (card) {
+        const hadCard = currentCard(card.id);
+        if (card.kind === "thinking" || event.type === "tool.requested" || !hadCard) {
+          changed = appendMarker({ runId: id, markerId: card.id,
+            kind: card.kind === "tool" ? "tool" : "thinking", name: card.name }) || changed;
+        }
+        changedCards.set(card.id, card);
       }
-      changed = appendMarker({
-        runId: id,
-        markerId: cardId,
-        kind: "thinking"
-      }) || changed;
-      const previousCard = document
-        .getMap(SESSION_DOCUMENT_CARDS_KEY)
-        .get(cardId);
-      changed = setDocumentCard(document, cardId, {
-        kind: "thinking",
-        runId: id,
-        segmentKey,
-        assistantBlockId: id,
-        text: event.type === "reasoning.completed" && typeof data.content === "string"
-          ? data.content
-          : String(previousCard?.text || "")
-            + (event.type === "reasoning.delta" ? String(data.delta || "") : ""),
-        requiresDocumentAnchor: false,
-        status: event.type === "reasoning.completed"
-          ? "completed"
-          : "running",
-        sequence
-      }) || changed;
-    } else if (event.type === "tool.requested") {
-      const callId = String(data.callId || data.id || "");
-      const cardId = toolCardId(id, callId);
-      changed = appendMarker({
-        runId: id,
-        markerId: cardId,
-        kind: "tool",
-        name: data.name
-      }) || changed;
-      changed = setDocumentCard(document, cardId, {
-        kind: "tool",
-        toolCallId: callId,
-        runId: id,
-        name: String(data.name || "tool"),
-        args: data.arguments ?? data.args ?? {},
-        result: null,
-        ok: null,
-        assistantBlockId: id,
-        requiresDocumentAnchor: false,
-        status: "running",
-        sequence
-      }) || changed;
-    } else if (
-      event.type === "tool.completed"
-      || event.type === "tool.denied"
-    ) {
-      const callId = String(data.callId || data.id || "");
-      const cardId = toolCardId(id, callId);
-      const previousCard = document
-        .getMap(SESSION_DOCUMENT_CARDS_KEY)
-        .get(cardId);
-      if (!previousCard) {
-        changed = appendMarker({
-          runId: id,
-          markerId: cardId,
-          kind: "tool",
-          name: data.name
-        }) || changed;
-      }
-      changed = setDocumentCard(document, cardId, {
-        kind: "tool",
-        toolCallId: callId,
-        runId: id,
-        name: String(data.name || previousCard?.name || "tool"),
-        args: data.arguments ?? data.args ?? previousCard?.args ?? {},
-        result: data.result ?? data.error ?? data.reason ?? "",
-        ok: event.type === "tool.completed"
-          && data.ok !== false
-          && !data.error,
-        artifactIds: Array.isArray(data.artifactIds)
-          ? data.artifactIds
-          : previousCard?.artifactIds || [],
-        assistantBlockId: id,
-        requiresDocumentAnchor: false,
-        status: event.type === "tool.denied" ? "denied" : "completed",
-        sequence
-      }) || changed;
     }
 
     if (snapshotMode && ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type)
@@ -481,6 +458,9 @@ export function projectRunEventsToYDocument(document, {
     projection.status = projectionStatus(event.type, projection.status);
   }
 
+  for (const [cardId, card] of changedCards) {
+    changed = setDocumentCard(document, cardId, prepareCard(card)) || changed;
+  }
   projections.set(id, projection);
   if (snapshotMode && !projection.pendingAnchor) {
     // Keep unfinished fences from swallowing the untouched suffix. Replace only
@@ -838,13 +818,18 @@ export function createSessionDocumentProjector() {
       document,
       runId,
       events,
-      includeReasoning
+      includeReasoning,
+      readCard,
+      prepareCard
     } = {}) {
       return projectRunEventsToYDocument(document, {
         runId,
         events,
-        includeReasoning
+        includeReasoning, readCard, prepareCard
       });
+    },
+    planCards({ document, ...options } = {}) {
+      return planRunEventCards(document, options);
     },
     reconcileTranscript({
       document,

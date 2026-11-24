@@ -11,6 +11,7 @@ export async function createAccountOidcFixture() {
   const devices = new Map();
   const callbacks = new Set();
   let subject = "test-owner";
+  let profileName;
   let issuer;
   const send = (response, value, status = 200) => {
     response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
@@ -74,7 +75,7 @@ export async function createAccountOidcFixture() {
         return send(response, {
           access_token: randomUUID(), token_type: "Bearer", expires_in: 300,
           id_token: await sign(sub, { ...(nonce ? { nonce } : {}),
-            name: sub, email: `${sub}@example.test`, email_verified: true })
+            name: profileName ?? sub, email: `${sub}@example.test`, email_verified: true })
         });
       }
       send(response, { error: "not_found" }, 404);
@@ -84,6 +85,7 @@ export async function createAccountOidcFixture() {
   issuer = `http://127.0.0.1:${server.address().port}`;
   return {
     issuer, setSubject(value) { subject = value; },
+    setName(value) { profileName = value; },
     registerRuntime(origin) { callbacks.add(`${origin}/v1/account/callback`); },
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); })
   };

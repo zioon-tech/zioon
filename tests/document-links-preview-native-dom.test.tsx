@@ -17,7 +17,7 @@ describe.skipIf(!enabled)("document links and avatar permissions in the persiste
     const call = async (user: any, path: string, body?: any, method = body === undefined ? "GET" : "POST", scoped = false) => {
       const response = await native(config.runtimeUrl + path, { method, headers: {
         authorization: `Bearer ${user.token}`, "x-zioon-space-id": user.personalSpaceId, "content-type": "application/json",
-        "x-zion-workbench-protocol": "5", ...(scoped ? { "x-zioon-content-space": owner.personalSpaceId, "x-zioon-content-document": doc } : {})
+        "x-zion-workbench-protocol": "6", ...(scoped ? { "x-zioon-content-space": owner.personalSpaceId, "x-zioon-content-document": doc } : {})
       }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, value: await response.json() };
     };

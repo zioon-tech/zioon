@@ -86,7 +86,8 @@ export function createDeviceServiceClient({
       if (nodeBroker?.invoke) {
         if (pluginDataRequest) requirePluginDataCapability(nodeBroker, runContext);
         const invocationId = `${serviceName}:${randomUUID()}`;
-        const result = await nodeBroker.invoke({
+        const invoke = (!runContext.runId && nodeBroker.invokeInteractiveRead) || nodeBroker.invoke;
+        const result = await invoke.call(nodeBroker, {
           invocationId,
           runId: runContext.runId || invocationId,
           attemptId: runContext.attemptId || invocationId,

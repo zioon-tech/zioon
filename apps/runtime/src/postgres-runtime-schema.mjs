@@ -16,6 +16,15 @@ const migration012 = join(moduleDirectory, "postgres/migrations/012_account_shar
 const migration013 = join(moduleDirectory, "postgres/migrations/013_content_run_grants.sql");
 const migration014 = join(moduleDirectory, "postgres/migrations/014_share_recipient_roles.sql");
 const migration015 = join(moduleDirectory, "postgres/migrations/015_document_links.sql");
+const migration016 = join(moduleDirectory, "postgres/migrations/016_revision_annotation_lookup.sql");
+const migration017 = join(moduleDirectory, "postgres/migrations/017_immutable_message_blobs.sql");
+const migration018 = join(moduleDirectory, "postgres/migrations/018_message_segments.sql");
+const migration019 = join(moduleDirectory, "postgres/migrations/019_model_detail_capacity.sql");
+const migration020 = join(moduleDirectory, "postgres/migrations/020_run_event_archives.sql");
+const migration021 = join(moduleDirectory, "postgres/migrations/021_receipt_bodies.sql");
+const migration022 = join(moduleDirectory, "postgres/migrations/022_observability_start.sql");
+const migration023 = join(moduleDirectory, "postgres/migrations/023_collaboration_updates.sql");
+const migration024 = join(moduleDirectory, "postgres/migrations/024_session_card_bodies.sql");
 
 const migrations = [
   [2, migration002],
@@ -30,7 +39,16 @@ const migrations = [
   [12, migration012],
   [13, migration013],
   [14, migration014],
-  [15, migration015]
+  [15, migration015],
+  [16, migration016],
+  [17, migration017],
+  [18, migration018],
+  [19, migration019],
+  [20, migration020],
+  [21, migration021],
+  [22, migration022],
+  [23, migration023],
+  [24, migration024]
 ];
 
 export async function initializePostgresRuntimeSchema(pool, {

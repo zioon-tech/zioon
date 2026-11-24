@@ -19,6 +19,7 @@ export function createSessionAutoSavePlugin(opts) {
 
   const buckets = new Map();
   const pendingPersistence = new Map();
+  let editRevision = 0;
   const autosaveQuietDelayMs = 700;
   const autosaveMaxDelayMs = 2000;
 
@@ -80,6 +81,26 @@ export function createSessionAutoSavePlugin(opts) {
     if (bucket) bucket.maxTimer = 0;
   };
 
+  const resetBucket = (bucket) => {
+    clearTimers(bucket);
+    bucket.pendingDoc = null;
+    bucket.pendingId = null;
+    bucket.pendingView = null;
+  };
+  const commitBucket = (bucket) => {
+    const { pendingId: id, pendingDoc: doc, pendingView: view } = bucket;
+    if (!doc) return false;
+    if (!id || getCurrentId(view) !== id || isSessionPersistenceDisabled(view)
+      || zion?.state?.get?.(`sessions.deleted.${id}`)) {
+      resetBucket(bucket);
+      return false;
+    }
+    // Keep the original draft available if deletion is rejected.
+    if (zion?.state?.get?.(`sessions.deleting.${id}`) || waitsForCollaboration(view, id)) return false;
+    resetBucket(bucket);
+    return commit(id, view?.state?.doc || doc);
+  };
+
   const trackPersistence = (id, result) => {
     if (!result || typeof result.then !== "function") return;
     const pending = Promise.resolve(result).catch(() => false);
@@ -137,14 +158,7 @@ export function createSessionAutoSavePlugin(opts) {
     const idle = typeof requestIdleCallback === "function";
     const fn = () => {
       clearTimers(bucket);
-      const id = bucket.pendingId || getCurrentId(bucket.pendingView);
-      if (!id || !bucket.pendingDoc) return;
-      const doc = bucket.pendingView?.state?.doc || bucket.pendingDoc;
-      if (waitsForCollaboration(bucket.pendingView, id)) return;
-      bucket.pendingDoc = null;
-      bucket.pendingId = null;
-      bucket.pendingView = null;
-      commit(id, doc);
+      commitBucket(bucket);
     };
     const scheduleIdleCommit = () => {
       bucket.timer = 0;
@@ -163,17 +177,8 @@ export function createSessionAutoSavePlugin(opts) {
   const flush = (idOverride) => {
     let saved = false;
     for (const bucket of buckets.values()) {
-      const id = idOverride || bucket.pendingId || getCurrentId(bucket.pendingView);
-      if (!id || !bucket.pendingDoc) continue;
-      const bucketId = bucket.pendingId || getCurrentId(bucket.pendingView);
-      if (idOverride && bucketId !== idOverride) continue;
-      const doc = bucket.pendingView?.state?.doc || bucket.pendingDoc;
-      if (waitsForCollaboration(bucket.pendingView, id)) continue;
-      bucket.pendingDoc = null;
-      bucket.pendingId = null;
-      bucket.pendingView = null;
-      clearTimers(bucket);
-      saved = commit(id, doc) || saved;
+      if (idOverride && bucket.pendingId !== idOverride) continue;
+      saved = commitBucket(bucket) || saved;
     }
     return saved;
   };
@@ -189,10 +194,9 @@ export function createSessionAutoSavePlugin(opts) {
   };
 
   return {
+    getEditRevision() { return editRevision; },
     hasPendingDrafts() {
-      return [...buckets.values()].some(bucket =>
-        bucket.pendingDoc && waitsForCollaboration(bucket.pendingView, bucket.pendingId)
-      );
+      return [...buckets.values()].some(bucket => !!bucket.pendingDoc);
     },
     extension: ViewPlugin.fromClass(class {
       constructor(view) {
@@ -211,9 +215,15 @@ export function createSessionAutoSavePlugin(opts) {
           if (isSessionPersistenceDisabled(update.view)) {
             return;
           }
+          const id = getCurrentId(update.view);
+          if (!id || zion?.state?.get?.(`sessions.deleted.${id}`)) {
+            resetBucket(getBucket(update.view));
+            return;
+          }
           const bucket = getBucket(update.view);
+          editRevision += 1;
           bucket.pendingView = update.view;
-          bucket.pendingId = getCurrentId(update.view);
+          bucket.pendingId = id;
           bucket.pendingDoc = update.state.doc;
           scheduleSave(bucket);
         }

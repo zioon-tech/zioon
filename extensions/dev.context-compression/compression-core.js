@@ -78,8 +78,7 @@ export class CompressionEngine {
     }
     
     const strategy = await this.selectStrategy(strategyName, messages);
-    if (!strategy) {
-      console.warn(`No compression strategy found: ${strategyName}`);
+    if (!strategy || strategy.isAvailable?.() === false) {
       return messages;
     }
     
@@ -111,7 +110,7 @@ export class CompressionEngine {
     if (!messages || messages.length === 0) return 0;
     
     const strategy = await this.selectStrategy(strategyName, messages);
-    if (!strategy) return 0;
+    if (!strategy || strategy.isAvailable?.() === false) return 0;
     
     try {
       const context = this.createCompressionContext(messages);
@@ -135,7 +134,8 @@ export class CompressionEngine {
       return this.selectAutoStrategy(messages);
     }
     
-    return this.strategies.get(strategyName) || null;
+    const strategy = this.strategies.get(strategyName);
+    return strategy && strategy.isAvailable?.() !== false ? strategy : null;
   }
   
   /**
@@ -153,7 +153,8 @@ export class CompressionEngine {
       return this.strategies.get('opencode') || this.strategies.values().next().value;
     } else if (analysis.isSimpleConversation) {
       // Claude Code for simple conversations
-      return this.strategies.get('claude-code') || this.strategies.values().next().value;
+      return await this.selectStrategy('claude-code', messages)
+        || await this.selectStrategy('opencode', messages);
     } else if (analysis.hasWebContent || analysis.hasLargeDocuments) {
       // Manus for web content and documents
       return this.strategies.get('manus') || this.strategies.values().next().value;

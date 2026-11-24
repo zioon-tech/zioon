@@ -1041,6 +1041,7 @@ export class RuntimePluginService {
       { ...args },
       Object.freeze({
         runId: invocation.runId,
+        invocationId: invocation.invocationId,
         attemptId: invocation.attemptId,
         sessionId: invocation.sessionId,
         projectId: invocation.projectId,

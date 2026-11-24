@@ -3,7 +3,6 @@
  * 支持从HTTP服务安装插件
  */
 
-import JSZip from 'jszip';
 import type {
   PluginInfo,
   PluginInstallResult,
@@ -593,6 +592,7 @@ export class HttpPluginInstaller {
   private async processPluginData(data: ArrayBuffer, sourceUrl: string): Promise<PluginInfo> {
     console.log(`[HttpPluginInstaller] 处理插件数据: ${sourceUrl}`);
 
+    const { default: JSZip } = await import("jszip");
     const zip = await JSZip.loadAsync(data);
 
     // 尝试读取 manifest.json 或 package.json

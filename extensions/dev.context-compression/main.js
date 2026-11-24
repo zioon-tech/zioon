@@ -1,4 +1,5 @@
 import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
+import { hydrateRemoteAnnotations } from "../dev.session-manager/storage/remote.js";
 /**
  * dev.context-compression - Multi-strategy context compression plugin for Zion Next
  * 
@@ -23,6 +24,7 @@ import { CompressionStatus } from './ui/compression-status.js';
 import { stripAssistantBlockIdComment } from '../../src/chat/restore.ts';
 import { isContinuationBoundaryLine } from '../../src/chat/session-document-format.js';
 import { readWorkbenchRuntimeConfig } from '../../src/runtime/workbench-runtime-config.ts';
+import { currentAccountSession } from '../../packages/account-ui/src/client.ts';
 import { runtimePluginCommand } from '../../src/runtime/runtime-plugin-commands.ts';
 import {
   compressionSettingsSyncDirection,
@@ -123,9 +125,10 @@ function t(key, fallback, values) {
 let __settingsPanelSingleton = null;
 let __runtimeSettingsSyncTimer = 0;
 
-function usesRuntimeCompression() {
+export function usesRuntimeCompression() {
   const config = readWorkbenchRuntimeConfig({ state: window.zion?.state, storage: globalThis.localStorage });
   return config.mode !== 'browser' && (config.mode === 'runtime'
+    || !!currentAccountSession()
     || window.zion?.state?.get?.('runtime.connection')?.backend === 'runtime');
 }
 
@@ -369,18 +372,18 @@ async function restoreVersionForActiveSession(id) {
   return { ok: true };
 }
 
-function buildMessagesForCompression(docText, sessionId) {
+async function buildMessagesForCompression(docText, sessionId, suppliedAnnotations) {
   const messages = parseMessages(docText);
   if (!sessionId) return messages;
 
-  const ann = (() => {
+  const ann = await hydrateRemoteAnnotations(suppliedAnnotations || (() => {
     try {
       const v = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId);
       return v && typeof v === 'object' ? v : {};
     } catch {
       return {};
     }
-  })();
+  })());
 
   const limitPos = String(docText || '').length;
 
@@ -660,7 +663,7 @@ export async function activate(ctx) {
         const sessionKey = getSessionKey();
         const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
         if (!sessionId) return { ok: false, error: 'no_session' };
-        const ann = window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || {};
+        const ann = await hydrateRemoteAnnotations(window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || {});
         const items = Array.isArray(ann.tools) ? ann.tools : [];
         const it = items.find(x => String(x.id) === toolId);
         if (!it) return { ok: false, error: 'not_found' };
@@ -1004,6 +1007,7 @@ export async function activate(ctx) {
       let compressed = null;
       try {
         compressed = await compressionEngine.compress(messages, strategy);
+        if (compressed === messages) return messages;
       } catch (e) {
         warn('post contribute: compression failed', { strategy, error: e?.message || String(e) });
         return messages;
@@ -1201,7 +1205,7 @@ async function computeCompressionPreview(compressionEngine, opts) {
   const docText = editor.getValue();
   const sessionKey = getSessionKey();
   const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
-  const messages = buildMessagesForCompression(docText, sessionId);
+  const messages = await buildMessagesForCompression(docText, sessionId);
   if (!messages.length) return null;
 
   const settings = await getCompressionSettings();
@@ -1214,6 +1218,10 @@ async function computeCompressionPreview(compressionEngine, opts) {
 
   const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   let compressed = await compressionEngine.compress(messages, strategy);
+  if (compressed === messages) {
+    window.zion.notification?.show?.("当前没有可用的压缩结果。摘要压缩需要配置真实的摘要模型。", { type: 'info' });
+    return { ok: false, error: 'compression_unavailable' };
+  }
   compressed = sanitizeChatMessages(compressed, messages, { appendFinalUser: strategy !== 'progressive' });
   const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
@@ -1249,8 +1257,8 @@ async function applyCompressionToActiveEditor(compressionEngine, opts) {
   const docText = editor.getValue();
   const sessionKey = getSessionKey();
   const sessionId = sessionKey.startsWith('session:') ? sessionKey.slice('session:'.length) : null;
-  const annotations = sessionId ? (window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || null) : null;
-  const messages = buildMessagesForCompression(docText, sessionId);
+  const annotations = sessionId ? await hydrateRemoteAnnotations(window.zion?.commands?.executeCommand?.('zion.chatCards.getSessionAnnotations', sessionId) || null) : null;
+  const messages = await buildMessagesForCompression(docText, sessionId, annotations);
   if (!messages.length) return { ok: false, error: 'no_messages' };
 
   const settings = await getCompressionSettings();

@@ -21,6 +21,7 @@ beforeEach(() => {
     state: {
       get: vi.fn((key: string) => {
         if (key === "sessions.derivedTags") return derivedRegistry;
+        if (key.startsWith("sessions.doc.")) return sessionDocs[key.slice("sessions.doc.".length)];
         if (key === "sessions.catalog") {
           return Object.keys(sessionDocs).map((id) => ({ id }));
         }
@@ -40,6 +41,16 @@ afterEach(() => {
 });
 
 describe("obsidian tag completion", () => {
+  it("uses the tag index for unopened sessions without invoking document reads", () => {
+    const command = window.zion.commands.executeCommand;
+    window.zion.state.get = vi.fn(key => key === "sessions.catalog"
+      ? Array.from({ length: 900 }, (_, i) => ({ id: `unopened-${i}` }))
+      : key === "sessions.tagIndex" ? {
+        sessions: { "unopened-500": { tags: ["topic/indexed"], exclusions: [] } }
+      } : undefined) as any;
+    expect(complete("#topic/")?.options.some(item => item.label === "#topic/indexed")).toBe(true);
+    expect(command).not.toHaveBeenCalled();
+  });
   it("aggregates derived tags across sessions and providers with global deduplication", () => {
     derivedRegistry = {
       biography: {

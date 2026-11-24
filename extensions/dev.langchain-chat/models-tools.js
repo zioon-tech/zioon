@@ -115,7 +115,7 @@ export function registerModelsTools() {
               context_window_tokens: { type: "number", description: "模型上下文窗口 tokens" },
               max_input_tokens: { type: "number", description: "模型最大输入 tokens" },
               max_output_tokens: { type: "number", description: "模型能力允许的最大输出 tokens" },
-              max_tokens: { type: "number", description: "Zion 单次请求默认输出 tokens" },
+      max_tokens: { type: "number", description: "Zioon 单次请求默认输出 tokens" },
               supportsImage: { type: "boolean", description: "是否支持图片输入" },
               supportsThinking: { type: "boolean", description: "模型是否支持思考" },
               supportsThinkingEffort: { type: "boolean", description: "模型是否支持思考强度控制" },

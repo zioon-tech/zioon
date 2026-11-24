@@ -181,7 +181,7 @@ export class ManagedSandboxProvider {
     signal = null
   } = {}) {
     if (typeof command !== "string" || !command || Buffer.byteLength(command) > 32_768) throw new Error("Invalid command");
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error("Invalid PoC command timeout");
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) throw new Error("Invalid command timeout");
     if (!Number.isSafeInteger(maxOutputBytes)
       || maxOutputBytes < 1024
       || maxOutputBytes > 5 * 1024 * 1024) {

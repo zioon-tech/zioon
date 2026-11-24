@@ -14,7 +14,7 @@ describe.skipIf(!enabled)("public reader on the persistent local preview", () =>
     const call = async (path: string, body?: unknown, method = body === undefined ? "GET" : "PUT") => {
       const response = await nativeFetch(config.runtimeUrl + path, { method,
         headers: { authorization: `Bearer ${owner.token}`, "x-zioon-space-id": owner.personalSpaceId,
-          "x-zion-workbench-protocol": "5", "content-type": "application/json" },
+          "x-zion-workbench-protocol": "6", "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, value: await response.json() };
     };

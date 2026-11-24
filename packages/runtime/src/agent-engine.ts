@@ -202,8 +202,7 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-async function requestHash(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalJson(value));
+async function requestHash(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -234,10 +233,12 @@ async function modelRequestSummary(request: Record<string, unknown>) {
   const config = Object.fromEntries(MODEL_REQUEST_CONFIG_KEYS
     .filter((key) => payload[key] !== undefined)
     .map((key) => [key, payload[key]]));
+  const encoder = new TextEncoder();
+  const payloadBytes = encoder.encode(canonicalJson(payload));
   const [payloadHash, messagesHash, toolsHash] = await Promise.all([
-    requestHash(payload),
-    requestHash(messages),
-    requestHash(tools)
+    requestHash(payloadBytes),
+    requestHash(encoder.encode(canonicalJson(messages))),
+    requestHash(encoder.encode(canonicalJson(tools)))
   ]);
   const {
     payload: _payload,
@@ -249,7 +250,7 @@ async function modelRequestSummary(request: Record<string, unknown>) {
     messageCount: messages.length,
     toolCount: tools.length,
     toolNames,
-    payloadBytes: utf8Bytes(payload),
+    payloadBytes: payloadBytes.byteLength,
     payloadHash,
     messagesHash,
     toolsHash,

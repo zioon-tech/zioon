@@ -20,6 +20,7 @@ import { resolveImageAsset } from "../media/image-assets";
 import { workbenchDocumentForView } from "../runtime/workbench-space";
 import { isContinuationBoundaryLine } from "../chat/session-document-format.js";
 import { safeMarkdownHref, sanitizePublicSvg } from "./public-content-security";
+import { isCardMarkerLine } from "../chat/card-markers";
 
 /**
  * Revised WYSIWYG plugin:
@@ -64,8 +65,7 @@ function isValidInlineMathCandidate(source: string, start: number, end: number):
 
 /* Helper: Check if line contains tool call or thinking markers (skip WYSIWYG processing) */
 const isToolOrThinkingLine = (lineText: string): boolean => {
-  return /^\s*调用\s+[^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/.test(lineText)
-    || /^\s*思考\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/.test(lineText)
+  return isCardMarkerLine(lineText)
     || isContinuationBoundaryLine(lineText);
 };
 

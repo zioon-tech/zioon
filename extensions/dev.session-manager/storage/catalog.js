@@ -1,3 +1,8 @@
+export function catalogResponseIsCurrent(response, requestGeneration, currentGeneration, eventCursor) {
+  return requestGeneration === currentGeneration
+    && Number(response?.event_cursor) >= eventCursor;
+}
+
 export function hydrateSessionCatalog(catalog, {
   state, durableIds, revisions, invalidate, hasPending = () => false,
   isOpen = () => false
@@ -6,10 +11,13 @@ export function hydrateSessionCatalog(catalog, {
     throw new Error("Invalid session catalog");
   }
   const previousIds = new Set(durableIds);
+  const staleIds = new Set(catalog.sessions.filter(item =>
+    (revisions.get(String(item.id)) || 0) > (Number(item.session_revision) || 0)
+  ).map(item => String(item.id)));
   const refreshIds = [];
   if (catalog.metadataPartial) {
     for (const entry of catalog.index || []) {
-      if (!entry?.id || hasPending(entry.id)) continue;
+      if (!entry?.id || hasPending(entry.id) || staleIds.has(entry.id)) continue;
       const existing = state.get(`sessions.summary.${entry.id}`) || {};
       state.set(`sessions.summary.${entry.id}`, { ...existing, ...entry });
     }
@@ -30,7 +38,7 @@ export function hydrateSessionCatalog(catalog, {
   }
   for (const item of catalog.metas) {
     const id = String(item?.id || "");
-    if (!id || hasPending(id)) continue;
+    if (!id || hasPending(id) || staleIds.has(id)) continue;
     if (!state.get(`sessions.meta.${id}`)) state.set(`sessions.metaLoaded.${id}`, false);
     state.set(`sessions.summary.${id}`, { ...item.meta, id });
   }

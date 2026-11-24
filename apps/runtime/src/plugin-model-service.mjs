@@ -1,4 +1,5 @@
 import { CancellationController } from "../../../packages/runtime/dist/index.js";
+import { randomUUID } from "node:crypto";
 
 function timeoutSignal(controller, timeoutMs) {
   const ms = Math.max(1, Number(timeoutMs || 30000));
@@ -58,11 +59,17 @@ export function createPluginModelService({
           ? await resolveModel(model || runContext.request?.model || runContext.model || null,
             runContext.principal || runContext.request?.principal)
           : model;
+        controller.signal.throwIfCancelled();
+        const normalizedMessages = normalizeMessages(messages);
+        // Each generation needs a fresh stream cursor: acknowledged Host chunks
+        // cannot be consumed again. Plugins persist completed outputs separately.
+        const modelRequestId = `plugin:${randomUUID()}`;
         for await (const event of engine.streamTurn({
           runId: runContext.runId,
           attemptId: runContext.attemptId,
           principal: runContext.principal || runContext.request?.principal,
-          messages: normalizeMessages(messages),
+          messages: normalizedMessages,
+          modelRequestId,
           tools: [],
           model: requestedModel,
           modelOptions,

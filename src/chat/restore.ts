@@ -57,6 +57,72 @@ function splitLines(text: string) {
   return String(text || "").replace(/\r/g, "").split("\n");
 }
 
+export type AssistantDocumentIndex = {
+  text: string;
+  lines: string[];
+  ends: number[];
+  roles: Array<{ line: number; role: string; id: string | null }>;
+  ids: Map<string, number>;
+};
+
+// Bounded by both document count and text size. Equality uses the complete
+// immutable source, so same-length edits, undo and remote hydration cannot hit
+// a stale index. Thinking and tool projections share this cache.
+const documentIndexes: Array<{ source: string; index: AssistantDocumentIndex }> = [];
+export function getAssistantDocumentIndex(docText: string): AssistantDocumentIndex {
+  const source = String(docText || "");
+  const hit = documentIndexes.findIndex(entry => entry.source === source);
+  if (hit >= 0) {
+    const [entry] = documentIndexes.splice(hit, 1);
+    documentIndexes.unshift(entry);
+    return entry.index;
+  }
+  const text = source.replace(/\r/g, "");
+  const lines = text.split("\n");
+  const ends: number[] = [];
+  const roles: AssistantDocumentIndex["roles"] = [];
+  const ids = new Map<string, number>();
+  let position = 0;
+  for (let line = 0; line < lines.length; line++) {
+    position += lines[line].length;
+    ends.push(position);
+    position++;
+    const id = getAssistantBlockIdFromHeader(lines[line]);
+    if (id) ids.set(id, ids.has(id) ? -1 : line);
+    const role = lines[line].match(ROLE_HEADER_RE)?.[1];
+    if (role) roles.push({ line, role, id });
+  }
+  const index = { text, lines, ends, roles, ids };
+  documentIndexes.unshift({ source, index });
+  let retained = 0;
+  const keep = documentIndexes.findIndex((entry, ordinal) => {
+    retained += entry.source.length;
+    return ordinal >= 4 || (ordinal > 0 && retained > 8_000_000);
+  });
+  if (keep >= 0) documentIndexes.splice(keep);
+  return index;
+}
+
+function lowerBound(values: number[], target: number): number {
+  let low = 0, high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return Math.min(low, values.length - 1);
+}
+
+function roleAtLine(index: AssistantDocumentIndex, line: number): number {
+  let low = 0, high = index.roles.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (index.roles[middle].line <= line) low = middle + 1;
+    else high = middle;
+  }
+  return low - 1;
+}
+
 function findLineIndexAtPos(lines: string[], pos: number) {
   const target = Math.max(0, Number.isFinite(pos) ? pos : 0);
   let cursor = 0;
@@ -116,33 +182,23 @@ export function findAssistantBlockEndOffsetById(
   docText: string,
   assistantBlockId: string | null | undefined
 ): number | null {
-  const text = String(docText || "").replace(/\r/g, "");
-  const lines = splitLines(text);
-  return findAssistantBlockEndOffsetFromHead(lines, findAssistantHeadIndexById(lines, assistantBlockId));
+  if (!sanitizeCardMarkerId(assistantBlockId)) return null;
+  const index = getAssistantDocumentIndex(docText);
+  const line = index.ids.get(sanitizeCardMarkerId(assistantBlockId));
+  if (line == null || line < 0) return null;
+  const nextRole = index.roles[roleAtLine(index, line) + 1];
+  return index.ends[nextRole ? nextRole.line - 1 : index.lines.length - 1];
 }
 
 export function findAssistantBlockIdAtOffset(
   docText: string,
-  offset: number | null | undefined
+  offset: number | null | undefined,
+  index = getAssistantDocumentIndex(docText)
 ): string | null {
-  const text = String(docText || "").replace(/\r/g, "");
-  const lines = splitLines(text);
-  if (!lines.length) return null;
-  const lineIndex = findLineIndexAtPos(lines, Number(offset || 0));
-  for (let i = lineIndex; i >= 0; i--) {
-    const match = lines[i].match(ROLE_HEADER_RE);
-    if (!match) continue;
-    if (match[1] !== "assistant") return null;
-    const id = getAssistantBlockIdFromHeader(lines[i]);
-    if (!id) return null;
-    let occurrences = 0;
-    for (const line of lines) {
-      if (getAssistantBlockIdFromHeader(line) === id) occurrences += 1;
-      if (occurrences > 1) return null;
-    }
-    return id;
-  }
-  return null;
+  const rawOffset = Number(offset || 0);
+  const line = lowerBound(index.ends, Math.max(0, Number.isFinite(rawOffset) ? rawOffset : 0));
+  const role = index.roles[roleAtLine(index, line)];
+  return role?.role === "assistant" && role.id && index.ids.get(role.id) !== -1 ? role.id : null;
 }
 
 export function findAssistantBlockEndOffset(docText: string, hintPos?: number | null): number {
@@ -247,7 +303,8 @@ export function planAssistantMarkerInsertionById(args: {
   markerText: string;
   trailingNewlines?: number;
 }) {
-  const docText = String(args?.docText || "").replace(/\r/g, "");
+  if (!sanitizeCardMarkerId(args?.assistantBlockId)) return null;
+  const docText = getAssistantDocumentIndex(args?.docText).text;
   const insertPos = findAssistantBlockEndOffsetById(docText, args?.assistantBlockId);
   if (insertPos == null) return null;
   return buildAssistantMarkerInsertionPlan({
@@ -326,16 +383,25 @@ export function reconcileExactAnchors<T extends RestoreItem, A extends RestoreAn
   items: T[];
   processedIds?: Set<string>;
   anchors: A[];
+  matchByRange?: boolean;
   isExactMatch: (item: T, anchor: A) => boolean;
   onMatch: (item: T, anchor: A) => void;
 }): Set<string> {
   const processedIds = args.processedIds || new Set<string>();
   const items = Array.isArray(args.items) ? args.items : [];
   const anchors = Array.isArray(args.anchors) ? args.anchors : [];
+  const byRange = new Map<string, A[]>();
+  for (const anchor of anchors) {
+    const key = `${anchor.from}:${anchor.to}`;
+    const group = byRange.get(key) || [];
+    group.push(anchor);
+    byRange.set(key, group);
+  }
   for (const item of items) {
     const id = String(item?.id || "");
     if (!id || processedIds.has(id)) continue;
-    const anchor = anchors.find((candidate) => !candidate.occupied && args.isExactMatch(item, candidate));
+    const candidates = args.matchByRange ? byRange.get(`${item.from}:${item.to}`) || [] : anchors;
+    const anchor = candidates.find((candidate) => !candidate.occupied && args.isExactMatch(item, candidate));
     if (!anchor) continue;
     anchor.occupied = true;
     processedIds.add(id);

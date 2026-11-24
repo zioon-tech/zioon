@@ -1,5 +1,6 @@
 import { Facet, type EditorState, type Range, type Transaction } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { isCardMarkerLine } from "../chat/card-markers";
 
 export type InlineWidgetDecorationSource = {
   id: string;
@@ -14,8 +15,7 @@ export const inlineWidgetSourceFacet = Facet.define<InlineWidgetDecorationSource
 
 
 function isInlineWidgetAnchorLine(text: string): boolean {
-  return /^\s*调用\s+[^\n<]{1,300}(?:\s*<!--\s*zion-tool:id=[^>\s]+\s*-->)?\s*$/.test(text)
-    || /^\s*思考\s*<!--\s*zion-thinking:id=[^>\s]+\s*-->\s*$/.test(text);
+  return isCardMarkerLine(text);
 }
 
 const CARD_MARKER_ID_COMMENT_RE = /<!--\s*zion-(?:thinking|tool):id=[^>\s]+\s*-->/g;

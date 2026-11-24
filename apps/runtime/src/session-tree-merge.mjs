@@ -30,6 +30,16 @@ export function sessionTreeChanges(base, desired) {
       changes.push({ before: summary(previous), after: summary(next) });
     }
   }
+  for (const [id, entry] of before) {
+    const next = after.get(id);
+    if (entry.node.type !== "folder" || next?.node.type !== "folder") continue;
+    const common = entry.node.children.map(child => child.id)
+      .filter(childId => next.node.children.some(child => child.id === childId));
+    const nextOrder = next.node.children.map(child => child.id).filter(childId => common.includes(childId));
+    if (JSON.stringify(common) !== JSON.stringify(nextOrder)) {
+      changes.push({ before: { id, order: common }, after: { id, order: nextOrder } });
+    }
+  }
   return changes;
 }
 
@@ -67,6 +77,22 @@ export function mergeSessionTree(base, desired, current) {
   const after = entries(desired);
   const result = JSON.parse(JSON.stringify(current));
   const live = entries(result);
+  const deleted = new Set([...before.keys()].filter(id => id !== "root" && !after.has(id)));
+  // A recursive delete was confirmed against the client's base. Do not
+  // silently remove children another window added or moved into that folder.
+  for (const id of deleted) {
+    const node = live.get(id)?.node;
+    if (node?.type !== "folder") continue;
+    const check = folder => {
+      for (const child of folder.children) {
+        if (!deleted.has(child.id)) {
+          throw Object.assign(new Error("Folder has new children from another window; refresh before deleting"), { statusCode: 409 });
+        }
+        if (child.type === "folder") check(child);
+      }
+    };
+    check(node);
+  }
   const detach = (id) => {
     const entry = live.get(id);
     const parent = live.get(entry?.parentId)?.node;
@@ -115,6 +141,26 @@ export function mergeSessionTree(base, desired, current) {
     const index = preceding ? parent.node.children.findIndex(child => child.id === preceding.id) + 1 : 0;
     parent.node.children.splice(index, 0, existing.node);
     existing.parentId = entry.parentId;
+  }
+  // Ignore insertions/removals when detecting a reorder. Otherwise a stale
+  // tab adding an unrelated folder would also restore its old sibling order.
+  for (const [id, entry] of after) {
+    const previous = before.get(id);
+    const parent = live.get(id)?.node;
+    if (entry.node.type !== "folder" || previous?.node.type !== "folder" || !parent) continue;
+    const common = previous.node.children.map(child => child.id)
+      .filter(childId => entry.node.children.some(child => child.id === childId));
+    const order = entry.node.children.map(child => child.id).filter(childId => common.includes(childId));
+    if (JSON.stringify(common) === JSON.stringify(order)) continue;
+    let predecessor = null;
+    for (const childId of entry.node.children.map(child => child.id)) {
+      const child = live.get(childId);
+      if (!child || child.parentId !== id) continue;
+      detach(childId);
+      const index = predecessor ? parent.children.findIndex(item => item.id === predecessor) + 1 : 0;
+      parent.children.splice(index, 0, child.node);
+      predecessor = childId;
+    }
   }
   entries(result);
   return result;

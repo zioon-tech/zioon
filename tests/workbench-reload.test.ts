@@ -140,7 +140,7 @@ describe("Lazy session hydration", () => {
     await expect(repo.saveMeta("s", meta)).resolves.toBe(true);
     expect(persist).toHaveBeenCalledWith("meta", "s", expect.objectContaining({
       title: "Renamed", annotations: { tools: [{ id: "result", result: "complete" }] }, config: { model: "m" }
-    }));
+    }), expect.objectContaining({ changes: expect.any(Array) }));
   });
 
   it("does not persist an empty replacement when a lazy read fails", async () => {

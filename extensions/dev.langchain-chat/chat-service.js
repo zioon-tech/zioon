@@ -26,6 +26,7 @@ import {
   recordModelAvailabilityFailure,
   recordModelAvailabilitySuccess
 } from "./model-health.js";
+import { isAccountPluginModel, isRuntimeManagedModel, runAccountModelStream } from "./account-model-stream.js";
 
 /**
  * 消息格式转换函数 - 将标准消息格式转换为特定 provider 所需的格式
@@ -676,11 +677,12 @@ function createHttpError(response, text) {
   error.responseText = detail;
   error.retryAfterMs = parseRetryAfterMs(response);
   error.retryable =
+    !isPermanentRequestFingerprint(detail) && (
     status === 408 ||
     status === 409 ||
     status === 425 ||
     status === 429 ||
-    status >= 500;
+    status >= 500);
   if (
     status === 400 &&
     detail.toLowerCase().includes("reasoning_content") &&
@@ -693,7 +695,7 @@ function createHttpError(response, text) {
 }
 
 function isPermanentRequestFingerprint(fingerprint) {
-  return /invalid[_ -]?(api[_ -]?key|access[_ -]?token|request|parameter|model)|authentication|unauthorized|forbidden|permission|insufficient[_ -]?quota|context[_ -]?(length|window)|maximum context|content policy|not found|unsupported|malformed|validation/.test(
+  return /invalid[_ -]?(api[_ -]?key|access[_ -]?token|request|param(?:eter)?|model)|\bparam(?:eter)?s?\s+(?:is|are)\s+invalid\b|authentication|unauthorized|forbidden|permission|insufficient[_ -]?quota|context[_ -]?(length|window)|maximum context|content policy|not found|unsupported|malformed|validation/.test(
     String(fingerprint || "").toLowerCase()
   );
 }
@@ -743,15 +745,15 @@ function createProviderStreamError(payload) {
 
   error.code = code;
   error.httpStatus = status || null;
-  if (status) {
+  if (isPermanentRequestFingerprint(fingerprint)) {
+    error.retryable = false;
+  } else if (status) {
     error.retryable =
       status === 408 ||
       status === 409 ||
       status === 425 ||
       status === 429 ||
       status >= 500;
-  } else if (isPermanentRequestFingerprint(fingerprint)) {
-    error.retryable = false;
   } else if (/rate[_ -]?limit|too many requests|overloaded|timeout|timed out|connection|network|temporar|unavailable|reset|eof/.test(fingerprint)) {
     error.retryable = true;
   } else {
@@ -776,14 +778,14 @@ function extractProviderStreamError(line) {
 
 function isRetryableRequestError(error) {
   if (!error || error.name === "AbortError") return false;
+  const fingerprint = `${error.code || ""} ${getErrorMessage(error, "")} ${error.responseText || ""}`.toLowerCase();
+  if (isPermanentRequestFingerprint(fingerprint) || fingerprint.includes("missing_reasoning_content")) {
+    return false;
+  }
   if (typeof error.retryable === "boolean") return error.retryable;
   const status = Number(error.httpStatus || error.status || 0);
   if (status) {
     return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
-  }
-  const fingerprint = `${error.code || ""} ${getErrorMessage(error, "")}`.toLowerCase();
-  if (isPermanentRequestFingerprint(fingerprint) || fingerprint.includes("missing_reasoning_content")) {
-    return false;
   }
   return true;
 }
@@ -795,12 +797,12 @@ function getRetryDelay(error, retryNumber, baseDelay) {
   return base * Math.pow(2, Math.max(0, retryNumber - 1));
 }
 
-function notifyRequestRetry(error, retryNumber, maxRetries, delay) {
+function notifyRequestRetry(error, retryNumber, maxRetries, delay, silent = false) {
   const seconds = Math.max(0, delay) / 1000;
   const delayText = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
   const message = `请求失败，${delayText} 秒后自动重试 (${retryNumber}/${maxRetries}): ${getErrorMessage(error)}`;
   try {
-    window.zion?.notification?.show?.(message, {
+    if (!silent) window.zion?.notification?.show?.(message, {
       type: "warning",
       duration: Math.max(3000, Math.min(8000, delay + 1500))
     });
@@ -859,7 +861,7 @@ async function fetchWithRetry(url, options, maxRetries = 3, baseDelay = 2000) {
       }
       const retryNumber = attempt + 1;
       const delay = getRetryDelay(error, retryNumber, baseDelay);
-      notifyRequestRetry(error, retryNumber, maxRetries, delay);
+      notifyRequestRetry(error, retryNumber, maxRetries, delay, options.silent);
       await waitForRetryDelay(delay, options.signal);
     }
   }
@@ -970,6 +972,22 @@ export async function runStream({
   // 读取当前激活的模型（默认 DeepSeek V4 Flash）
   const active = activeModel || window.zion.state.get("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
   const availabilityStartedAt = Date.now();
+  if (isAccountPluginModel(active) || (!tools?.length && isRuntimeManagedModel(active))) {
+    try {
+      const result = await runAccountModelStream({
+        activeModel: active, messages, tools, onToken, onEnd, getController,
+        runId, sessionId, requestSource
+      });
+      if (!result?.aborted) recordModelAvailabilitySuccess(active, {
+        latencyMs: Math.max(0, Date.now() - availabilityStartedAt)
+      });
+      return result;
+    } catch (error) {
+      recordModelAvailabilityFailure(active, error);
+      onError?.(error);
+      return { reasoning_content: "", error };
+    }
+  }
   const reasoningSegmentId = stepIndex != null ? `${runId}:step:${stepIndex}` : runId;
   const controlEventBase = {
     runId,
@@ -1262,7 +1280,8 @@ export async function runStream({
           headers,
           body: JSON.stringify(body),
           signal: controller.signal,
-          modelProfileId: cfg._runtimeProfileId
+          modelProfileId: cfg._runtimeProfileId,
+          silent: silentReasoning
         },
         3,
           _retryBaseDelay
@@ -1667,7 +1686,7 @@ export async function runStream({
       if (shouldRetryStream) {
         const retryNumber = _streamRetryAttempt + 1;
         const delay = getRetryDelay(e, retryNumber, _retryBaseDelay);
-        notifyRequestRetry(e, retryNumber, maxStreamRetries, delay);
+        notifyRequestRetry(e, retryNumber, maxStreamRetries, delay, silentReasoning);
         try {
           await waitForRetryDelay(delay, controller.signal);
         } catch (waitError) {

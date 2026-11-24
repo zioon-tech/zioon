@@ -6,6 +6,7 @@ import { formatCompactChangeCount, formatChangeSummary, getCurrentSessionChangeS
 import { getContextFileResourceKey, getContextResourceDeviceKey, isKnownFileToolFailure, mergeContextFileResources } from "./context-file-resources.js";
 import { extractObsidianMetadata, findObsidianTargetPosition } from "../shared/obsidian-metadata.js";
 import { partitionSessionExtractedTags } from "../shared/session-tag-exclusions.js";
+import { createContextBiographyCache } from "./context-biography-cache.js";
 
 export const CONTEXT_VIEW_ID = "dev.tools.context";
 
@@ -117,10 +118,6 @@ export function registerContextPanel(ctx) {
   });
   if (viewDisposable) disposables.push(viewDisposable);
 
-  // Context is intended as the default right-side home for session context.
-  try { window.zion.auxiliaryBar?.setWidth?.(Math.max(340, window.zion.state?.get?.("ui.auxiliaryBar.width") || 0)); } catch {}
-  try { window.zion.auxiliaryBar?.activateView?.(CONTEXT_VIEW_ID); } catch {}
-
   const disposable = {
     dispose() {
       for (const d of disposables.splice(0)) {
@@ -186,6 +183,8 @@ function createContextPanel(container) {
   let autoExpandFileFolders = !hasStoredExpandedGroups();
   let lastRefreshSignature = "";
   let lastRenderedSignature = "";
+  let cachedSnapshot = null;
+  let cachedSnapshotSignature = "";
   let preservedScrollTop = 0;
   const editorCore = getEditorCore(CONTEXT_VIEW_ID);
   let activeFileTabId = editorCore.getActiveTabId();
@@ -201,8 +200,6 @@ function createContextPanel(container) {
   const urlTitleCache = loadUrlTitleCache();
   const pendingTitleFetches = new Set();
   const openFileTabs = editorCore.tabs;
-    const biographyEventsBySession = new Map();
-    const biographyFetches = new Set();
 
   const scheduleRender = () => {
     if (disposed) return;
@@ -212,8 +209,15 @@ function createContextPanel(container) {
       render();
     });
   };
+  const biographyCache = createContextBiographyCache({
+    getCommands: () => window.zion?.commands,
+    normalize: normalizeContextBiographyEvents,
+    onChange: () => { cachedSnapshot = null; lastRenderedSignature = ""; scheduleRender(); }
+  });
+  disposables.push(biographyCache);
 
   const scheduleContextRefresh = () => {
+    cachedSnapshot = null;
     scheduleRender();
     setTimeout(scheduleRender, 80);
     setTimeout(scheduleRender, 260);
@@ -221,7 +225,7 @@ function createContextPanel(container) {
 
   const watchState = (key) => {
     try {
-      const d = window.zion.state?.onDidChange?.(key, scheduleRender);
+      const d = window.zion.state?.onDidChange?.(key, () => { cachedSnapshot = null; scheduleRender(); });
       if (d) disposables.push(d);
     } catch {}
   };
@@ -249,16 +253,13 @@ function createContextPanel(container) {
   try { disposables.push(window.zion.events?.on?.("comments/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("agents/changed", scheduleContextRefresh)); } catch {}
   try { disposables.push(window.zion.events?.on?.("memory/changed", scheduleContextRefresh)); } catch {}
-    try { disposables.push(window.zion.events?.on?.("identity/biographyChanged", (payload = {}) => {
-      const sessionId = String(payload?.sessionId || getCurrentSessionId() || "").trim();
-      if (sessionId) {
-        biographyEventsBySession.delete(sessionId);
-        refreshBiographyEventsForSession(sessionId, { force: true });
-      }
-      scheduleContextRefresh();
-    })); } catch {}
+  try { disposables.push(window.zion.events?.on?.("identity/biographyChanged", (payload = {}) => {
+    const sessionId = String(payload?.sessionId || getCurrentSessionId() || "").trim();
+    biographyCache.invalidate(sessionId);
+    scheduleContextRefresh();
+  })); } catch {}
   try { disposables.push(window.zion.events?.on?.("dev.tools.context/resourcesChanged", scheduleContextRefresh)); } catch {}
-  try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { lastRenderedSignature = ""; scheduleRender(); })); } catch {}
+  try { disposables.push(window.zion.events?.on?.("i18n/changed", () => { cachedSnapshot = null; lastRenderedSignature = ""; scheduleRender(); })); } catch {}
   try { disposables.push(window.zion.events?.on?.("dev.tools.context/openFilePreview", (payload) => {
     const path = String(payload?.path || "").trim();
     if (!path) return;
@@ -297,6 +298,8 @@ function createContextPanel(container) {
     disposables.push({ dispose: () => window.removeEventListener("zion:memory-changed", onMemoryChanged) });
   } catch {}
   const pollTimer = window.setInterval(() => {
+    // Check even when the document signature is unchanged: plugins load later.
+    biographyCache.checkAvailability();
     const signature = getContextRefreshSignature();
     if (signature === lastRefreshSignature) return;
     lastRefreshSignature = signature;
@@ -328,13 +331,18 @@ function createContextPanel(container) {
     const previousScroll = root.querySelector(".zion-context-scroll");
     if (previousScroll) preservedScrollTop = previousScroll.scrollTop || 0;
 
-      const sessionId = getCurrentSessionId();
-      const snapshot = buildContextSnapshot(urlTitleCache, {
+    const sessionId = getCurrentSessionId();
+    const signature = getContextRefreshSignature();
+    if (!cachedSnapshot || cachedSnapshotSignature !== signature) {
+      cachedSnapshot = buildContextSnapshot(urlTitleCache, {
         sessionId,
-        biographyEvents: getCachedBiographyEventsForSession(sessionId)
+        biographyEvents: biographyCache.get(sessionId)
       });
+      cachedSnapshotSignature = signature;
+    }
+    const snapshot = cachedSnapshot;
     const changeState = getCurrentSessionChangeState();
-    prefetchUrlTitles(snapshot.urls, urlTitleCache, pendingTitleFetches, scheduleRender);
+    prefetchUrlTitles(snapshot.urls, urlTitleCache, pendingTitleFetches, scheduleContextRefresh);
     const renderSignature = getSnapshotRenderSignature(snapshot, expanded, changeState);
     const hasPreviewPane = !!root.querySelector(".zion-context-preview-pane");
     const hasLocalPreview = openFileTabs.size > 0 && !window.zion?.inspector?.open;
@@ -398,54 +406,6 @@ function createContextPanel(container) {
     }
     syncSelectedRow(root, selectedKey);
   }
-
-    function getCachedBiographyEventsForSession(sessionId) {
-      const sid = String(sessionId || "").trim();
-      if (!sid) return [];
-      if (!biographyEventsBySession.has(sid)) refreshBiographyEventsForSession(sid);
-      return biographyEventsBySession.get(sid) || [];
-    }
-
-    function refreshBiographyEventsForSession(sessionId, options = {}) {
-      const sid = String(sessionId || "").trim();
-      if (!sid) return;
-      if (!options.force && biographyFetches.has(sid)) return;
-      biographyFetches.add(sid);
-      let result = null;
-      try {
-        const commandsApi = window.zion?.commands;
-        if (typeof commandsApi?.listCommands === "function") {
-          const ids = commandsApi.listCommands() || [];
-          if (Array.isArray(ids) && !ids.includes("identity.getSessionBiographyEvents")) {
-            biographyFetches.delete(sid);
-            return;
-          }
-        }
-        result = commandsApi?.executeCommand?.("identity.getSessionBiographyEvents", { sessionId: sid });
-      } catch {}
-      if (result == null) {
-        biographyFetches.delete(sid);
-        return;
-      }
-      Promise.resolve(result)
-        .then((events) => {
-          const next = normalizeContextBiographyEvents(events);
-          const previous = biographyEventsBySession.get(sid) || [];
-          if (stableStringify(next) !== stableStringify(previous)) {
-            biographyEventsBySession.set(sid, next);
-            lastRenderedSignature = "";
-            scheduleRender();
-          } else if (!biographyEventsBySession.has(sid)) {
-            biographyEventsBySession.set(sid, next);
-          }
-        })
-        .catch(() => {
-          if (!biographyEventsBySession.has(sid)) biographyEventsBySession.set(sid, []);
-        })
-        .finally(() => {
-          biographyFetches.delete(sid);
-        });
-    }
 
   async function openContextFilePreview(item) {
     const path = item?.path || item?.label || "";
@@ -3420,21 +3380,31 @@ function getActiveEditorText() {
   return "";
 }
 
+const contextReferenceIds = new WeakMap();
+let nextContextReferenceId = 0;
+function contextReferenceId(value) {
+  if (!value || typeof value !== "object") return String(value ?? "");
+  if (!contextReferenceIds.has(value)) contextReferenceIds.set(value, ++nextContextReferenceId);
+  return contextReferenceIds.get(value);
+}
+
 function getContextRefreshSignature() {
   const sessionId = getCurrentSessionId() || "";
-  const text = getActiveEditorText();
+  // CodeMirror Text is immutable: identity catches edits anywhere in the
+  // document without copying its full string on every background poll.
+  const document = window.zion?.window?.activeEditor?.getView?.()?.state?.doc;
+  const textRevision = document ? contextReferenceId(document) : getActiveEditorText();
   const tools = getCurrentTools(sessionId);
   const contextResources = getSessionContextResources(sessionId);
-  const textTail = text.length > 6000 ? text.slice(-6000) : text;
   const toolSig = tools.map((tool) => [
     tool?.id || tool?.toolCallId || "",
     tool?.name || "",
-    stableStringify(tool?.args),
-    stableStringify(tool?.result),
+    contextReferenceId(tool?.args),
+    contextReferenceId(tool?.result),
     tool?.ok
   ].join(":")).join("|");
   const resourceSig = contextResources.map((item) => getSessionContextResourceKey(item)).join("|");
-  return `${sessionId}:${text.length}:${textTail}:${toolSig}:${resourceSig}`;
+  return `${sessionId}:${textRevision}:${toolSig}:${resourceSig}`;
 }
 
 function stableStringify(value) {

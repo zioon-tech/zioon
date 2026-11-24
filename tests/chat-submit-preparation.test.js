@@ -23,7 +23,7 @@ describe("interactive chat preparation", () => {
     const invoke = Object.getPrototypeOf(async function() {}).constructor;
     const run = new invoke("accountCan", "getEd", "getSessionId", "getRunState",
       "interactivePreparations", "crypto", "beginConversationViewportFollow", "window",
-      "runtime", "pendingRecoveryRuns", "recoverInteractiveRuntimeRun", "performRun", "captureDocumentInput", "captureInteractiveRuntimeAccount",
+      "runtime", "pendingRecoveryRuns", "recoverInteractiveRuntimeRun", "performRun", "captureDocumentInput", "captureInteractiveRuntimeAccount", "hydrateRemoteAnnotations",
       source.slice(begin, end) + "return doRun({ useSelection: true });");
     const pending = run(
       () => true, () => editor, () => "s", () => ({}), new Map(),
@@ -34,7 +34,7 @@ describe("interactive chat preparation", () => {
         await gate;
         input = preparation.inputSnapshot;
         capturedAccount = preparation.expectedAccount;
-      }, captureDocumentInput, () => ({ ...actor })
+      }, captureDocumentInput, () => ({ ...actor }), async value => value
     );
     text = "user changed while sending";
     actor = { userId: "bob", spaceId: "space-a" };
@@ -89,14 +89,14 @@ describe("interactive chat preparation", () => {
     const gate = new Promise(resolve => { release = resolve; });
     const emit = vi.fn();
     const invoke = Object.getPrototypeOf(async function() {}).constructor;
-    const run = new invoke("accountCan", "getEd", "getSessionId", "getRunState", "interactivePreparations", "crypto", "beginConversationViewportFollow", "window", "runtime", "pendingRecoveryRuns", "recoverInteractiveRuntimeRun", "performRun", "captureDocumentInput", "appendConversationDraft", "captureInteractiveRuntimeAccount",
+    const run = new invoke("accountCan", "getEd", "getSessionId", "getRunState", "interactivePreparations", "crypto", "beginConversationViewportFollow", "window", "runtime", "pendingRecoveryRuns", "recoverInteractiveRuntimeRun", "performRun", "captureDocumentInput", "appendConversationDraft", "captureInteractiveRuntimeAccount", "hydrateRemoteAnnotations",
       source.slice(begin, end) + "return doRun();");
     const pending = run(
       () => true, () => ({ getView: () => null }), () => "s", () => ({}), new Map(),
       { randomUUID: () => "local" }, () => {}, { zion: { events: { emit }, state: { get() {} } } },
       runtime, new Map(), vi.fn(),
       async (_opts, preparation) => { await gate; return { aborted: preparation.signal.aborted }; },
-      () => ({ documentText: "user question", insertionOffset: 13 }), appendConversationDraft, () => null
+      () => ({ documentText: "user question", insertionOffset: 13 }), appendConversationDraft, () => null, async value => value
     );
     expect(state.get("runId")).toBe("preparing-local");
     expect(emit).toHaveBeenCalledWith("chat/preparing", expect.objectContaining({
@@ -105,7 +105,43 @@ describe("interactive chat preparation", () => {
     expect(emit.mock.calls.find(([topic]) => topic === "chat/preparing")[1]).not.toHaveProperty("status");
     state.get("controller").abort();
     release();
-    await expect(pending).resolves.toEqual({ aborted: true });
+    await expect(pending).resolves.toEqual({ status: "aborted" });
     expect(emit.mock.calls.filter(([topic]) => topic === "chat/prepared")).toHaveLength(1);
+  });
+
+  it.each([true, false])("keeps the captured submission target during detail loading (replaced pane: %s)", async replaced => {
+    const source = fs.readFileSync("extensions/dev.langchain-chat/main.js", "utf8");
+    const begin = source.indexOf("  const doRun = async");
+    const end = source.indexOf("  // 注册命令", begin);
+    let active = "a", paneSession = "a", release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const editor = { panelId: "pane-a", getValue: () => "user captured input",
+      getView: () => null, getCursor: () => ({ line: 0, ch: 19 }) };
+    const submit = vi.fn(async (options, preparation) => ({ session: options.sessionId, input: preparation.inputSnapshot.content }));
+    const globals = {
+      accountCan: () => true, getEd: options => options?.editor || editor,
+      getSessionId: options => options?.sessionId || active, getPanelSessionId: () => paneSession,
+      getRunState: () => ({}), interactivePreparations: new Map(),
+      crypto: { randomUUID: () => "freeze" }, beginConversationViewportFollow() {},
+      window: { zion: { events: { emit() {} }, state: { get() {} }, notification: { show() {} } } },
+      runtime: { beginRun() {}, setController() {}, clearController() {}, isRunActive: () => false, markError() {} },
+      pendingRecoveryRuns: new Map(), recoverInteractiveRuntimeRun() {}, performRun: submit,
+      captureDocumentInput, captureInteractiveRuntimeAccount: () => null,
+      hydrateRemoteAnnotations: async annotations => { await gate; return annotations; }
+    };
+    const invoke = Object.getPrototypeOf(async function() {}).constructor;
+    const run = new invoke(...Object.keys(globals), source.slice(begin, end) + "return doRun();");
+    const pending = run(...Object.values(globals));
+    active = "b";
+    if (replaced) paneSession = "b";
+    release();
+    if (replaced) {
+      await expect(pending).resolves.toEqual({ status: "cancelled", reason: "session-changed" });
+      expect(submit).not.toHaveBeenCalled();
+    } else {
+      await expect(pending).resolves.toEqual({ session: "a", input: "user captured input" });
+      expect(submit.mock.calls[0][0].editor).toBe(editor);
+      expect(submit.mock.calls[0][0].panelId).toBe("pane-a");
+    }
   });
 });

@@ -311,6 +311,52 @@ export function createSessionsListRendererFactory(deps) {
     let pendingEdit = null; // { id, type: "session"|"folder", isNew?: boolean }
     let pendingConfirm = null; // { id, type: "session"|"folder" }
     let externalRootDropTarget = null;
+    let draggedItems = [];
+    const canDropInto = (item, folder) => !!item.id && item.id !== folder.id && (folder.sharing?.received
+      ? folder.sharing.editable && (isReceivedNode(item.id) || item.type === "session")
+      : !isReceivedNode(item.id));
+    const isDeleting = id => window.zion?.state?.get?.(`sessions.deleting.${id}`) === true;
+    const deletionStatus = document.createElement("div");
+    deletionStatus.className = "zion-session-deletion-status";
+    deletionStatus.setAttribute("role", "status");
+    deletionStatus.setAttribute("aria-live", "polite");
+    const syncDeletionStatus = () => {
+      const operation = window.zion?.state?.get?.("sessions.deletion");
+      if (!operation?.pending) {
+        deletionStatus.remove();
+      } else {
+        const reconnecting = !!window.zion?.state?.get?.("sessions.persistence")?.error;
+        deletionStatus.textContent = `${t("ui.deleting", "Deleting")} ${operation.completed}/${operation.total}`
+          + (reconnecting ? ` · ${t("ui.deleteWaitingNetwork", "Waiting for connection")}` : "");
+        if (deletionStatus.parentElement !== listEl) listEl.prepend(deletionStatus);
+      }
+      const ids = new Set(operation?.pending ? operation.ids : []);
+      const folderIds = new Set(operation?.pending
+        ? operation.targets.filter(item => item.type === "folder").map(item => item.id) : []);
+      for (const row of listEl.querySelectorAll(".zion-session-row")) {
+        const pending = ids.has(row.dataset.sessionId) || folderIds.has(row.dataset.folderId);
+        row.classList.toggle("is-deleting", pending);
+        row.setAttribute("aria-busy", String(pending));
+        row.style.pointerEvents = pending ? "none" : "";
+      }
+    };
+    const deletionSubscriptions = [
+      window.zion?.state?.onDidChange?.("sessions.deletion", syncDeletionStatus),
+      window.zion?.state?.onDidChange?.("sessions.persistence", syncDeletionStatus)
+    ];
+    const submitDeletion = async (command, id) => {
+      pendingConfirm = null;
+      const result = window.zion.commands.executeCommand(command, id);
+      render();
+      try { await result; } catch (error) {
+        console.error("[sessions] deletion command failed", error);
+      } finally {
+        if (!disposed) {
+          if (typeof onAfterChange === "function") onAfterChange();
+          render();
+        }
+      }
+    };
 
     const getCardTags = (sessionId) => {
       const byPath = new Map();
@@ -454,6 +500,17 @@ export function createSessionsListRendererFactory(deps) {
           });
         } catch {}
       };
+      const updateVisibleDeletionState = () => {
+        listEl.querySelectorAll(".zion-session-row.is-session[data-session-id]").forEach(row => {
+          const pending = isDeleting(row.dataset.sessionId);
+          row.classList.toggle("is-deleting", pending);
+          row.setAttribute("aria-busy", String(pending));
+          row.setAttribute("aria-disabled", String(pending));
+          row.style.opacity = pending ? "0.45" : "";
+          row.style.pointerEvents = pending ? "none" : "";
+          row.draggable = !pending && (row.dataset.sharing !== "received" || row.dataset.sharingEditable === "true");
+        });
+      };
 
       const syncStatusSubscriptions = (sessionIds) => {
         const nextIds = new Set(Array.from(sessionIds || []).map((id) => String(id || "").trim()).filter(Boolean));
@@ -466,8 +523,9 @@ export function createSessionsListRendererFactory(deps) {
         for (const sid of nextIds) {
           if (statusRunDisposables.has(sid)) continue;
           try {
-            const disposable = window.zion?.state?.onDidChange?.(`chat.runs.${sid}`, updateVisibleStatusBadges);
-            if (disposable) statusRunDisposables.set(sid, disposable);
+            const run = window.zion?.state?.onDidChange?.(`chat.runs.${sid}`, updateVisibleStatusBadges);
+            const deletion = window.zion?.state?.onDidChange?.(`sessions.deleting.${sid}`, updateVisibleDeletionState);
+            statusRunDisposables.set(sid, { dispose() { run?.dispose?.(); deletion?.dispose?.(); } });
           } catch {}
         }
       };
@@ -589,7 +647,7 @@ export function createSessionsListRendererFactory(deps) {
         try { titleEl.style.display = ""; } catch {}
       };
 
-      const commit = () => {
+      const commit = async () => {
         if (finished) return;
         finished = true;
         const v = String(input.value || "").trim();
@@ -598,7 +656,13 @@ export function createSessionsListRendererFactory(deps) {
           if (typeof onCancel === "function") onCancel({ reason: "empty" });
           return;
         }
-        if (typeof onCommit === "function") onCommit(v);
+        try { if (typeof onCommit === "function") await onCommit(v); }
+        catch (error) {
+          const alert = document.createElement("div");
+          alert.setAttribute("role", "alert");
+          alert.textContent = error?.message || "操作失败，请重试";
+          row.appendChild(alert);
+        }
       };
 
       const cancel = (reason = "cancel") => {
@@ -886,12 +950,12 @@ export function createSessionsListRendererFactory(deps) {
         listEl.appendChild(row);
       };
 
-      const createFolderInline = (parentId) => {
+      const createFolderInline = async (parentId) => {
         const pid = String(parentId || "root");
         let id = "";
         try {
           try { setFolderOpen(pid, true); } catch {}
-          id = String(window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: pid, targetView: viewId, skipRefresh: true }) || "");
+          id = String(await window.zion.commands.executeCommand("zion.sessions.newFolder", { parentId: pid, targetView: viewId, skipRefresh: true }) || "");
           if (id) {
             pendingEdit = { id, type: "folder", isNew: true };
             try { window.zion?.state?.set?.(PENDING_INLINE_EDIT_KEY, null); } catch {}
@@ -968,6 +1032,10 @@ export function createSessionsListRendererFactory(deps) {
       rootDropTarget.ondragover = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+        if (draggedItems.some(item => isReceivedNode(item.id))) {
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "none";
+          return;
+        }
         rootDropTarget.classList.add("is-drop-target");
         if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
       };
@@ -1001,16 +1069,17 @@ export function createSessionsListRendererFactory(deps) {
         };
       }
       listEl.ondragstart = () => {
-        setRootDropTargetVisible(true);
+        setRootDropTargetVisible(!draggedItems.some(item => isReceivedNode(item.id)));
       };
       listEl.ondragend = () => {
+        draggedItems = [];
         setRootDropTargetVisible(false);
         rootDropTarget.classList.remove("is-drop-target");
       };
       listEl.ondragover = (ev) => {
         if (ev.target?.closest?.(".zion-session-row")) return;
         ev.preventDefault();
-        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = draggedItems.some(item => isReceivedNode(item.id)) ? "none" : "move";
       };
       listEl.ondrop = (ev) => {
         if (ev.target?.closest?.(".zion-session-row")) return;
@@ -1064,6 +1133,10 @@ export function createSessionsListRendererFactory(deps) {
         if (item.sharing?.received) {
           menu.appendChild(mkItem("分享详情", () => window.zion?.commands?.executeCommand?.("zion.sharing.manage",
             { shareId: item.sharing.shareId, direction: "received" })));
+          if (item.sharing.editable) {
+            menu.appendChild(mkItem(t("ui.rename", "Rename"), () => { pendingEdit = { id: item.id, type: "session" }; render(); }));
+            menu.appendChild(mkItem(t("ui.delete", "Delete"), () => { pendingConfirm = { id: item.id, type: "session" }; render(); }));
+          }
           return menu;
         }
 
@@ -1132,10 +1205,11 @@ export function createSessionsListRendererFactory(deps) {
         if (folder.sharing?.received) {
           menu.appendChild(mkItem("分享详情", () => window.zion?.commands?.executeCommand?.("zion.sharing.manage",
             { shareId: folder.sharing.shareId, direction: "received" })));
-          return menu;
+          if (!folder.sharing.editable) return menu;
         }
-        menu.appendChild(mkItem(t("cmd.new", "New Session"), () => {
-          window.zion.commands.executeCommand("zion.sessions.new", { parentId: folder.id });
+        menu.appendChild(mkItem(t("cmd.new", "New Session"), async () => {
+          try { await window.zion.commands.executeCommand("zion.sessions.new", { parentId: folder.id }); }
+          catch { return; }
           if (typeof onAfterChange === "function") onAfterChange();
           render();
         }));
@@ -1146,12 +1220,12 @@ export function createSessionsListRendererFactory(deps) {
           pendingEdit = { id: folder.id, type: "folder" };
           render();
         }));
-        if (window.zion?.commands?.list?.().includes("zion.sharing.create")) {
+        if (!folder.sharing?.received && window.zion?.commands?.list?.().includes("zion.sharing.create")) {
           menu.appendChild(mkItem("分享", () => {
             window.zion.commands.executeCommand("zion.sharing.create", { kind: "folder", sourceId: folder.id, name: folder.title || folder.id });
           }));
         }
-        menu.appendChild(mkItem(t("ui.exportFolder", "Export Folder"), () => {
+        if (!folder.sharing?.received) menu.appendChild(mkItem(t("ui.exportFolder", "Export Folder"), () => {
           window.zion.commands.executeCommand("zion.sessions.exportFolder", folder.id);
         }));
         menu.appendChild(mkItem(t("ui.deleteFolder", "Delete Folder"), () => {
@@ -1380,13 +1454,14 @@ export function createSessionsListRendererFactory(deps) {
         });
 
         // drag folder
-        row.setAttribute("draggable", String(!folder.sharing?.received));
+        row.setAttribute("draggable", String(!folder.sharing?.received || folder.sharing.editable));
         row.addEventListener("dragstart", (ev) => {
-          if (folder.sharing?.received) { ev.preventDefault(); ev.stopPropagation(); return; }
+          if (folder.sharing?.received && !folder.sharing.editable) { ev.preventDefault(); ev.stopPropagation(); return; }
           try {
             const sel = getSelection();
             let items = sel.length ? sel : [{ id: folder.id, type: "folder" }];
             if (!sel.find(it => it.id === folder.id)) items = [{ id: folder.id, type: "folder" }];
+            draggedItems = items;
             ev.dataTransfer?.setData("application/zion-nodes", JSON.stringify({ items }));
             if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
             const count2 = Array.isArray(items) ? items.length : 1;
@@ -1394,16 +1469,24 @@ export function createSessionsListRendererFactory(deps) {
             setSmallDragImage(ev, label);
           } catch {}
         });
-        row.addEventListener("dragenter", (ev) => { ev.preventDefault(); if (!folder.sharing?.received) row.classList.add("is-drop-target"); });
+        row.addEventListener("dragenter", (ev) => { ev.preventDefault(); if (draggedItems.some(item => canDropInto(item, folder))) row.classList.add("is-drop-target"); });
         row.addEventListener("dragover", (ev) => {
           ev.preventDefault();
-          if (folder.sharing?.received) { ev.stopPropagation(); if (ev.dataTransfer) ev.dataTransfer.dropEffect = "none"; return; }
+          ev.stopPropagation();
+          if (folder.sharing?.received && !folder.sharing.editable
+            || draggedItems.length && !draggedItems.some(item => canDropInto(item, folder))) {
+            row.classList.remove("is-drop-target");
+            if (ev.dataTransfer) ev.dataTransfer.dropEffect = "none";
+            return;
+          }
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
           row.classList.add("is-drop-target");
         });
         row.addEventListener("dragleave", () => { row.classList.remove("is-drop-target"); });
-        row.addEventListener("drop", (ev) => {
+        row.addEventListener("drop", async (ev) => {
           ev.preventDefault();
-          if (folder.sharing?.received) { ev.stopPropagation(); return; }
+          ev.stopPropagation();
+          if (folder.sharing?.received && !folder.sharing.editable) return;
           try {
             const rawMulti = ev.dataTransfer?.getData("application/zion-nodes") || "";
             const rawSingle = ev.dataTransfer?.getData("application/zion-node") || "";
@@ -1417,8 +1500,8 @@ export function createSessionsListRendererFactory(deps) {
             }
             let moved = false;
             for (const it of items) {
-              if (it.id && !isReceivedNode(it.id) && it.id !== folder.id) {
-                if (moveNode(it.id, folder.id)) moved = true;
+              if (canDropInto(it, folder)) {
+                if (await moveNode(it.id, folder.id)) moved = true;
               }
             }
             if (moved) {
@@ -1432,7 +1515,7 @@ export function createSessionsListRendererFactory(deps) {
           }
         });
 
-        if (!folder.sharing?.received) {
+        if (!folder.sharing?.received || folder.sharing.editable) {
           btns.appendChild(bNewSession);
           btns.appendChild(bNewFolder);
         }
@@ -1483,6 +1566,9 @@ export function createSessionsListRendererFactory(deps) {
           if (isConfirming(folder.id, "folder")) return;
           if (bMore.contains(ev.target) || folderMenu.contains(ev.target)) return;
           if (folder.sharing?.received) {
+            if (folder.sharing.editable) {
+              try { window.zion.state.set("sessions.selectedFolderId", folder.id); } catch {}
+            }
             setFolderOpen(folder.id, !isFolderOpen(folder.id)); render(); return;
           }
           const anchorId = getLastSelectedId();
@@ -1529,8 +1615,8 @@ export function createSessionsListRendererFactory(deps) {
             titleEl: ttl,
             initialValue: folder.title || "Folder",
             placeholder: t("ui.folderName", "Folder name"),
-            onCommit: (title) => {
-              window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: folderPendingEdit.id, title });
+            onCommit: async (title) => {
+              await window.zion.commands.executeCommand("zion.sessions.renameFolder", { id: folderPendingEdit.id, title });
               if (typeof onAfterChange === "function") onAfterChange();
               render();
             },
@@ -1558,10 +1644,7 @@ export function createSessionsListRendererFactory(deps) {
                 render();
               },
               onConfirm: () => {
-                pendingConfirm = null;
-                window.zion.commands.executeCommand("zion.sessions.deleteFolder", folder.id);
-                if (typeof onAfterChange === "function") onAfterChange();
-                render();
+                void submitDeletion("zion.sessions.deleteFolder", folder.id);
               }
             });
           } catch {}
@@ -1641,16 +1724,18 @@ export function createSessionsListRendererFactory(deps) {
               srow.dataset.sessionId = String(ch.id || "");
               if (!ch.sharing?.received) visibleOrder.push({ id: ch.id, type: "session" });
               if (ch.sharing?.received) srow.dataset.sharing = "received";
+              srow.dataset.sharingEditable = String(!!ch.sharing?.editable);
                 if (ch.id) visibleStatusSessionIds.add(String(ch.id));
 
               // drag session
-              srow.setAttribute("draggable", String(!ch.sharing?.received));
+              srow.setAttribute("draggable", String(!ch.sharing?.received || ch.sharing.editable));
               srow.addEventListener("dragstart", (ev) => {
-                if (ch.sharing?.received) { ev.preventDefault(); ev.stopPropagation(); return; }
+                if (ch.sharing?.received && !ch.sharing.editable || isDeleting(ch.id)) { ev.preventDefault(); ev.stopPropagation(); return; }
                 try {
                   const sel = getSelection();
                   let items = sel.length ? sel : [{ id: ch.id, type: "session" }];
                   if (!sel.find(it => it.id === ch.id)) items = [{ id: ch.id, type: "session" }];
+                  draggedItems = items;
                   ev.dataTransfer?.setData("application/zion-nodes", JSON.stringify({ items }));
                   if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
                   const count2 = Array.isArray(items) ? items.length : 1;
@@ -1789,6 +1874,7 @@ export function createSessionsListRendererFactory(deps) {
               );
               bMore2.style.opacity = "0";
               srow.addEventListener("contextmenu", (ev) => {
+                if (isDeleting(ch.id)) { ev.preventDefault(); return; }
                 if (ch.sharing?.received) { showContextMenu(sMenu, ev); return; }
                 if (getSelection().length > 1 && isInSelection(ch.id)) {
                   if (selectionContextMenu) showContextMenu(selectionContextMenu, ev);
@@ -1851,10 +1937,7 @@ export function createSessionsListRendererFactory(deps) {
                     render();
                   },
                   onConfirm: () => {
-                    pendingConfirm = null;
-                    window.zion.commands.executeCommand("zion.sessions.delete", ch.id);
-                    if (typeof onAfterChange === "function") onAfterChange();
-                    render();
+                    void submitDeletion("zion.sessions.delete", ch.id);
                   }
                 });
               }
@@ -1867,8 +1950,8 @@ export function createSessionsListRendererFactory(deps) {
                   titleEl: ttl2,
                   initialValue: ch.title || ch.id,
                   placeholder: t("ui.sessionTitle", "Session title"),
-                  onCommit: (title) => {
-                    window.zion.commands.executeCommand("zion.sessions.rename", { id: pid.id, title });
+                  onCommit: async (title) => {
+                    await window.zion.commands.executeCommand("zion.sessions.rename", { id: pid.id, title });
                     if (typeof onAfterChange === "function") onAfterChange();
                     render();
                   }
@@ -1876,7 +1959,8 @@ export function createSessionsListRendererFactory(deps) {
               }
 
               srow.addEventListener("keydown", (ev) => {
-                if (ch.sharing?.received) {
+                if (isDeleting(ch.id)) { ev.preventDefault(); return; }
+                if (ch.sharing?.received && !ch.sharing.editable) {
                   if (ev.key === "Enter") { ev.preventDefault(); switchSession(ch.id); }
                   return;
                 }
@@ -1889,10 +1973,7 @@ export function createSessionsListRendererFactory(deps) {
                   }
                   if (ev.key === "Enter") {
                     ev.preventDefault();
-                    pendingConfirm = null;
-                    window.zion.commands.executeCommand("zion.sessions.delete", ch.id);
-                    if (typeof onAfterChange === "function") onAfterChange();
-                    render();
+                    void submitDeletion("zion.sessions.delete", ch.id);
                     return;
                   }
                 }
@@ -1912,12 +1993,12 @@ export function createSessionsListRendererFactory(deps) {
                   ev.preventDefault();
                   pendingEdit = { id: ch.id, type: "session" };
                   render();
-                } else if (ev.key.toLowerCase() === "c") {
+                } else if (!ch.sharing?.received && ev.key.toLowerCase() === "c") {
                   ev.preventDefault();
                   window.zion.commands.executeCommand("zion.sessions.clone", ch.id);
                   if (typeof onAfterChange === "function") onAfterChange();
                   render();
-                } else if (ev.key.toLowerCase() === "e") {
+                } else if (!ch.sharing?.received && ev.key.toLowerCase() === "e") {
                   ev.preventDefault();
                   window.zion.commands.executeCommand("zion.sessions.export", ch.id);
                 } else if (ev.key === "Delete" || ev.key === "Backspace") {
@@ -1926,7 +2007,7 @@ export function createSessionsListRendererFactory(deps) {
                   if (sel.length > 1) {
                     window.zion.commands.executeCommand("zion.sessions.deleteSelected");
                   } else {
-                    sMenu.children[3]?.click();
+                    pendingConfirm = { id: ch.id, type: "session" };
                   }
                   if (typeof onAfterChange === "function") onAfterChange();
                   render();
@@ -1934,6 +2015,7 @@ export function createSessionsListRendererFactory(deps) {
               });
 
               srow.addEventListener("click", (ev) => {
+                if (isDeleting(ch.id)) return;
                 const t = ev.target;
                 if (t && t.closest && t.closest("input[data-zion-inline-edit='1']")) return;
                 if (t && rightWrap.contains(t)) return;
@@ -2025,8 +2107,10 @@ export function createSessionsListRendererFactory(deps) {
           listEl.appendChild(empty);
         }
         syncStatusSubscriptions(visibleStatusSessionIds);
+        updateVisibleDeletionState();
         updateVisibleStatusBadges();
         updateActiveCommentChildRows();
+        syncDeletionStatus();
     };
 
       const syncCurrentSession = (sessionId = getEffectiveCurrentSessionId()) => {
@@ -2078,6 +2162,8 @@ export function createSessionsListRendererFactory(deps) {
         try { externalRootDropTarget?.remove(); } catch {}
         externalRootDropTarget = null;
         disposeStatusSubscriptions();
+        for (const subscription of deletionSubscriptions) subscription?.dispose?.();
+        deletionStatus.remove();
       };
 
     return render;

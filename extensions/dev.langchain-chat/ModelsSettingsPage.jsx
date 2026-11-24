@@ -885,7 +885,7 @@ function isValidSelection(selection, builtins, customRows) {
 
 export function ModelsSettingsPage() {
   useZionState("ui.locale", window.zion?.i18n?.getLocale?.() || "zh-CN");
-  const activeModel = useZionState("chat.activeModel", null);
+  const activeModel = useZionState("chat.defaultModel", null);
   const catalogFromState = useZionState("models.catalog", []);
   const [catalog, setCatalog] = useState(Array.isArray(catalogFromState) ? catalogFromState : []);
   const [customRows, setCustomRows] = useState(() => loadCustomRows());
@@ -1173,8 +1173,9 @@ export function ModelsSettingsPage() {
 
   const handleActivate = async (row) => {
     try {
-      window.zion?.commands?.executeCommand?.("models.selectModel", `${row.providerId}:${row.id}`);
-      setStatus(tt(`当前模型: ${row.label || row.id}`, `Current model: ${row.label || row.id}`));
+      const saved = await window.zion?.commands?.executeCommand?.("models.setDefaultModel", `${row.providerId}:${row.id}`);
+      if (saved === false) { setStatus(tt("默认模型保存失败，请重试", "Could not save default model; please retry")); return; }
+      setStatus(tt(`默认模型: ${row.label || row.id}`, `Default model: ${row.label || row.id}`));
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     }

@@ -93,6 +93,8 @@ export function hasLiveChatCardWriter(zion, { sessionId, panelId } = {}) {
 export function shouldPersistChatCardInBackground(zion, payload = {}) {
   if (payload?.documentWriter === false) return false;
   const sessionId = String(payload?.sessionId || "").trim();
+  if (zion?.state?.get?.(`sessions.deleted.${sessionId}`) === true
+    || zion?.state?.get?.(`sessions.deleting.${sessionId}`) === true) return false;
   return !!sessionId && !hasLiveChatCardWriter(zion, {
     sessionId,
     panelId: payload?.panelId
@@ -125,6 +127,8 @@ export function createChatCardWriterLeases(zion) {
     const sessionId = String(payload?.sessionId || "");
     const runId = String(payload?.runId || "");
     if (!sessionId || !runId) return false;
+    if (zion?.state?.get?.(`sessions.deleted.${sessionId}`) === true
+      || zion?.state?.get?.(`sessions.deleting.${sessionId}`) === true) return false;
     const key = runKey(payload);
     if (closedRuns.has(key)) return false;
     const activeRunId = activeRuns.get(sessionId);
@@ -180,6 +184,8 @@ export function createChatCardWriterLeases(zion) {
       const runId = String(payload?.runId || "");
       const key = runKey(payload);
       if (!sessionId || !runId || cancelledRuns.has(key)) return false;
+      if (zion?.state?.get?.(`sessions.deleted.${sessionId}`) === true
+        || zion?.state?.get?.(`sessions.deleting.${sessionId}`) === true) return false;
       const runGeneration = runGenerations.get(key);
       const currentGeneration = sessionGenerations.get(sessionId);
       if (runGeneration && currentGeneration && runGeneration !== currentGeneration) return false;

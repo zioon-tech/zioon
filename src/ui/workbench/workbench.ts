@@ -653,7 +653,9 @@ export function initWorkbench(host: HTMLElement): {
     const isCompactOverlay = isMobile || responsiveRuntime.getCurrentMode() === "medium";
     const aVisible = activityBarRuntime.isVisible();
     const sVisible = sideBarRuntime.isVisible() && sideBarRuntime.getViews().length > 0;
-    const xVisible = auxiliaryBarRuntime.isVisible() && auxiliaryBarRuntime.getViews().length > 0;
+    const xVisible = auxiliaryBarRuntime.isVisible() && (
+      auxiliaryBarRuntime.getViews().length > 0 || (!isCompactOverlay && auxiliaryBarRuntime.isAwaitingStartupView())
+    );
     const inspectorVisible = inspectorRuntime.isVisible();
     const w = sideBarRuntime.getWidth();
     const xw = auxiliaryBarRuntime.getWidth();
@@ -1250,7 +1252,7 @@ export function initWorkbench(host: HTMLElement): {
         if (!alive.has(rec.viewId)) removeAuxTransientRecord(rec);
       }
     } catch {}
-    const visible = auxiliaryBarRuntime.isVisible() && views.length > 0;
+    const visible = auxiliaryBarRuntime.isVisible() && views.length > 0 && !auxiliaryBarRuntime.isAwaitingStartupView();
     if (isCompactOverlay) {
       auxiliaryBarEl.style.position = "absolute";
       auxiliaryBarEl.style.left = "";

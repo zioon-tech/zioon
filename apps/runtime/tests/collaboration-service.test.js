@@ -24,6 +24,11 @@ import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-sto
 import { createRuntimeServer } from "../src/server.mjs";
 import { createPostgresTestDatabase } from "./helpers/postgres-test-database.mjs";
 
+vi.mock("yjs", async importOriginal => {
+  const actual = await importOriginal();
+  return { ...actual, mergeUpdates: vi.fn(actual.mergeUpdates) };
+});
+
 const resources = [];
 let database;
 
@@ -92,6 +97,188 @@ afterEach(async () => {
 });
 
 describe("Runtime collaboration service", () => {
+  it("notifies a mixed revoked document to stop same-provider replay and accepts fresh rejoin edits", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-reset-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({ id: "reset", text: "committed" });
+    const revoked = new Set();
+    const check = context => {
+      if (revoked.has(context?.principal?.user?.id)) {
+        throw Object.assign(new Error("revoked contributor"), { statusCode: 403 });
+      }
+    };
+    const collaboration = createCollaboration({
+      store: workbenchState, debounceMs: 5_000, maxDebounceMs: 10_000,
+      authenticate: ({ token }) => {
+        const context = { principal: { user: { id: token } } };
+        check(context);
+        return context;
+      },
+      reauthorize: check,
+      authorizeOutbound: check,
+      withPersistence: async ({ context, contributors = [] }, action) => {
+        for (const contributor of [context, ...contributors]) check(contributor);
+        return action();
+      }
+    });
+    const runs = new PostgresRunStore(database.pool, { spaceId: workbenchState.spaceId });
+    const server = createRuntimeServer({ port: 0, runs,
+      executor: { execute() { throw new Error("No runs in this provider test"); } },
+      upgradeHandlers: [collaboration.handleUpgrade] });
+    const resource = { directory, workbenchState, collaboration, server, runs };
+    resources.push(resource);
+    const { url: httpUrl } = await server.start();
+    const url = httpUrl.replace(/^http/, "ws") + "/v1/collaboration?protocol=8";
+    const alice = new Y.Doc(), bob = new Y.Doc();
+    const closed = [];
+    const joinProvider = (document, token) => new Promise((resolve, reject) => {
+      let provider;
+      provider = new HocuspocusProvider({
+        url, name: "reset", document, token, WebSocketPolyfill: WebSocket,
+        onSynced() { resolve(provider); },
+        onAuthenticationFailed({ reason }) { reject(new Error(reason)); },
+        onClose({ event }) {
+          if (event.reason === "collaboration_document_reset") {
+            closed.push(token);
+            provider.disconnect();
+          }
+        }
+      });
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let freshProvider, fresh;
+    try {
+      resource.provider = await joinProvider(alice, "alice");
+      resource.secondProvider = await joinProvider(bob, "bob");
+      alice.getText("content").insert(9, " rejected");
+      await waitFor(() => bob.getText("content").toString().includes("rejected"));
+      bob.getText("content").insert(bob.getText("content").length, " mixed");
+      await waitFor(() => collaboration.hocuspocus.documents.get("reset").getText("content").toString().includes("mixed"));
+      revoked.add("alice");
+      collaboration.hocuspocus.flushPendingStores();
+      await waitFor(() => closed.includes("bob"));
+      await waitFor(() => closed.includes("alice"));
+      expect(resource.provider.configuration.websocketProvider.shouldConnect).toBe(false);
+      expect(resource.secondProvider.configuration.websocketProvider.shouldConnect).toBe(false);
+      expect(bob.getText("content").toString()).toContain("rejected mixed");
+      expect((await workbenchState.readSession("reset")).text).toBe("committed");
+      await waitFor(() => !collaboration.hocuspocus.documents.has("reset"));
+      revoked.clear();
+      expect(resource.provider.configuration.websocketProvider.shouldConnect).toBe(false);
+      fresh = new Y.Doc();
+      freshProvider = await joinProvider(fresh, "bob");
+      expect(fresh.getText("content").toString()).toBe("committed");
+      fresh.getText("content").insert(9, " accepted");
+      await waitFor(() => collaboration.hocuspocus.documents.get("reset").getText("content").toString() === "committed accepted");
+      collaboration.hocuspocus.flushPendingStores();
+      await waitFor(async () => (await workbenchState.readSession("reset")).text === "committed accepted");
+      expect((await workbenchState.readSession("reset")).text).not.toContain("rejected");
+    } finally {
+      revoked.clear();
+      freshProvider?.destroy(); fresh?.destroy();
+      resource.provider?.destroy(); resource.secondProvider?.destroy();
+      alice.destroy(); bob.destroy();
+      consoleError.mockRestore();
+    }
+  });
+
+  it("persists a large paste and subsequent edits with bounded coalescing work", async () => {
+    const committed = new Y.Doc();
+    let text = "", version = 0;
+    const store = {
+      collaborationUpdates: true,
+      async readSession() { return { text, updated_at: 0 }; },
+      async readCollaborationDocument() {
+        return version ? { state: Y.encodeStateAsUpdate(committed), version, updatedAt: 1 } : null;
+      },
+      async writeCollaborationDocument(id, state) {
+        Y.applyUpdate(committed, state);
+        text = committed.getText("content").toString();
+        return { sessionId: id, version: ++version, state: Y.encodeStateAsUpdate(committed) };
+      }
+    };
+    const collaboration = createRuntimeCollaborationService({ store, debounceMs: 60_000, maxDebounceMs: 120_000 });
+    const connection = await collaboration.hocuspocus.openDirectConnection("large-pending", { clientId: "large-pending" });
+    const merge = vi.mocked(Y.mergeUpdates);
+    merge.mockClear();
+    try {
+      await connection.transact(doc => doc.getText("content").insert(0, "a".repeat(3_500_000)));
+      for (let i = 0; i < 200; i++) {
+        await connection.transact(doc => doc.getText("content").insert(doc.getText("content").length, "x"));
+      }
+      await connection.disconnect();
+      expect(merge.mock.calls.length).toBeLessThan(10);
+      expect(text).toBe("a".repeat(3_500_000) + "x".repeat(200));
+    } finally {
+      merge.mockClear();
+      await connection.disconnect(); await collaboration.close(); committed.destroy();
+    }
+  });
+
+  it("keeps edits arriving during a blocked incremental save and clears only captured contributors", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-store-queue-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({ id: "blocked", text: "base" });
+    let release, entered, blockedOnce = false;
+    const gate = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const contributors = [];
+    const collaboration = createCollaboration({
+      store: workbenchState,
+      withPersistence: async ({ kind, contributors: contexts = [] }, action) => {
+        if (kind === "store") {
+          contributors.push(contexts.map(value => value.clientId));
+          if (!blockedOnce) { blockedOnce = true; entered(); await gate; }
+        }
+        return action();
+      }
+    });
+    resources.push({ directory, workbenchState, collaboration });
+    const alice = await collaboration.hocuspocus.openDirectConnection("blocked", { clientId: "alice" });
+    const bob = await collaboration.hocuspocus.openDirectConnection("blocked", { clientId: "bob" });
+    let saving;
+    try {
+      await alice.transact(document => document.getText("content").insert(4, " first"));
+      saving = alice.disconnect();
+      await started;
+      await bob.transact(document => document.getText("content").insert(10, " second"));
+      release();
+      await saving;
+      await bob.disconnect();
+      expect((await workbenchState.readSession("blocked")).text).toBe("base first second");
+      expect(contributors).toEqual([["alice"], ["bob"]]);
+      const stored = await workbenchState.readCollaborationDocument("blocked");
+      const restored = new Y.Doc();
+      Y.applyUpdate(restored, stored.state);
+      expect(restored.getText("content").toString()).toBe("base first second");
+      restored.destroy();
+    } finally { release(); await saving; await bob.disconnect(); }
+  });
+
+  it("converges two separate Runtime owners on their next accepted save", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-two-owners-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    await workbenchState.createSession({ id: "owners", text: "base" });
+    const first = createCollaboration({ store: workbenchState });
+    const second = createCollaboration({ store: new PostgresWorkbenchStateStore(database.pool, { spaceId: workbenchState.spaceId }) });
+    resources.push({ directory, workbenchState, collaboration: first });
+    const left = await first.hocuspocus.openDirectConnection("owners", { clientId: "left" });
+    const right = await second.hocuspocus.openDirectConnection("owners", { clientId: "right" });
+    try {
+      await left.transact(d => d.getText("content").insert(4, " left"));
+      await right.transact(d => d.getText("content").insert(0, "right "));
+      await Promise.all([left.disconnect(), right.disconnect()]);
+      expect((await workbenchState.readSession("owners")).text).toBe("right base left");
+      const next = await first.hocuspocus.openDirectConnection("owners", { clientId: "left" });
+      await next.transact(d => {
+        expect(d.getText("content").toString()).toBe("right base left");
+        d.getText("content").insert(d.getText("content").length, " next");
+      });
+      await next.disconnect();
+      expect((await workbenchState.readSession("owners")).text).toBe("right base left next");
+    } finally { await left.disconnect(); await right.disconnect(); await second.close(); }
+  });
+
   it("queues live text while the previous document flush is blocked", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-live-queue-"));
     const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
@@ -226,7 +413,7 @@ describe("Runtime collaboration service", () => {
     resources.push({ directory, runs, workbenchState, collaboration, server });
     const { url } = await server.start();
     const closed = await new Promise((resolve, reject) => {
-      const peer = new WebSocket(url.replace(/^http/, "ws") + "/v1/collaboration?protocol=6");
+      const peer = new WebSocket(url.replace(/^http/, "ws") + "/v1/collaboration?protocol=8");
       const timer = setTimeout(() => { peer.terminate(); reject(new Error("Oversized peer did not close")); }, 3000);
       peer.once("error", reject);
       peer.once("open", () => peer.send(Buffer.alloc(4 * 1024 * 1024 + 1)));
@@ -358,7 +545,7 @@ describe("Runtime collaboration service", () => {
     const response = await new Promise((resolve, reject) => {
       const socket = new WebSocket(
         `${address.url.replace(/^http/, "ws")}`
-        + "/v1/collaboration?client_id=old&protocol=4"
+        + "/v1/collaboration?client_id=old&protocol=7"
       );
       socket.once("unexpected-response", (_request, upgrade) => {
         resolve(upgrade);
@@ -371,7 +558,7 @@ describe("Runtime collaboration service", () => {
     });
 
     expect(response.statusCode).toBe(426);
-    expect(response.headers["x-zion-collaboration-protocol"]).toBe("6");
+    expect(response.headers["x-zion-collaboration-protocol"]).toBe("8");
     expect(response.headers["clear-site-data"]).toBe("\"executionContexts\"");
     response.resume();
   });
@@ -423,7 +610,7 @@ describe("Runtime collaboration service", () => {
     };
     resources.push(resource);
     const address = await server.start();
-    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=auth&protocol=6`;
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=auth&protocol=8`;
     const document = new Y.Doc();
     const provider = await syncedProvider(
       url,
@@ -485,7 +672,7 @@ describe("Runtime collaboration service", () => {
       server
     });
     const address = await server.start();
-    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=test-client&protocol=6`;
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=test-client&protocol=8`;
     const firstDocument = new Y.Doc();
     const secondDocument = new Y.Doc();
     const provider = await syncedProvider(url, "shared-session", firstDocument);
@@ -553,7 +740,7 @@ describe("Runtime collaboration service", () => {
     );
   });
 
-  it("keeps Runtime projection authoritative with a connected Workbench", async () => {
+  it("preserves an acknowledged owner edit when Runtime projection detaches", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-writer-"));
     const path = join(directory, "runtime");
     const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
@@ -596,7 +783,7 @@ describe("Runtime collaboration service", () => {
     };
     resources.push(resource);
     const address = await server.start();
-    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=writer-client&protocol=6`;
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=writer-client&protocol=8`;
     const document = new Y.Doc();
     const provider = await syncedProvider(
       url,
@@ -617,6 +804,9 @@ describe("Runtime collaboration service", () => {
       document.getText(COLLABORATION_TEXT_KEY).length,
       "owner output"
     );
+    // Remove the network ordering race: the existing projector detaches after
+    // an accepted owner edit changes its captured assistant block.
+    await waitFor(async () => (await workbenchState.readSession("writer-session")).text.includes("owner output"));
 
     await collaboration.applyRunEvent("writer-session", {
       runId: "run-writer",
@@ -630,16 +820,13 @@ describe("Runtime collaboration service", () => {
       type: "run.aborted",
       data: { reason: "user" }
     });
-    await waitFor(() =>
-      document.getText(COLLABORATION_TEXT_KEY).toString()
-        .includes("runtime stale output"),
-      5_000
-    );
+    await waitFor(() => document.getMap("runProjection").get("run-writer")?.detached === true);
 
     expect(document.getText(COLLABORATION_TEXT_KEY).toString())
       .toContain("owner output");
     expect(document.getText(COLLABORATION_TEXT_KEY).toString())
-      .toContain("runtime stale output");
+      .not.toContain("runtime stale output");
+    expect((await workbenchState.readSession("writer-session")).text).toContain("owner output");
   });
 
   it("preserves the submitted user message without a connected Workbench", async () => {
@@ -756,7 +943,7 @@ describe("Runtime collaboration service", () => {
     };
     resources.push(resource);
     const address = await server.start();
-    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=reconnect&protocol=6`;
+    const url = `${address.url.replace(/^http/, "ws")}/v1/collaboration?client_id=reconnect&protocol=8`;
     const firstDocument = new Y.Doc();
     const secondDocument = new Y.Doc();
     const provider = await syncedProvider(

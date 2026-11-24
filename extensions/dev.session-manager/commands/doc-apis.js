@@ -82,13 +82,15 @@ export function registerSessionDocCommands(opts) {
   const refreshSessionsSidebarViewIfOpen = opts?.refreshSessionsSidebarViewIfOpen;
   const onDocChanged = opts?.onDocChanged;
   const docQueues = new Map();
+  const isUnavailable = id => !id || zion?.state?.get?.(`sessions.deleted.${id}`)
+    || zion?.state?.get?.(`sessions.deleting.${id}`);
 
   const enqueueDocWrite = (id, task) => {
     if (!id || typeof task !== "function") return Promise.resolve(false);
     const prev = docQueues.get(id) || Promise.resolve();
     const next = prev
       .catch(() => {})
-      .then(task)
+      .then(() => isUnavailable(id) ? false : task())
       .finally(() => {
         if (docQueues.get(id) === next) docQueues.delete(id);
       });
@@ -99,7 +101,9 @@ export function registerSessionDocCommands(opts) {
   };
 
   const applyDocText = async (id, text) => {
-    const meta = { ...await (loadMetaAsync || loadMeta)(id) };
+    if (isUnavailable(id)) return false;
+    const meta = await (loadMetaAsync || loadMeta)(id);
+    if (isUnavailable(id)) return false;
     const nextText = String(text || "");
     const saved = saveDoc(id, nextText);
     meta.size = nextText.length;
@@ -167,11 +171,13 @@ export function registerSessionDocCommands(opts) {
   const dPatchMeta = zion.commands.registerCommand("zion.sessions.patchMeta", ({ id, patch, updater } = {}) => {
     if (!id) return null;
     return enqueueDocWrite(id, async () => {
-      const current = { ...await (loadMetaAsync || loadMeta)(id), id };
+      const current = await (loadMetaAsync || loadMeta)(id);
+      if (isUnavailable(id)) return false;
+      const base = JSON.parse(JSON.stringify(current));
       const candidate = typeof updater === "function" ? updater(current) : { ...current, ...(patch || {}) };
       if (!candidate || typeof candidate !== "object") return null;
       const next = { ...candidate, id };
-      if (await saveMeta(id, next) === false) throw new Error("Session metadata write failed");
+      if (await saveMeta(id, next, { base }) === false) throw new Error("Session metadata write failed");
       return next;
     });
   });
@@ -200,6 +206,8 @@ export function registerSessionDocCommands(opts) {
     if (!id || token == null) return false;
     return enqueueDocWrite(id, async () => {
       const doc = await loadDocAsync(id);
+      if (isUnavailable(id)) return false;
+      if (isUnavailable(id)) return false;
         const next = appendAssistantTokenToDoc(doc, token, assistantBlockId);
       return applyDocText(id, next);
     });
@@ -208,7 +216,8 @@ export function registerSessionDocCommands(opts) {
     if (!id) return false;
     return enqueueDocWrite(id, async () => {
       const text = await loadDocAsync(id);
-      const meta = { ...await (loadMetaAsync || loadMeta)(id) };
+      const meta = await (loadMetaAsync || loadMeta)(id);
+      if (isUnavailable(id)) return false;
       meta.updatedAt = now();
       meta.size = text.length;
       meta.hash = hashString(text);

@@ -41,6 +41,7 @@ export function createSharingClient({ baseUrl, headers = {}, fetchImpl = globalT
     list: (direction = "received") => request(`?direction=${id(direction)}`),
     sources: () => request("/sources"),
     content: () => request("/content"),
+    mutateFolder: (shareId, body) => request(`/${id(shareId)}/folder-operations`, "POST", body),
     create: body => request("", "POST", body),
     resolveRecipient: recipient => request("/recipients/resolve", "POST", { recipient }),
     addRecipient: (shareId, body) => request(`/${id(shareId)}/recipients`, "POST", body),

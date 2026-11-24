@@ -281,10 +281,14 @@ export class PostgresObservabilityProjection {
   }
 
   async initialize() {
-    const cursor = await this.runs.projectionStart(
-      this.now() - this.retentionDays * DAY
+    const storedCursor = await this.transaction(
+      (client) => this.meta("source_cursor", client),
+      { readOnly: true, statementTimeoutMs: this.queryTimeoutMs }
     );
-    const anchor = cursor
+    const cursor = storedCursor == null
+      ? await this.runs.projectionStart(this.now() - this.retentionDays * DAY)
+      : Number(storedCursor);
+    const anchor = storedCursor == null && cursor
       ? await this.runs.projectionAnchor(cursor) || ""
       : "";
     await this.transaction(async (client) => {
@@ -297,14 +301,19 @@ export class PostgresObservabilityProjection {
         await this.setMeta("source_resets", "0", client);
         await this.setMeta("recovery_loss", "0", client);
       }
-    });
+    }, { statementTimeoutMs: this.queryTimeoutMs });
     return this;
   }
 
-  async transaction(action, { readOnly = false } = {}) {
+  async transaction(action, { readOnly = false, statementTimeoutMs = 0 } = {}) {
     const client = await this.pool.connect();
     try {
       await client.query(readOnly ? "BEGIN READ ONLY" : "BEGIN");
+      if (statementTimeoutMs) {
+        await client.query("SELECT set_config('statement_timeout', $1, true)", [
+          String(statementTimeoutMs)
+        ]);
+      }
       await client.query(
         "SELECT set_config('zion.space_id', $1, true)",
         [this.spaceId]

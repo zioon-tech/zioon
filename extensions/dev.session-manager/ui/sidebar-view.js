@@ -18,6 +18,7 @@ import { getIndexedSessionTags } from "../model/session-tag-index.js";
 import { rewriteDocTags } from "../features/tag-mutations.js";
 import { loadTagCatalog, saveTagCatalog } from "../storage/tag-catalog.js";
 import { createTagTreePanel } from "./tag-tree.js";
+import { createCoalescedRefresh } from "./coalesced-refresh.js";
 
 export function createSessionsSidebarViewManager(opts) {
   // Extension chunks may be evaluated before the core API is installed.
@@ -612,6 +613,9 @@ export function createSessionsSidebarViewManager(opts) {
   }
 
   function mountInto(container) {
+    let refreshQueue = null;
+    let sharingRevision;
+    const sharingView = opts.sharingView;
     container.innerHTML = "";
     container.style.display = "flex";
     container.style.flexDirection = "column";
@@ -1013,16 +1017,16 @@ export function createSessionsSidebarViewManager(opts) {
         refreshIfOpen();
       }
     });
-    try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => renderAll())); } catch {}
-    try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => renderAll())); } catch {}
-    try { disposables.push(zion?.state?.onDidChange?.("sessions.tagIndex", () => renderAll())); } catch {}
-    try { disposables.push(zion?.state?.onDidChange?.(SESSION_DERIVED_TAGS_STATE_KEY, () => renderAll())); } catch {}
+    try { disposables.push(zion?.events?.on?.("chat/usageChanged", () => refreshQueue?.schedule())); } catch {}
+    try { disposables.push(zion?.state?.onDidChange?.("sessions.treeMem", () => refreshQueue?.schedule())); } catch {}
+    try { disposables.push(zion?.state?.onDidChange?.("sessions.tagIndex", () => refreshQueue?.schedule())); } catch {}
+    try { disposables.push(zion?.state?.onDidChange?.(SESSION_DERIVED_TAGS_STATE_KEY, () => refreshQueue?.schedule())); } catch {}
     try {
       disposables.push(zion?.state?.onDidChange?.("sessions.indexMem", (index) => {
         innerRender?.syncSessionIndex?.(index);
       }));
     } catch {}
-      try { disposables.push(zion?.state?.onDidChange?.("sessions.metaReady", () => renderAll())); } catch {}
+      try { disposables.push(zion?.state?.onDidChange?.("sessions.metaReady", () => refreshQueue?.schedule())); } catch {}
 
     const captureTagsPanelScroll = () => {
       try {
@@ -1546,6 +1550,8 @@ export function createSessionsSidebarViewManager(opts) {
 
     const renderAll = (opts = {}) => {
       updateSharingFilters();
+      sharingRevision = sharingView?.revision;
+      opts = refreshQueue?.take(opts) || opts;
       const preserveListScroll = opts?.preserveListScroll !== false;
       const listScrollTop = preserveListScroll ? Math.max(0, Number(listWrap.scrollTop) || 0) : null;
       applySplitLayout();
@@ -1559,11 +1565,9 @@ export function createSessionsSidebarViewManager(opts) {
       innerRender();
       if (preserveListScroll && listScrollTop != null) {
         try { listWrap.scrollTop = listScrollTop; } catch {}
-        requestAnimationFrame(() => {
-          try { listWrap.scrollTop = listScrollTop; } catch {}
-        });
       }
     };
+    refreshQueue = createCoalescedRefresh(renderAll);
 
     if (typeof window.ResizeObserver !== "undefined") {
       const heatmapResizeObserver = new window.ResizeObserver(() => {
@@ -1585,6 +1589,7 @@ export function createSessionsSidebarViewManager(opts) {
     try { listWrap.scrollTop = prevScroll; } catch {}
 
     const anchorToCurrent = () => {
+      refreshQueue.flush({ preserveListScroll: false });
       try {
         const cid = zion?.state?.get("sessions.currentId");
         if (!cid) return;
@@ -1615,6 +1620,7 @@ export function createSessionsSidebarViewManager(opts) {
     const revealSession = (sessionId, opts2) => {
       const sid = sessionId ? String(sessionId) : "";
       if (!sid) return;
+      refreshQueue.flush({ preserveListScroll: false });
       const opt = opts2 || {};
       const openParents = opt.openAncestors !== false;
       const clearSearch = !!opt.clearSearch;
@@ -1649,7 +1655,8 @@ export function createSessionsSidebarViewManager(opts) {
     };
 
     const inst = {
-      render: renderAll,
+      render: (options = {}) => opts.sharingView?.revision !== sharingRevision
+        ? refreshQueue.flush(options) : refreshQueue.schedule(options),
       setViewMode: (mode) => {
         listWrap.classList.toggle("is-card-view", mode === "card");
         renderAll();
@@ -1667,6 +1674,7 @@ export function createSessionsSidebarViewManager(opts) {
       isTagSplitEnabled: () => !!tagSplitEnabled,
       createRootTag: () => tagTreePanel.startCreateRoot(),
       dispose: () => {
+        refreshQueue.dispose();
         if (current === inst) current = null;
         publishTagSplitHeader({ visible: false });
         try { innerRender?.dispose?.(); } catch {}

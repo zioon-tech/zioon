@@ -221,7 +221,10 @@ export class SpaceExecutionStore {
       const { document } = await this.authorize(userId, spaceId, documentId, bindingId, client);
       let inputHash = null;
       if (frozenInput) {
-        const input = (await client.query(`SELECT i.messages_json,r.payload_json FROM runtime_run_inputs i
+        const input = (await client.query(`SELECT
+          CASE WHEN i.messages_ref IS NOT NULL THEN runtime_read_message_blob(i.space_id,i.messages_ref)
+            ELSE i.messages_json END AS messages_json,
+          r.payload_json FROM runtime_run_inputs i
           JOIN runtime_runs r ON r.space_id=i.space_id AND r.id=i.run_id
           WHERE i.space_id=$1 AND i.run_id=$2`, [spaceId, runId])).rows[0];
         if (!input || input.payload_json.sessionId !== documentId || input.payload_json.principal?.userId !== userId) {
@@ -265,7 +268,10 @@ export class SpaceExecutionStore {
       const { document } = await this.authorize(current.requesterId, spaceId, current.documentId, current.bindingId, client);
       const content = await this.spaces.content(spaceId, current.documentId, client);
       const frozen = row.frozen_input_hash && (await client.query(
-        "SELECT messages_json FROM runtime_run_inputs WHERE space_id=$1 AND run_id=$2", [spaceId, runId])).rows[0];
+        `SELECT CASE WHEN i.messages_ref IS NOT NULL THEN runtime_read_message_blob(i.space_id,i.messages_ref)
+           ELSE i.messages_json END AS messages_json
+         FROM runtime_run_inputs i
+         WHERE i.space_id=$1 AND i.run_id=$2`, [spaceId, runId])).rows[0];
       if ((frozen ? hash(JSON.stringify(frozen.messages_json)) !== row.frozen_input_hash
         : content.revision !== current.inputRevision) || document.aclRevision !== current.aclRevision) {
         await client.query("UPDATE space_run_queue SET status='failed',updated_at=$3 WHERE space_id=$1 AND run_id=$2", [spaceId, runId, this.now()]);

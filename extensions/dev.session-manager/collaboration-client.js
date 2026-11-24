@@ -17,6 +17,9 @@ import {
   readWorkbenchRuntimeConfig
 } from "../../src/runtime/workbench-runtime-config.ts";
 import { resolveToolCardId } from "../../src/chat/tool-card-id";
+import { createCollaborationDraftRecovery } from "./storage/collaboration-draft.js";
+import { withoutSessionCardBody } from "../../packages/runtime-client/src/session-card-bodies.mjs";
+import { hydrateRemoteAnnotations } from "./storage/remote.js";
 import { appendConversationDraft } from "../../src/chat/conversation-draft.js";
 import {
   cancelConversationViewportFollow,
@@ -34,7 +37,7 @@ import {
 const COLLABORATION_TEXT_KEY = "content";
 const COLLABORATION_CARDS_KEY = "cards";
 const COLLABORATION_RUN_PROJECTION_KEY = "runProjection";
-const COLLABORATION_PROTOCOL = "6";
+const COLLABORATION_PROTOCOL = "8";
 const PENDING_COMMIT_GRACE_MS = 5_000;
 
 function websocketUrl(baseUrl, clientId, sessionId) {
@@ -97,6 +100,16 @@ function projectionAcknowledges(entry, projection) {
   return expected > 0 && actual >= expected;
 }
 
+function sameProjectedValue(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.prototype.hasOwnProperty.call(right, key)
+      && sameProjectedValue(left[key], right[key]));
+}
+
 function mergeProjectedCards(current, cards) {
   const previous = current && typeof current === "object" ? current : {};
   const tools = new Map(
@@ -109,21 +122,56 @@ function mergeProjectedCards(current, cards) {
       .map((item) => [String(item?.id || ""), item])
       .filter(([id]) => id)
   );
+  let changed = false;
   for (const value of cards.values()) {
     if (!value?.id) continue;
     const target = value.kind === "tool" ? tools : thinking;
-    const previousItem = target.get(String(value.id)) || {};
-    target.set(String(value.id), {
+    const originalItem = target.get(String(value.id)) || {};
+    let previousItem = originalItem;
+    if (!value.bodyRef) {
+      const { bodyRef, bodySessionId, bodyKind, bodyBytes, bodyHydratedRef,
+        detailRef, detailSessionId, detailHydratedRef, ...header } = previousItem;
+      previousItem = header;
+    }
+    if (value.bodyRef) {
+      const { detailRef, detailSessionId, ...header } = previousItem;
+      previousItem = { ...header, ...(detailRef ? { detailHydratedRef: detailRef } : {}) };
+    }
+    if (value.bodyRef && previousItem.bodyHydratedRef !== value.bodyRef) {
+      previousItem = withoutSessionCardBody(value.kind === "tool" ? "tools" : "thinking", previousItem);
+      const { bodyHydratedRef, ...header } = previousItem;
+      previousItem = header;
+    }
+    const next = {
       ...previousItem,
       ...value,
       expanded: previousItem.expanded === true
-    });
+    };
+    if (value.bodyRef && previousItem.bodyHydratedRef === value.bodyRef) {
+      delete next.bodyRef;
+      delete next.bodySessionId;
+      delete next.bodyKind;
+      delete next.bodyBytes;
+    }
+    if (sameProjectedValue(originalItem, next)) continue;
+    changed = true;
+    target.set(String(value.id), next);
   }
+  if (!changed) return previous;
   return {
     ...previous,
     tools: [...tools.values()],
     thinking: [...thinking.values()]
   };
+}
+
+function distinctDraftCopies(drafts) {
+  const copies = [];
+  for (const draft of drafts) {
+    if (typeof draft?.text !== "string" || copies.some(copy => copy.text === draft.text)) continue;
+    copies.push({ baseline: String(draft.baseline || ""), text: draft.text, savedAt: draft.savedAt });
+  }
+  return copies;
 }
 
 export function createSessionCollaborationManager({
@@ -136,6 +184,7 @@ export function createSessionCollaborationManager({
   createDocument = () => new Y.Doc(),
   createProvider,
   createPersistence,
+  getSessionCreation = () => null,
   syncTimeoutMs = 5_000
 } = {}) {
   const records = new Map();
@@ -144,7 +193,8 @@ export function createSessionCollaborationManager({
   const submittedFollowBySession = new Map();
   const pendingClearTimers = new Map();
   const tokenFollowRuns = new Set();
-  const cardRestoreScheduled = new Set();
+  const cardRestoreScheduled = new Map();
+  const draftRecoveries = new Set();
   const enabled = runtimeConfig.mode !== "browser" && !!runtimeConfig.baseUrl;
   const providerFactory = createProvider || ((options) =>
     new HocuspocusProvider(options));
@@ -306,19 +356,46 @@ export function createSessionCollaborationManager({
     }
   };
 
-  const syncProjectedCards = (sessionId) => {
-    const record = records.get(sessionId);
-    if (!record) return;
+  const scheduleProjectedCardRestore = (sessionId, record) => {
+    if (cardRestoreScheduled.get(sessionId) === record) return;
+    cardRestoreScheduled.set(sessionId, record);
+    const release = () => {
+      if (cardRestoreScheduled.get(sessionId) === record) cardRestoreScheduled.delete(sessionId);
+    };
     const key = `sessions.annotations.${sessionId}`;
-    const annotations = mergeProjectedCards(
-      zion?.state?.get?.(key),
-      record.cards
-    );
-    zion?.state?.set?.(key, annotations);
-    if (cardRestoreScheduled.has(sessionId)) return;
-    cardRestoreScheduled.add(sessionId);
-    globalThis.queueMicrotask(() => {
-      cardRestoreScheduled.delete(sessionId);
+    globalThis.queueMicrotask(async () => {
+      if (records.get(sessionId) !== record) { release(); return; }
+      const pending = Object.fromEntries(["tools", "thinking"].map(kind => [kind,
+        (zion?.state?.get?.(key)?.[kind] || []).filter(card => card.expanded === true && card.bodyRef)]));
+      const references = value => JSON.stringify(["tools", "thinking"].flatMap(kind =>
+        (value[kind] || []).map(card => [kind, card.id, card.bodyRef])));
+      try {
+        if (pending.tools.length || pending.thinking.length) {
+          const hydrated = await hydrateRemoteAnnotations(pending);
+          if (records.get(sessionId) !== record) return;
+          const latest = zion?.state?.get?.(key) || {};
+          const next = { ...latest };
+          for (const kind of ["tools", "thinking"]) {
+            const loaded = new Map((hydrated[kind] || []).map(card => [card.id, card]));
+            const requested = new Map(pending[kind].map(card => [card.id, card.bodyRef]));
+            next[kind] = (latest[kind] || []).map(card => {
+              const ref = requested.get(card.id);
+              if (!ref || card.bodyRef !== ref || record.cards.get(card.id)?.bodyRef !== ref) return card;
+              const { bodyRef, bodySessionId, bodyKind, bodyBytes, detailRef, detailSessionId,
+                ...header } = withoutSessionCardBody(kind, card);
+              return { ...loaded.get(card.id), ...header, bodyHydratedRef: ref,
+                ...(detailRef ? { detailHydratedRef: detailRef } : {}) };
+            });
+          }
+          zion?.state?.set?.(key, next);
+        }
+      } catch (error) {
+        if (records.get(sessionId) === record) {
+          zion?.notification?.show?.(error?.message || "卡片详情加载失败，请重试。", { type: "error" });
+        }
+      } finally {
+        release();
+      }
       if (records.get(sessionId) !== record) return;
       try {
         const panels = (zion?.panels?.list?.() || [])
@@ -327,12 +404,28 @@ export function createSessionCollaborationManager({
           zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
             sessionId,
             ...(panel ? { panelId: panel.id } : {}),
-            annotations: zion?.state?.get?.(key) || annotations,
+            annotations: zion?.state?.get?.(key) || {},
             clearFirst: false
           });
         }
       } catch {}
+      const remaining = Object.fromEntries(["tools", "thinking"].map(kind => [kind,
+        (zion?.state?.get?.(key)?.[kind] || []).filter(card => card.expanded === true && card.bodyRef)]));
+      // A newer reference arriving during the await gets its own request.
+      // An unchanged failed request remains available for explicit retry.
+      if ((remaining.tools.length || remaining.thinking.length)
+        && references(remaining) !== references(pending)) scheduleProjectedCardRestore(sessionId, record);
     });
+  };
+
+  const syncProjectedCards = (sessionId) => {
+    const record = records.get(sessionId);
+    if (!record) return;
+    const key = `sessions.annotations.${sessionId}`;
+    const annotations = mergeProjectedCards(zion?.state?.get?.(key), record.cards);
+    if (annotations === zion?.state?.get?.(key)) return;
+    zion?.state?.set?.(key, annotations);
+    scheduleProjectedCardRestore(sessionId, record);
   };
 
   const commitPendingEntry = (sessionId, entry) => {
@@ -707,15 +800,19 @@ export function createSessionCollaborationManager({
     const record = records.get(sessionId);
     if (!record) return;
     records.delete(sessionId);
+    if (cardRestoreScheduled.get(sessionId) === record) cardRestoreScheduled.delete(sessionId);
     durableFollowBySession.delete(sessionId);
     submittedFollowBySession.delete(sessionId);
     record.deleted = zion?.state?.get?.(`sessions.deleted.${sessionId}`) === true;
+    for (const cleanup of [...record.bindingCleanups]) cleanup();
     try { record.text.unobserve(record.onTextChange); } catch {}
     try { record.cards.unobserve(record.onCardsChange); } catch {}
+    try { record.document.off("update", record.onDocumentUpdate); } catch {}
     try {
       record.runProjections.unobserve(record.onRunProjectionChange);
     } catch {}
     try { record.provider.destroy(); } catch {}
+    try { record.durableReadySubscription?.dispose?.(); } catch {}
     zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
     try { record.persistence?.destroy?.(); } catch {}
     try { record.document.destroy(); } catch {}
@@ -729,6 +826,16 @@ export function createSessionCollaborationManager({
 
   const acquire = (sessionId) => {
     let record = records.get(sessionId);
+    const retainedCopies = record?.recoveryDraft && distinctDraftCopies([
+      record.recoveryDraft, ...(record.recoveryDraft.alternatives || []), ...record.recoveryEdits.values()
+    ]);
+    const retainedRecovery = retainedCopies && {
+      ...record.recoveryDraft, alternatives: retainedCopies.slice(1)
+    };
+    if (record?.resetRequired) {
+      disposeRecord(sessionId);
+      record = null;
+    }
     if (record) {
       record.references += 1;
       return record;
@@ -755,9 +862,12 @@ export function createSessionCollaborationManager({
     });
     let awarenessPeers = "";
     let authorizedScope, authenticationFailed = false, connected = false;
+    let localDraft = !sharedWorkbenchDocument(sessionId)
+      && zion?.state?.get?.(`sessions.localDraft.${sessionId}`) === true;
+    const waitForCreation = localDraft && zion?.state?.get?.(`sessions.durableReady.${sessionId}`) !== true;
     const requiresAccountAuthorization = !!currentAccountSession() || !!sharedWorkbenchDocument(sessionId);
-    const isEditable = () => sharedDocumentEditable(sessionId) && !authenticationFailed
-      && (!requiresAccountAuthorization || connected && authorizedScope === "read-write");
+    const isEditable = () => sharedDocumentEditable(sessionId) && !authenticationFailed && !record?.resetRequired
+      && (localDraft || !requiresAccountAuthorization || connected && authorizedScope === "read-write");
     const applyCapability = () => {
       for (const view of record?.views || []) view.dispatch({
         effects: record.readonlyCompartments?.get(view)?.reconfigure([
@@ -765,13 +875,21 @@ export function createSessionCollaborationManager({
         ]) || []
       });
     };
+    const creation = getSessionCreation(sessionId);
     const provider = providerFactory({
       url: websocketUrl(runtimeConfig.baseUrl, clientId, sessionId),
       name: sharedWorkbenchDocument(sessionId)?.documentId || sessionId,
       document,
       token: "",
+      autoConnect: !waitForCreation && !creation,
+      delay: 2_000,
+      minDelay: 2_000,
+      maxDelay: 30_000,
+      factor: 2,
       flushDelay: 25,
+      ...(creation ? { autoConnect: false } : {}),
       onStatus({ status }) {
+        if (record?.resetRequired) return;
         zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
         connected = status === "connected";
         if (!connected) authorizedScope = undefined;
@@ -784,6 +902,9 @@ export function createSessionCollaborationManager({
         });
       },
       onAuthenticated({ scope }) {
+        if (record?.resetRequired) return;
+        localDraft = false;
+        zion?.state?.set?.(`sessions.localDraft.${sessionId}`, false);
         authorizedScope = scope;
         authenticationFailed = false;
         connected = true;
@@ -791,13 +912,16 @@ export function createSessionCollaborationManager({
         applyCapability();
       },
       onUnsyncedChanges({ number }) {
+        if (record?.resetRequired) return;
         collaborationState(zion, sessionId, { pendingChanges: Number(number) || 0 });
         if (Number(number) === 0) globalThis.queueMicrotask(() => {
           if (!record?.connected || Number(record.provider.unsyncedChanges || 0) > 0) return;
+          record.localWritesPending = false;
           for (const cleanup of record.draftCleanups) cleanup();
         });
       },
       onSynced() {
+        if (record?.resetRequired) return;
         zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
         if (authenticationFailed) return;
         if (!requiresAccountAuthorization) connected = true;
@@ -818,9 +942,44 @@ export function createSessionCollaborationManager({
           zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
         }
       },
+      onClose({ event } = {}) {
+        if (event?.reason !== "collaboration_document_reset" || !record || record.resetRequired) return;
+        record.resetRequired = true;
+        record.connected = connected = false;
+        record.ready = false;
+        authorizedScope = undefined;
+        // A logical document CLOSE still leaves the provider socket eligible
+        // for reconnect. Stop it synchronously before its retry callback runs.
+        record.provider.disconnect?.();
+        // Capture all panes before detaching any one of them. Conflicting local
+        // edits take precedence, and every distinct copy remains recoverable.
+        const snapshots = [...record.draftSnapshots.values()].map(snapshot => snapshot());
+        const prior = record.recoveryDraft || zion?.state?.get?.(`sessions.collaborationDraft.${sessionId}`);
+        const copies = distinctDraftCopies([
+          ...snapshots.filter(snapshot => snapshot.pending),
+          ...(prior ? [prior, ...(prior.alternatives || [])] : []),
+          ...snapshots
+        ]);
+        if (copies.length) record.recoveryDraft = {
+          ...copies[0], alternatives: copies.slice(1), recoveryReason: "collaboration_document_reset"
+        };
+        record.recoveryEdits.clear();
+        for (const reset of record.resetCleanups) reset();
+        applyCapability();
+        collaborationState(zion, sessionId, {
+          connected: false, synced: false, resetRequired: true, fallback: true,
+          error: "协作编辑未获保存。本地草稿已保留，请重新打开会话同步。"
+        });
+        zion?.notification?.show?.("协作编辑未获保存。本地草稿已保留，请重新打开会话；草稿可恢复为新会话。", {
+          type: "warning", duration: 0, dismissible: true,
+          actions: recoveryActions(sessionId, record.recoveryDraft)
+        });
+      },
       onAuthenticationFailed({ reason }) {
         zion?.events?.emit?.("collaboration/presenceChanged", { sessionId });
         authenticationFailed = true; connected = false; authorizedScope = undefined;
+        localDraft = false;
+        zion?.state?.set?.(`sessions.localDraft.${sessionId}`, false);
         if (record) record.connected = false;
         applyCapability();
         collaborationState(zion, sessionId, {
@@ -847,6 +1006,11 @@ export function createSessionCollaborationManager({
       if (durableFollowBySession.get(sessionId)?.size) settleDurableFollow(sessionId, { reveal: true });
     };
     const onCardsChange = () => syncProjectedCards(sessionId);
+    const onDocumentUpdate = (_update, origin) => {
+      // The provider also counts sync handshakes as "unsynced". Only actual
+      // local/imported changes need acknowledgement before a manual reload.
+      if (record && origin !== provider) record.localWritesPending = true;
+    };
     const onRunProjectionChange = () => {
       clearAcknowledgedPending(sessionId);
       settleDurableFollow(sessionId);
@@ -854,6 +1018,7 @@ export function createSessionCollaborationManager({
     text.observe(onTextChange);
     cards.observe(onCardsChange);
     runProjections.observe(onRunProjectionChange);
+    document.on("update", onDocumentUpdate);
     record = {
       document,
       text,
@@ -865,22 +1030,69 @@ export function createSessionCollaborationManager({
       providerSynced,
       onTextChange,
       onCardsChange,
+      onDocumentUpdate,
       onRunProjectionChange,
       views: new Set(),
+      bindingCleanups: new Set(),
       draftCleanups: new Set(),
+      resetCleanups: new Set(),
+      draftSnapshots: new Map(),
+      recoveryDraft: retainedRecovery || null,
+      recoveryEdits: new Map(),
+      pendingDraftChecks: new Set(),
+      localWritesPending: false,
       appliedDrafts: new Set(),
       ready: false,
       connected,
       references: 1
     };
     records.set(sessionId, record);
+    if (waitForCreation) {
+      let started = false;
+      const connectAfterCreation = () => {
+        if (started || record.resetRequired || records.get(sessionId) !== record
+          || zion?.state?.get?.(`sessions.deleted.${sessionId}`)
+          || zion?.state?.get?.(`sessions.durableReady.${sessionId}`) !== true) return;
+        started = true;
+        record.durableReadySubscription?.dispose?.();
+        Promise.resolve().then(() => record.provider.connect?.()).catch(error => {
+          if (records.get(sessionId) !== record) return;
+          collaborationState(zion, sessionId, { connected: false, synced: false, error: String(error) });
+        });
+      };
+      record.durableReadySubscription = zion?.state?.onDidChange?.(
+        `sessions.durableReady.${sessionId}`, connectAfterCreation
+      );
+      connectAfterCreation();
+    }
     collaborationState(zion, sessionId, {
       connected: false,
       synced: false,
-      disposed: false
+      disposed: false,
+      resetRequired: false
     });
+    if (creation && !waitForCreation) {
+      void Promise.resolve(creation).then(saved => {
+        // Closing/deleting the editor during its save must not reconnect it.
+        if (records.get(sessionId) !== record || record.deleted || record.resetRequired
+          || zion?.state?.get?.(`sessions.deleted.${sessionId}`)) return;
+        if (!saved) throw new Error("会话首次保存未完成，本地改动已保留。");
+        return provider.connect();
+      }).catch(error => {
+        if (records.get(sessionId) !== record) return;
+        collaborationState(zion, sessionId, {
+          connected: false, synced: false, error: error?.message || String(error)
+        });
+      });
+    }
     return record;
   };
+
+  const recoveryActions = (sessionId, draft) =>
+    [draft, ...(draft?.alternatives || [])].filter(copy => typeof copy?.text === "string").map((_, index, copies) => ({
+      label: copies.length > 1 ? `恢复草稿 ${index + 1} 为新会话` : "恢复草稿为新会话",
+      handler: () => zion?.commands?.executeCommand?.("zion.sessions.restoreCollaborationDraft", sessionId, index)
+    }));
 
   const bindEditor = (editor, { allowDeferred = true } = {}) => {
     const view = editor?.getView?.();
@@ -931,6 +1143,18 @@ export function createSessionCollaborationManager({
     let hydrating = false;
     let bound = false;
     let restoreDraft = null;
+    const currentDraft = () => ({ baseline, text: view.state.doc.toString(), savedAt: Date.now() });
+    record.draftSnapshots.set(view, () => ({ ...currentDraft(), pending: !bound && !pendingChanges.empty }));
+    const recoverySnapshot = () => {
+      if (!record.recoveryDraft) return currentDraft();
+      const pinned = record.recoveryDraft;
+      const copies = distinctDraftCopies([
+        pinned, ...(pinned.alternatives || []), ...record.recoveryEdits.values()
+      ]);
+      return { ...pinned, alternatives: copies.slice(1) };
+    };
+    const hasPendingLocalDraft = () => !disposed && !bound && !pendingChanges.empty;
+    record.pendingDraftChecks.add(hasPendingLocalDraft);
     view.dom.dataset.zionCollaborationPending = "true";
     const identity = currentAccountSession();
     let draftClientId = clientId;
@@ -939,35 +1163,66 @@ export function createSessionCollaborationManager({
       globalThis.sessionStorage?.setItem("zion.collaboration.draftClient", draftClientId);
     } catch {}
     const draftKey = `zion.collaboration.draft:${encodeURIComponent(runtimeConfig.baseUrl)}:${identity?.user?.id || "local"}:${identity?.space?.id || "local"}:${encodeURIComponent(sessionId)}:${draftClientId}`;
-    try {
-      const saved = JSON.parse(localStorage?.getItem(draftKey) || "null");
-      if (saved?.text && saved.text !== baseline) {
-        restoreDraft = saved;
-        zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, saved);
-        zion?.notification?.show?.("此会话有保留的本地草稿。", {
-          type: "info", duration: 8000,
-          actions: [{
-            label: "恢复为新会话",
-            handler: () => zion?.commands?.executeCommand?.("zion.sessions.restoreCollaborationDraft", sessionId)
-          }]
+    let draftErrorShown = false;
+    const draftRecovery = createCollaborationDraftRecovery({
+      key: draftKey,
+      storage: localStorage,
+      snapshot: recoverySnapshot,
+      onSnapshot: draft => zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, draft),
+      onError: () => {
+        if (draftErrorShown || disposed) return;
+        draftErrorShown = true;
+        zion?.notification?.show?.("本地草稿恢复副本保存失败，请确认会话已同步后再关闭。", {
+          type: "warning", duration: 8000
         });
       }
-    } catch {}
+    });
+    draftRecoveries.add(draftRecovery);
+    const draftLoaded = draftRecovery.load(baseline).then(saved => {
+      if (disposed) return;
+      if (saved?.recoveryReason || saved?.text && saved.text !== baseline || record.recoveryDraft) {
+        if (saved?.recoveryReason) {
+          const prior = record.recoveryDraft;
+          const copies = distinctDraftCopies([
+            ...(prior ? [prior, ...(prior.alternatives || [])] : []),
+            saved, ...(saved.alternatives || [])
+          ]);
+          record.recoveryDraft = { ...saved, ...copies[0], alternatives: copies.slice(1) };
+        }
+        restoreDraft = record.recoveryDraft || saved;
+        zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, restoreDraft);
+        zion?.notification?.show?.("此会话有保留的本地草稿。", {
+          type: "info", duration: 8000,
+          actions: recoveryActions(sessionId, restoreDraft)
+        });
+      }
+    });
     const saveDraft = () => {
-      const draft = { baseline, text: view.state.doc.toString(), savedAt: Date.now() };
-      zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, draft);
-      try { localStorage?.setItem(draftKey, JSON.stringify(draft)); } catch {}
+      if (record.recoveryDraft && !record.resetRequired) record.recoveryEdits.set(view, currentDraft());
+      draftRecovery.schedule();
     };
     const clearAcknowledgedDraft = () => {
-      if (disposed || !bound || restoreDraft || view.state.doc.toString() !== record.text.toString()) return;
-      try {
-        const saved = JSON.parse(localStorage?.getItem(draftKey) || "null");
-        if (saved?.text !== record.text.toString()) return;
-        localStorage?.removeItem(draftKey);
+      if (disposed || record.resetRequired || !bound || view.state.doc.toString() !== record.text.toString()) return;
+      if (restoreDraft || record.recoveryDraft) {
+        record.recoveryEdits.delete(view);
+        return;
+      }
+      void draftRecovery.clear().then(cleared => {
+        if (!cleared || disposed || restoreDraft || record.recoveryDraft || view.state.doc.toString() !== record.text.toString()) return;
         zion?.state?.set?.(`sessions.collaborationDraft.${sessionId}`, undefined);
-      } catch {}
+      });
     };
     record.draftCleanups.add(clearAcknowledgedDraft);
+    const resetBinding = () => {
+      restoreDraft = record.recoveryDraft;
+      saveDraft();
+      void draftRecovery.flush();
+      bound = false;
+      pendingChanges = ChangeSet.empty(view.state.doc.length);
+      delete view.dom.dataset.zionCollaborationBound;
+      view.dispatch({ effects: compartment.reconfigure([]) });
+    };
+    record.resetCleanups.add(resetBinding);
     const draftCompartment = new Compartment();
     editor.addVisualExtension?.(draftCompartment.of(EditorView.updateListener.of((update) => {
       if (disposed || hydrating || !update.docChanged) return;
@@ -997,7 +1252,7 @@ export function createSessionCollaborationManager({
       pendingChanges = pendingChanges.compose(update.changes);
     }));
     const timeout = globalThis.setTimeout(() => {
-      if (disposed || record.deleted) return;
+      if (disposed || record.deleted || record.resetRequired) return;
       collaborationState(zion, sessionId, {
         connected: false,
         synced: false,
@@ -1008,22 +1263,43 @@ export function createSessionCollaborationManager({
 
     void Promise.all([
       record.providerSynced,
-      record.persistence?.whenSynced || Promise.resolve()
+      record.persistence?.whenSynced || Promise.resolve(),
+      draftLoaded
     ]).then(() => {
-      if (disposed || record.deleted) return;
+      if (disposed || record.deleted || record.resetRequired) return;
       globalThis.clearTimeout(timeout);
       const remoteText = record.text.toString();
       const localText = String(editor.getValue?.() || "");
-      const draftSignature = JSON.stringify([baseline, pendingChanges.toJSON()]);
-      const alreadyApplied = record.appliedDrafts.has(draftSignature);
+      const draftSignature = pendingChanges.empty
+        ? null : JSON.stringify([baseline, pendingChanges.toJSON()]);
+      const alreadyApplied = remoteText === localText || draftSignature != null && record.appliedDrafts.has(draftSignature);
       const remoteEdits = [];
       let offset = 0;
-      for (const part of diffChars(baseline, remoteText)) {
-        if (part.added) remoteEdits.push({ from: offset, insert: part.value });
-        else if (part.removed) {
-          remoteEdits.push({ from: offset, to: offset + part.value.length });
-          offset += part.value.length;
-        } else offset += part.value.length;
+      // A clean editor can take the authoritative document directly. Tokenizing
+      // both full documents is only needed to rebase actual pre-sync edits.
+      if (!pendingChanges.empty && !alreadyApplied) {
+        const parts = diffChars(baseline, remoteText, { timeout: 80, maxEditLength: 4096 });
+        if (!parts) {
+          saveDraft();
+          void draftRecovery.flush();
+          collaborationState(zion, sessionId, {
+            synced: false, fallback: true, draftKey,
+            error: "远端改动过大，本地草稿已保留。请重新打开会话后恢复草稿。"
+          });
+          zion?.notification?.show?.("远端改动过大，本地草稿已保留。可恢复为新会话继续编辑。", {
+            type: "warning", duration: 0, dismissible: true,
+            actions: [{ label: "恢复草稿为新会话",
+              handler: () => zion?.commands?.executeCommand?.("zion.sessions.restoreCollaborationDraft", sessionId) }]
+          });
+          return;
+        }
+        for (const part of parts) {
+          if (part.added) remoteEdits.push({ from: offset, insert: part.value });
+          else if (part.removed) {
+            remoteEdits.push({ from: offset, to: offset + part.value.length });
+            offset += part.value.length;
+          } else offset += part.value.length;
+        }
       }
       const remoteChanges = ChangeSet.of(remoteEdits, baseline.length);
       let conflict = false;
@@ -1038,6 +1314,7 @@ export function createSessionCollaborationManager({
       });
       if (conflict) {
         saveDraft();
+        void draftRecovery.flush();
         zion?.notification?.show?.("远端会话已修改，本地草稿已保留。可从命令面板恢复草稿为新会话。", {
           type: "warning", duration: 0, dismissible: true,
           actions: [{
@@ -1075,8 +1352,8 @@ export function createSessionCollaborationManager({
       hydrating = false;
       bound = true;
       delete view.dom.dataset.zionCollaborationPending;
-      if (pendingChanges.empty && !restoreDraft) {
-        try { localStorage?.removeItem(draftKey); } catch {}
+      if (pendingChanges.empty && !restoreDraft && !record.recoveryDraft) {
+        void draftRecovery.clear();
       }
       try { view.dom.dataset.zionCollaborationBound = "true"; } catch {}
       view.dispatch({
@@ -1121,11 +1398,14 @@ export function createSessionCollaborationManager({
       });
     });
 
-    return {
+    const binding = {
       dispose() {
         if (disposed) return;
-        disposed = true;
         if (!bound && !pendingChanges.empty) saveDraft();
+        draftRecovery.dispose();
+        draftRecoveries.delete(draftRecovery);
+        disposed = true;
+        record.bindingCleanups.delete(binding.dispose);
         delete view.dom.dataset.zionCollaborationPending;
         try { delete view.dom.dataset.zionCollaborationBound; } catch {}
         globalThis.clearTimeout(timeout);
@@ -1136,22 +1416,42 @@ export function createSessionCollaborationManager({
         cancelConversationViewportFollow(view);
         record.views.delete(view);
         record.draftCleanups.delete(clearAcknowledgedDraft);
+        record.resetCleanups.delete(resetBinding);
+        record.draftSnapshots.delete(view);
+        record.pendingDraftChecks.delete(hasPendingLocalDraft);
         record.references -= 1;
         if (record.references <= 0) disposeRecord(sessionId);
       }
     };
+    record.bindingCleanups.add(binding.dispose);
+    return binding;
   };
+
+  const hasPendingRecordWrites = (record) =>
+    record.localWritesPending
+    || [...record.pendingDraftChecks].some(check => check())
+    // Optional Yjs persistence can restore unsent changes from another process.
+    // Keep its full synchronization barrier until the provider confirms them.
+    || (record.persistence && (
+      !record.ready || !record.connected || Number(record.provider.unsyncedChanges || 0) > 0
+    ));
+  const hasPendingWrites = ({ sessionId = "" } = {}) =>
+    [...records.entries()].some(([id, record]) =>
+      (!sessionId || id === sessionId) && hasPendingRecordWrites(record)
+    );
 
   return {
     enabled,
     bindEditor,
-    async flush({ timeoutMs = 5000, sessionId = "" } = {}) {
+    hasPendingWrites,
+    async flush({ timeoutMs = 5000, sessionId = "", isCancelled = () => false, pendingOnly = false } = {}) {
       const started = Date.now();
-      while ([...records.entries()].filter(([id]) => !sessionId || id === sessionId).some(([, record]) =>
+      while (pendingOnly ? hasPendingWrites({ sessionId })
+        : [...records.entries()].filter(([id]) => !sessionId || id === sessionId).some(([, record]) =>
         !record.ready || !record.connected || Number(record.provider.unsyncedChanges || 0) > 0
         || [...record.views].some(view => view.dom?.dataset?.zionCollaborationPending === "true")
       )) {
-        if (Date.now() - started >= timeoutMs) return false;
+        if (isCancelled() || Date.now() - started >= timeoutMs) return false;
         await new Promise((resolve) => globalThis.setTimeout(resolve, 25));
       }
       return true;
@@ -1195,6 +1495,8 @@ export function createSessionCollaborationManager({
       };
     },
     dispose() {
+      for (const recovery of draftRecoveries) recovery.dispose();
+      draftRecoveries.clear();
       for (const disposable of eventDisposables) {
         try { disposable?.dispose?.(); } catch {}
       }

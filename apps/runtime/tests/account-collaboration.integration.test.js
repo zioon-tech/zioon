@@ -89,7 +89,7 @@ it("enforces account viewer writes and stops delivering Yjs updates after member
   });
   cleanup.push(() => server.close());
   const address = await server.start();
-  const url = address.url.replace(/^http/, "ws") + "/v1/collaboration?protocol=6";
+  const url = address.url.replace(/^http/, "ws") + "/v1/collaboration?protocol=8";
   const editor = await connect(url, ownerSession.token);
   const reader = await connect(url, viewerSession.token);
   expect(reader.text.toString()).toBe("initial");

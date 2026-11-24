@@ -1,0 +1,11 @@
+.zion-editor-host { position: relative; }
+.zion-editor-host.is-session-loading .cm-editor { visibility: hidden; pointer-events: none; }
+.zion-session-loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  gap: 12px; color: var(--muted, #999); font-size: 13px;
+  background: var(--bg, #1e1e1e); z-index: 1;
+}
+.zion-session-loading button {
+  font: inherit; color: var(--fg); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer;
+}

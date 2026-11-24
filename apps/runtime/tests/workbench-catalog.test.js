@@ -17,6 +17,26 @@ afterEach(async () => {
 });
 
 describe("Workbench startup catalog", () => {
+  it("preserves summary value types and derives an index when legacy metadata is missing", async () => {
+    const store = await new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() }).initialize();
+    stores.push(store);
+    await store.createSession({ id: "typed", text: "user summary", meta: {
+      title: "Catalog summary", titleAuto: false, updatedAt: "123", size: "12",
+      tags: ["a/b"], path: null, language: "中文", annotations: { tools: [{ result: "large".repeat(20000) }] }
+    } });
+    const catalog = await store.readCatalog();
+    expect(catalog.catalog.metas[0].meta).toMatchObject({
+      title: "Catalog summary", titleAuto: false, updatedAt: 123, size: 12, tags: ["a/b"], language: "中文"
+    });
+    expect(catalog.catalog.metas[0].meta.annotations).toBeUndefined();
+    expect(catalog.catalog.metas[0].meta.path).toBeUndefined();
+    await database.pool.query("DELETE FROM runtime_workbench_metadata WHERE space_id=$1 AND id=$2",
+      [store.spaceId, "typed"]);
+    const index = await store.rebuildIndexFromTree(catalog.tree);
+    expect(index[0]).toMatchObject({ id: "typed", title: "Catalog summary", size: "user summary".length });
+    expect(index[0].hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("pages summaries while keeping complete tree identities and searches content within the owning space", async () => {
     const store = await new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() }).initialize();
     const other = await new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() }).initialize();

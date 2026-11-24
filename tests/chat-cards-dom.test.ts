@@ -6,6 +6,7 @@ import { createChatAnnotationsApi } from "../src/chat/annotations";
 import { createToolCardId } from "../src/chat/tool-card-id";
 import { installToolCallCards, resolveToolActionTarget } from "../extensions/dev.tools/tool-calls.js";
 import { installThinkingCards } from "../extensions/dev.thinking/thinking-cards.js";
+import { roles } from "../extensions/dev.roles/roles.js";
 
 const wait = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -111,6 +112,101 @@ afterEach(() => {
 });
 
 describe("tool action terminal target", () => {
+  it("replaces an old result with exact null in both mounted panes and subsequent snapshots", async () => {
+    const text = "user hi\nassistant <!-- zion-assistant:id=run --> \n调用 Bash <!-- zion-tool:id=null-body -->\nAnswer";
+    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, text);
+    const item = { id: "null-body", kind: "tool", runId: "run", assistantBlockId: "run",
+      name: "Bash", args: { command: "same".repeat(2048) }, result: "OLD OUTPUT",
+      ok: true, expanded: true, bodyHydratedRef: "a".repeat(64) };
+    try {
+      for (const panelId of ["panel-a", "panel-b"]) {
+        await h.annotations.restoreSession({ sessionId: "session-1", panelId,
+          annotations: { tools: [item], thinking: [] } }).completion;
+      }
+      await wait(40);
+      for (const core of h.cores.values()) expect(core.view.dom.querySelector(".zion-tool-call-card")?.textContent)
+        .toContain("OLD OUTPUT");
+      const next = { ...item, result: null, ok: null, bodyHydratedRef: "b".repeat(64) };
+      h.annotations.setSessionAnnotations("session-1", { tools: [next], thinking: [] });
+      for (const panelId of ["panel-a", "panel-b"]) {
+        await h.annotations.restoreSession({ sessionId: "session-1", panelId, clearFirst: false,
+          annotations: { tools: [next], thinking: [] } }).completion;
+      }
+      await wait(40);
+      for (const core of h.cores.values()) {
+        expect(core.view.dom.querySelector(".zion-tool-call-card")).not.toBeNull();
+        expect(core.view.dom.querySelector(".zion-tool-call-card")?.textContent).not.toContain("OLD OUTPUT");
+        core.view.dispatch({ changes: { from: core.view.state.doc.length, insert: "!" } });
+      }
+      await wait(180);
+      expect(h.annotations.getSessionAnnotations("session-1").tools?.[0]).toMatchObject({
+        args: item.args, result: null, bodyHydratedRef: "b".repeat(64), expanded: true
+      });
+      for (const panelId of ["panel-a", "panel-b"]) {
+        window.zion.commands.executeCommand("zion.chatCards.snapshotSession", { sessionId: "session-1", panelId });
+        expect(h.annotations.getSessionAnnotations("session-1").tools?.[0].result).toBeNull();
+      }
+    } finally { h.dispose(); }
+  });
+
+  it("loads the original result on first expansion and reuses it on later clicks", async () => {
+    const text = "user hi\nassistant <!-- zion-assistant:id=run --> \n调用 Bash <!-- zion-tool:id=lazy -->\nAnswer";
+    const h = createHarness({ "panel-a": "session-1", "panel-b": "session-1" }, text);
+    const fullResult = "FULL RESULT " + "data".repeat(2000);
+    try {
+      const item = { id: "lazy", kind: "tool", runId: "run", assistantBlockId: "run",
+        name: "Bash", args: { command: "ls" }, result: null, ok: true,
+        detailRef: "a".repeat(64), detailSessionId: "session-1" };
+      window.zion.state.set("sessions.meta.session-1", { annotations: { tools: [item] } });
+      const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ details: [{
+        kind: "tools", id: "lazy", ref: item.detailRef, body: { result: fullResult }
+      }] })));
+      (globalThis as any).fetch = fetchSpy;
+      await h.annotations.restoreSession({ sessionId: "session-1", panelId: "panel-a",
+        annotations: { tools: [item] } }).completion;
+      await h.annotations.restoreSession({ sessionId: "session-1", panelId: "panel-b",
+        annotations: { tools: [item] } }).completion;
+      await wait(30);
+      const view = h.cores.get("panel-a")!.view;
+      (view.dom.querySelector(".zion-tool-call-inline") as HTMLElement).click();
+      await wait(50);
+      expect(view.dom.querySelector(".zion-tool-call-card")?.textContent).toContain("FULL RESULT");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      (view.dom.querySelector(".zion-tool-call-inline") as HTMLElement).click();
+      await wait(10);
+      (view.dom.querySelector(".zion-tool-call-inline") as HTMLElement).click();
+      await wait(20);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const secondView = h.cores.get("panel-b")!.view;
+      (secondView.dom.querySelector(".zion-tool-call-inline") as HTMLElement).click();
+      await wait(30);
+      expect(secondView.dom.querySelector(".zion-tool-call-card")?.textContent).toContain("FULL RESULT");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(h.cores.get("panel-a")!.getValue()).toBe(text);
+    } finally { window.zion.state.set("sessions.meta.session-1", undefined); h.dispose(); }
+  });
+
+  it("restores concatenated historical tool markers without changing the document", async () => {
+    const text = "user hi\nassistant <!-- zion-assistant:id=run-legacy --> \n"
+      + "调用 Bash <!-- zion-tool:id=legacy-1 -->调用 Bash <!-- zion-tool:id=legacy-2 -->\nAnswer";
+    const h = createHarness({ "panel-a": "session-1" }, text);
+    try {
+      h.cores.get("panel-a")!.addExternalExtension(roles());
+      const restored = h.annotations.restoreSession({
+        sessionId: "session-1", panelId: "panel-a",
+        annotations: { tools: [
+          { id: "legacy-1", name: "Bash", args: { command: "first" }, result: "done", assistantBlockId: "run-legacy" },
+          { id: "legacy-2", name: "Bash", args: { command: "second" }, result: "done", assistantBlockId: "run-legacy" }
+        ] }
+      });
+      await restored.completion;
+      await wait(40);
+      const core = h.cores.get("panel-a")!;
+      expect(core.getValue()).toBe(text);
+      expect(core.view.dom.querySelectorAll(".zion-tool-call-inline")).toHaveLength(2);
+      expect(core.view.contentDOM.textContent).not.toContain("zion-tool:id=");
+    } finally { h.dispose(); }
+  });
   it("uses the original tool execution context instead of ambient UI state", () => {
     const target = resolveToolActionTarget({
       id: "tool-1",
@@ -146,7 +242,43 @@ describe("tool action terminal target", () => {
 });
 
 describe("chat cards DOM lifecycle", () => {
-  it("distinguishes Device-root file tools from session-bound commands", async () => {
+  it.each(["missing", "empty"])("restores sparse tool metadata with a %s name from its exact document ID", async (nameState) => {
+    const initial = "user hi\nassistant <!-- zion-assistant:id=run-sparse --> \n"
+      + "调用 Bash <!-- zion-tool:id=sparse-1 -->\n"
+      + "调用 webSearch <!-- zion-tool:id=sparse-2 -->\nAnswer";
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      const items = ["sparse-1", "sparse-2"].map(id => ({
+        id, kind: "tool", runId: "run-sparse", ...(nameState === "empty" ? { name: "" } : {})
+      }));
+      await h.annotations.restoreSession({ sessionId: "session-1", panelId: "panel-a",
+        annotations: { tools: items }, clearFirst: false }).completion;
+      const core = h.cores.get("panel-a")!;
+      const cards = core.view.dom.querySelectorAll(".zion-tool-call-inline");
+      expect(cards).toHaveLength(2);
+      expect(cards[0].textContent).toContain("Bash");
+      expect(cards[1].textContent).toContain("webSearch");
+      expect(core.getValue()).toBe(initial);
+      expect(items.every(item => !("from" in item))).toBe(true);
+    } finally { h.dispose(); }
+  });
+
+  it("does not attach sparse metadata to an explicitly different assistant parent", async () => {
+    const initial = "user hi\nassistant <!-- zion-assistant:id=actual-run --> \n"
+      + "调用 Bash <!-- zion-tool:id=sparse-wrong-parent -->\nAnswer";
+    const h = createHarness({ "panel-a": "session-1" }, initial);
+    try {
+      await h.annotations.restoreSession({ sessionId: "session-1", panelId: "panel-a",
+        annotations: { tools: [{ id: "sparse-wrong-parent", kind: "tool",
+          runId: "other-run", assistantBlockId: "other-run", requiresDocumentAnchor: true }] }
+      }).completion;
+      const core = h.cores.get("panel-a")!;
+      expect(core.view.dom.querySelectorAll(".zion-tool-call-inline")).toHaveLength(0);
+      expect(core.getValue()).toBe(initial);
+    } finally { h.dispose(); }
+  });
+
+  it("shows the named Node for direct commands without requiring a terminal session", async () => {
     const initial = [
       "user inspect",
       "assistant <!-- zion-assistant:id=run-context --> ",
@@ -156,6 +288,9 @@ describe("chat cards DOM lifecycle", () => {
     ].join("\n");
     const h = createHarness({ "panel-a": "session-1" }, initial);
     try {
+      window.zion.state.set("terminal.inventory", { machines: [
+        { nodeId: "node:mac", kind: "local", name: "MacBook Pro" }
+      ] });
       window.zion.commands.executeCommand("zion.chatCards.setSessionAnnotations", {
         sessionId: "session-1",
         annotations: {
@@ -170,7 +305,7 @@ describe("chat cards DOM lifecycle", () => {
             {
               id: "tool-bash",
               name: "Bash",
-              args: { command: "pwd" },
+              args: { command: "pwd", node_id: "node:mac" },
               assistantBlockId: "run-context",
               expanded: true
             }
@@ -188,7 +323,8 @@ describe("chat cards DOM lifecycle", () => {
       expect(dom.querySelector(".zion-tool-tree-title")?.textContent)
         .toContain("Device root");
       expect(dom.querySelector(".zion-tool-terminal-title")?.textContent)
-        .toContain("Session required");
+        .toContain("MacBook Pro");
+      expect(dom.textContent).not.toContain("Session required");
     } finally {
       h.dispose();
     }

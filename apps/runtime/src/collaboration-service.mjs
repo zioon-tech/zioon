@@ -3,10 +3,12 @@ import { createDocumentVisitorRegistry } from "./sharing/document-visitor-regist
 import { Hocuspocus } from "@hocuspocus/server";
 import { WebSocketServer } from "ws";
 import * as Y from "yjs";
+import { COLLABORATION_LOG_MAX_BYTES, COLLABORATION_LOG_MAX_ROWS } from "./collaboration-update-log.mjs";
 
 export const COLLABORATION_PATH = "/v1/collaboration";
 export const COLLABORATION_TEXT_KEY = "content";
-export const COLLABORATION_PROTOCOL = "6";
+export const COLLABORATION_PROTOCOL = "8";
+export const COLLABORATION_RESET_REASON = "collaboration_document_reset";
 const PROJECTABLE_RUN_EVENT_TYPES = new Set([
   "run.started",
   "reasoning.started",
@@ -76,6 +78,7 @@ export function authorizeCollaborationSends(webSocket, contexts, authorize) {
   let pending = [];
   let draining = false;
   webSocket.send = (...args) => {
+    if (webSocket.readyState !== 1) return;
     pending.push(args);
     if (draining) return;
     draining = true;
@@ -90,7 +93,7 @@ export function authorizeCollaborationSends(webSocket, contexts, authorize) {
           if (webSocket.readyState === 1) for (const args of batch) send(...args);
         }
       } catch {
-        webSocket.terminate();
+        if (webSocket.readyState === 1) webSocket.terminate();
       } finally {
         pending = [];
         draining = false;
@@ -142,15 +145,71 @@ export function createRuntimeCollaborationService({
   };
   const persist = (input, action) => withPersistence ? withPersistence(input, action) : action(undefined);
   const contributors = new Map();
+  const updateQueues = new Map();
+  const quarantined = new Map();
+  const queueFor = sessionId => {
+    if (!updateQueues.has(sessionId)) updateQueues.set(sessionId, { pending: [], saving: null, bytes: 0, newBytes: 0 });
+    return updateQueues.get(sessionId);
+  };
+  const boundQueue = queue => {
+    if (queue.pending.length > 1 && (queue.pending.length >= COLLABORATION_LOG_MAX_ROWS
+      || queue.newBytes > COLLABORATION_LOG_MAX_BYTES)) {
+      queue.pending = [Y.mergeUpdates(queue.pending)];
+      queue.bytes = queue.pending.reduce((sum, update) => sum + update.length, 0);
+      queue.newBytes = 0;
+    }
+  };
+  const resetError = () => Object.assign(new Error("Collaboration document must be reopened"),
+    { code: "collaboration_document_reset", reason: COLLABORATION_RESET_REASON, statusCode: 409 });
+  const quarantineDocument = (sessionId, document) => {
+    if (quarantined.has(sessionId)) return;
+    let resolve;
+    const entry = { document, promise: new Promise(done => { resolve = done; }), resolve: () => resolve(), timer: null };
+    quarantined.set(sessionId, entry);
+    for (const connection of document.getConnections()) {
+      // A WebSocket close control frame contains only this fixed reset reason.
+      // Content sends still require authorization, even for revoked peers.
+      connection.webSocket.close(1012, COLLABORATION_RESET_REASON);
+      connection.close({ reason: COLLABORATION_RESET_REASON });
+    }
+    // Unload only after the upstream store mutex and all direct users release.
+    const unload = async () => {
+      entry.timer = null;
+      if (quarantined.get(sessionId) !== entry) return;
+      await hocuspocus.unloadDocument(document);
+      if (quarantined.get(sessionId) === entry) entry.timer = setTimeout(unload, 10);
+    };
+    entry.timer = setTimeout(unload, 0);
+  };
   const persistenceFailures = new Map();
   const failedDocuments = new Set();
   let persistenceEpoch = 0;
   let contributionVersion = 0;
   const mutateDirect = (sessionId, connection, action) => {
+    if (quarantined.has(sessionId)) throw resetError();
     connection.persistenceEpoch = persistenceEpoch;
     return persist({
       sessionId, context: connection.context, contributors: [...(contributors.get(sessionId)?.keys() || [])], kind: "projection"
     }, () => connection.transact(action));
+  };
+  const projectEventsDirect = async (sessionId, connection, input, check = () => {}) => {
+    let bodies;
+    if (store.prepareRunCardBodies && activeDocumentProjector?.planCards
+      && activeDocumentProjector.planCards({ document: connection.document, ...input }).cards.size > 0) {
+      // Bodies commit before any reference is sent to peers. Publication then
+      // takes a new authorization lock and checks the captured projection.
+      bodies = await persist({
+        sessionId, context: connection.context,
+        contributors: [...(contributors.get(sessionId)?.keys() || [])], kind: "projection"
+      }, tx => store.prepareRunCardBodies(sessionId,
+        { document: connection.document, projector: activeDocumentProjector, ...input }, tx));
+    }
+    return mutateDirect(sessionId, connection, document => {
+      check(document);
+      bodies?.assertCurrent(document);
+      return activeDocumentProjector?.projectEvents?.({ document, ...input,
+        ...(bodies ? { readCard: bodies.readCard, prepareCard: bodies.prepareCard } : {}) });
+    });
   };
   const disconnectDirect = async (sessionId, connection, options) => {
     const epoch = connection.persistenceEpoch ?? persistenceEpoch;
@@ -173,7 +232,7 @@ export function createRuntimeCollaborationService({
       await store.checkpointSessionRevision?.(sessionId, { reason: "collaboration-checkpoint" }, tx);
       return await store.appendEvent?.("document.checkpointed", {
       sessionId,
-      revision: await store.revision?.(),
+      revision: await store.revision?.(tx?.client),
       sessionRevision: pending.sessionRevision,
       sourceClientId: pending.sourceClientId,
       payload: {
@@ -218,6 +277,7 @@ export function createRuntimeCollaborationService({
     flushDelay: 25,
     async onAuthenticate(input) {
       const documentName = collaborationDocumentName(input.documentName);
+      if (quarantined.has(documentName)) await quarantined.get(documentName).promise;
       const clientId = String(
         input.requestParameters.get("client_id")
         || input.context?.clientId
@@ -240,15 +300,32 @@ export function createRuntimeCollaborationService({
         clientId
       };
     },
-    async beforeHandleMessage({ context }) {
+    async beforeHandleMessage({ context, documentName }) {
       if (closing) return;
+      if (quarantined.has(documentName)) throw resetError();
       if (reauthorize) await authorize(() => reauthorize(context));
     },
     beforeUnloadDocument({ documentName }) {
       if (failedDocuments.has(documentName)) throw new Error("Document persistence is still pending");
     },
-    onChange({ documentName, context, transactionOrigin }) {
+    afterUnloadDocument({ documentName }) {
+      updateQueues.delete(documentName);
+      contributors.delete(documentName);
+      const entry = quarantined.get(documentName);
+      if (entry) {
+        if (entry.timer) clearTimeout(entry.timer);
+        quarantined.delete(documentName);
+        entry.resolve();
+      }
+    },
+    onChange({ documentName, context, transactionOrigin, update }) {
       if (transactionOrigin?.skipStoreHooks) return;
+      if (quarantined.has(documentName)) return;
+      const queue = queueFor(documentName);
+      queue.pending.push(new Uint8Array(update));
+      queue.bytes += update.length;
+      queue.newBytes += update.length;
+      boundQueue(queue);
       const pending = contributors.get(documentName) || new Map();
       pending.set(context, ++contributionVersion);
       contributors.set(documentName, pending);
@@ -259,7 +336,9 @@ export function createRuntimeCollaborationService({
         store.readCollaborationDocument(sessionId),
         store.readSession(sessionId)
       ]);
-      if (session?.deleted) throw new Error("Session has been deleted");
+      if (session?.deleted) throw Object.assign(new Error("Session has been deleted"), {
+        code: "session_deleted", statusCode: 410
+      });
       if (stored?.state?.length) {
         const document = new Y.Doc();
         Y.applyUpdate(document, stored.state);
@@ -277,13 +356,15 @@ export function createRuntimeCollaborationService({
         ) {
           return document;
         }
+        document.destroy();
       }
       const document = new Y.Doc();
       const text = session && !session.deleted ? String(session.text || "") : "";
       if (text) document.getText(COLLABORATION_TEXT_KEY).insert(0, text);
       await persist({ sessionId, context, kind: "bootstrap", text }, tx =>
         store.writeCollaborationDocument(sessionId, Y.encodeStateAsUpdate(document), {
-          text, sourceClientId: "runtime-bootstrap"
+          text, sourceClientId: "runtime-bootstrap",
+          replaceSnapshot: true, expectedVersion: Number(stored?.version || 0)
         }, tx));
       return document;
     },
@@ -293,14 +374,24 @@ export function createRuntimeCollaborationService({
       lastContext
     }) {
       const sessionId = collaborationDocumentName(documentName);
+      if (quarantined.has(sessionId)) return;
+      const queue = queueFor(sessionId);
+      if (!queue.pending.length) return;
+      const captured = queue.pending;
+      queue.pending = [];
+      queue.bytes = 0;
+      queue.newBytes = 0;
+      queue.saving = captured;
       const sourceClientId = String(lastContext?.clientId || "");
       const ytext = document.getText(COLLABORATION_TEXT_KEY);
       const nextText = ytext.toString();
-      const state = Y.encodeStateAsUpdate(document);
+      const state = store.collaborationUpdates ? Y.mergeUpdates(captured) : Y.encodeStateAsUpdate(document);
       const contexts = new Map(contributors.get(sessionId) || []);
       try {
         const result = await persist({ sessionId, context: lastContext, contributors: [...contexts.keys()], kind: "store", text: nextText }, tx =>
           store.writeCollaborationDocument(sessionId, state, { text: nextText, sourceClientId, emitEvent: false }, tx));
+        if (result?.state?.length) Y.applyUpdate(document, result.state, { source: "committed", skipStoreHooks: true });
+        queue.saving = null;
         failedDocuments.delete(sessionId);
         for (const [context, version] of contexts) {
           if (contributors.get(sessionId)?.get(context) === version) contributors.get(sessionId).delete(context);
@@ -308,14 +399,22 @@ export function createRuntimeCollaborationService({
         scheduleDocumentCheckpoint(result, sourceClientId, lastContext);
       } catch (error) {
         persistenceFailures.set(sessionId, { epoch: ++persistenceEpoch, error });
-        if (![401, 403, 404].includes(error.statusCode) && error.code !== "collaboration_snapshot_changed") {
+        if (![401, 403, 404].includes(error.statusCode)
+          && !["collaboration_snapshot_changed", "collaboration_dependency_missing"].includes(error.code)) {
+          queue.pending.unshift(...captured);
+          const capturedBytes = captured.reduce((sum, update) => sum + update.length, 0);
+          queue.bytes += capturedBytes;
+          queue.newBytes += capturedBytes;
+          queue.saving = null;
+          boundQueue(queue);
           failedDocuments.add(sessionId);
           throw error;
         }
         failedDocuments.delete(sessionId);
         // A rejected aggregate must never be saved later under another editor.
         // Drop peers and reload from the committed snapshot on their next join.
-        hocuspocus.closeConnections(sessionId);
+        quarantineDocument(sessionId, document);
+        updateQueues.delete(sessionId);
         const snapshot = await store.readSession(sessionId);
         const committed = await store.readCollaborationDocument(sessionId);
         const restored = new Y.Doc();
@@ -334,6 +433,17 @@ export function createRuntimeCollaborationService({
       }
     }
   });
+  const openDirectConnection = hocuspocus.openDirectConnection.bind(hocuspocus);
+  hocuspocus.openDirectConnection = async (sessionId, context) => {
+    if (quarantined.has(sessionId)) await quarantined.get(sessionId).promise;
+    const connection = await openDirectConnection(sessionId, context);
+    const transact = connection.transact.bind(connection);
+    connection.transact = action => {
+      if (quarantined.has(sessionId)) throw resetError();
+      return transact(action);
+    };
+    return connection;
+  };
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: 4 * 1024 * 1024
@@ -359,18 +469,13 @@ export function createRuntimeCollaborationService({
         { clientId: "runtime", runtimeRunId: pending.runId }
       );
       try {
+        if (activeDocumentProjector?.projectEvents) {
+          await projectEventsDirect(pending.sessionId, connection, {
+            runId: pending.runId, events: projectedEvents, includeReasoning: pending.includeReasoning
+          });
+          return;
+        }
         await mutateDirect(pending.sessionId, connection, (document) => {
-          if (
-            activeDocumentProjector?.projectEvents
-          ) {
-            activeDocumentProjector.projectEvents({
-              document,
-              runId: pending.runId,
-              events: projectedEvents,
-              includeReasoning: pending.includeReasoning
-            });
-            return;
-          }
           const runs = document.getMap("runs");
           const previous = runs.get(pending.runId) || {};
           if (
@@ -585,7 +690,7 @@ export function createRuntimeCollaborationService({
     async applyRunEvents(sessionId, { runId, events, includeReasoning, mode } = {}) {
       const connection = await hocuspocus.openDirectConnection(collaborationDocumentName(sessionId), { clientId: "runtime", runtimeRunId: runId });
       try {
-        await mutateDirect(sessionId, connection, document => {
+        await projectEventsDirect(sessionId, connection, { runId, events, includeReasoning }, document => {
           if (["live", "final"].includes(mode)) {
             const projection = document.getMap("runProjection").get(runId);
             // A user-detached working copy needs no further document replay.
@@ -595,7 +700,6 @@ export function createRuntimeCollaborationService({
               throw new Error("Snapshot document anchor is not prepared");
             }
           }
-          activeDocumentProjector?.projectEvents?.({ document, runId, events, includeReasoning });
         });
       } finally {
         await disconnectDirect(sessionId, connection, { unloadImmediately: false });
@@ -785,6 +889,11 @@ export function createRuntimeCollaborationService({
           resolve();
         }
       });
+      for (const entry of quarantined.values()) {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.resolve();
+      }
+      quarantined.clear();
     },
     stateHash
   };

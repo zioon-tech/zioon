@@ -1,11 +1,13 @@
 import { Buffer } from "node:buffer";
+import { sessionRenderProjection, sessionCardDetails } from "./session-card-projection.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import { createAuthorizedWorkbenchStore } from "./spaces/authorized-workbench-store.mjs";
+import { measureRequestStage } from "./request-performance.mjs";
 
 const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const DEFAULT_EVENT_POLL_INTERVAL_MS = 100;
 const DEFAULT_EVENT_HEARTBEAT_MS = 15_000;
-export const WORKBENCH_STATE_PROTOCOL = "5";
+export const WORKBENCH_STATE_PROTOCOL = "6";
 
 function json(response, status, value, headers = {}) {
   const body = JSON.stringify(value);
@@ -94,7 +96,14 @@ export function createWorkbenchStateHttpHandler({
   return async (request, response, url) => {
     const path = url.pathname;
     if (!path.startsWith("/v1/workbench-state")) return false;
-    const store = createAuthorizedWorkbenchStore({ store: sourceStore, spaces, principal: request.zionPrincipal });
+    const store = new Proxy(createAuthorizedWorkbenchStore({ store: sourceStore, spaces, principal: request.zionPrincipal }), {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        return typeof value === "function"
+          ? (...args) => measureRequestStage("store", () => value.apply(target, args))
+          : value;
+      }
+    });
 
     if (request.method === "GET" && path === "/v1/workbench-state/status") {
       json(response, 200, await store.readStatus());
@@ -102,7 +111,8 @@ export function createWorkbenchStateHttpHandler({
     }
     if (request.method === "GET" && path === "/v1/workbench-state/catalog") {
       json(response, 200, await store.readCatalog({
-        metadataLimit: url.searchParams.get("metadata_limit")
+        metadataLimit: url.searchParams.get("metadata_limit"),
+        view: url.searchParams.get("view") || ""
       }));
       return true;
     }
@@ -220,8 +230,15 @@ export function createWorkbenchStateHttpHandler({
         body.index,
         body.expected_revision ?? null,
         body.source_client_id ?? "",
-        body.base_tree ?? null
+        body.base_tree ?? null,
+        body.operation_id ?? null
       ));
+      return true;
+    }
+    const folderMatch = path.match(/^\/v1\/workbench-state\/tree\/folders\/([^/]+)$/);
+    if (request.method === "DELETE" && folderMatch) {
+      if (!requireWorkbenchStateProtocol(request, response)) return true;
+      json(response, 200, await store.deleteFolder(decodeURIComponent(folderMatch[1]), await readJson(request)));
       return true;
     }
     if (
@@ -264,6 +281,29 @@ export function createWorkbenchStateHttpHandler({
       return true;
     }
 
+    const metadataSessionId = matchSessionPath(path, "/metadata");
+    if (metadataSessionId != null && request.method === "GET" && store.readSessionMetadataRecord) {
+      const record = await store.readSessionMetadataRecord(metadataSessionId,
+        { cardView: url.searchParams.get("view") === "render" ? "render" : "full" });
+      json(response, record ? 200 : 404, (url.searchParams.get("view") === "render"
+        ? sessionRenderProjection(record) : record) || { error: "session not found" });
+      return true;
+    }
+
+    const detailsSessionId = matchSessionPath(path, "/card-details");
+    if (detailsSessionId != null && request.method === "POST") {
+      const body = await readJson(request);
+      if (store.readSessionCardDetails) {
+        const details = await store.readSessionCardDetails(detailsSessionId, body.cards);
+        json(response, details ? 200 : 404, details || { error: "session not found" });
+      } else {
+        const record = await store.readSessionMetadataRecord(detailsSessionId);
+        if (!record || record.deleted) json(response, 404, { error: "session not found" });
+        else json(response, 200, sessionCardDetails(record, body.cards));
+      }
+      return true;
+    }
+
     const revisionsSessionId = matchSessionPath(path, "/revisions");
     if (revisionsSessionId != null && request.method === "GET") {
       json(response, 200, {
@@ -286,11 +326,13 @@ export function createWorkbenchStateHttpHandler({
 
     const sessionId = matchSessionPath(path);
     if (sessionId != null && request.method === "GET") {
-      const session = await store.readSession(sessionId);
+      const session = await store.readSession(sessionId,
+        { cardView: url.searchParams.get("view") === "render" ? "render" : "full" });
       if (!session) {
         json(response, 404, { error: "session not found" });
       } else {
-        json(response, 200, session);
+        json(response, 200, url.searchParams.get("view") === "render"
+          ? sessionRenderProjection(session) : session);
       }
       return true;
     }

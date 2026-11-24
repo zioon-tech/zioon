@@ -172,9 +172,10 @@ describe("account code plugins and MCP through normal Runs and Node dispatch", (
     };
     expect((await command()).result).toEqual({ count: 1, action: "inspect", grantVisible: false });
     expect((await command()).result.count).toBe(2);
-    const rows = (await db.pool.query(`SELECT result_json FROM runtime_tool_invocation_receipts
+    const rows = (await db.pool.query(`SELECT invocation_id FROM runtime_tool_invocation_receipts
       WHERE tool_name='extensionsCall'`)).rows;
-    expect(rows.some((row) => row.result_json.content.includes(id) && row.result_json.content.includes("inspect"))).toBe(true);
+    const receipts = await Promise.all(rows.map(row => runs.getToolReceipt(row.invocation_id)));
+    expect(receipts.some(receipt => receipt.result.content.includes(id) && receipt.result.content.includes("inspect"))).toBe(true);
   });
   it("edits persistent account files and atomically switches OSS content without changing the source install", async () => {
     const { id } = await install(plugin());

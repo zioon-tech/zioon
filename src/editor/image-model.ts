@@ -43,17 +43,28 @@ export function parseStandaloneImageLine(
   };
 }
 
+// Text is immutable. Sharing the source scan across selection, parser and
+// gallery updates avoids repeatedly walking a large document on each redraw.
+const standaloneImagesByDoc = new WeakMap<Text, MarkdownImage[]>();
+
 export function collectStandaloneImageGroups(
   doc: Text,
   exclude?: (from: number, to: number) => boolean
 ): MarkdownImageGroup[] {
-  const images: MarkdownImage[] = [];
-  for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
-    const line = doc.line(lineNumber);
-    if (exclude?.(line.from, line.to)) continue;
-    const image = parseStandaloneImageLine(line.text, line.from, lineNumber);
-    if (image) images.push(image);
+  let sourceImages = standaloneImagesByDoc.get(doc);
+  if (!sourceImages) {
+    sourceImages = [];
+    for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
+      const line = doc.line(lineNumber);
+      const image = parseStandaloneImageLine(line.text, line.from, lineNumber);
+      if (image) sourceImages.push(image);
+    }
+    standaloneImagesByDoc.set(doc, sourceImages);
   }
+  // Exclusion depends on the current syntax tree, so never cache its result.
+  const candidates = exclude ? sourceImages.filter(image => !exclude(image.lineFrom, image.lineTo)) : sourceImages;
+  // Returned image objects remain mutable for callers without exposing the cache.
+  const images = candidates.map(image => ({ ...image }));
 
   const groups: MarkdownImageGroup[] = [];
   let current: MarkdownImage[] = [];

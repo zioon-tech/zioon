@@ -1,12 +1,15 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL as NodeURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresTestDatabase } from "./postgres-test-database.mjs";
 
-const repository = fileURLToPath(new URL("../../../../", import.meta.url));
-export async function startAccountRuntimeFixture({ directory, spaceId, idp, web = false }) {
+const repository = fileURLToPath(new NodeURL("../../../../", import.meta.url));
+export async function startAccountRuntimeFixture({
+  directory, spaceId, idp, web = false, legacyWorkspace = false,
+  engine = "echo", prepare = null, environment = {}
+}) {
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
   const port = reservation.address().port;
@@ -33,6 +36,8 @@ export async function startAccountRuntimeFixture({ directory, spaceId, idp, web 
     [spaceId, owner.id, createdAt]
   );
   const dataDirectory = join(directory, "runtime");
+  if (legacyWorkspace) accounts.legacyAccountSpaceId = spaceId;
+  await prepare?.({ dataDirectory, accounts, owner, database });
   const child = spawn(process.execPath, [resolve(repository, "apps/runtime/src/main.mjs")], {
     cwd: repository,
     env: {
@@ -44,11 +49,13 @@ export async function startAccountRuntimeFixture({ directory, spaceId, idp, web 
       ZION_RUNTIME_HOST: "127.0.0.1", ZION_RUNTIME_PORT: String(port),
       ZION_RUNTIME_PUBLIC_URL: url, ZION_RUNTIME_AUTH_MODE: "accounts",
       ZION_SPACE_ID: spaceId, ZION_OIDC_ISSUER: idp.issuer, ZION_OIDC_CLIENT_ID: "zion-account-test",
-      ZION_ACCOUNT_ALLOW_LOOPBACK_HTTP: "1", ZION_RUNTIME_ENGINE: "echo",
+      ZION_ACCOUNT_ALLOW_LOOPBACK_HTTP: "1", ZION_RUNTIME_ENGINE: engine,
+      ...(legacyWorkspace ? { ZION_ACCOUNT_LEGACY_WORKSPACE_ID: spaceId } : {}),
       ZION_RUNTIME_TOOL_MODE: "node", ZION_RUNTIME_PLUGINS: "dev.skills,dev.session-manager,dev.observability",
       ZION_RUNTIME_EXTERNAL_PLUGINS: "none",
       ZION_RUNTIME_SCHEDULER_WORKER: "0", ZION_RUNTIME_PROJECT_AUTOMATION_WORKER: "0",
-      ...(web ? { ZION_RUNTIME_WORKBENCH_DIST: resolve(repository, "dist") } : {})
+      ...(web ? { ZION_RUNTIME_WORKBENCH_DIST: resolve(repository, "dist") } : {}),
+      ...environment
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -71,6 +78,7 @@ export async function startAccountRuntimeFixture({ directory, spaceId, idp, web 
       if (exited) throw new Error(`Runtime fixture exited:\n${output}`);
       const healthy = await fetch(`${url}/health`).then(response => response.ok).catch(() => false);
       if (healthy) {
+        if (legacyWorkspace) return { url, accounts, database, dataDirectory, close, logs: () => output };
         const personal = await accounts.personalSpace(owner.id);
         const credential = await accounts.createSession(owner.id, { activeSpaceId: spaceId });
         const headers = { authorization: `Bearer ${credential.token}`, "x-zioon-space-id": spaceId,

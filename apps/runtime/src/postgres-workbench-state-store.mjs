@@ -1,6 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
 import { deriveSessionTitleFromContent, isPlaceholderSessionTitle } from "./session-title.mjs";
 import { mergeMigratedSessionTree, mergeSessionTree, sessionTreeChanges } from "./session-tree-merge.mjs";
+import { applySessionMetadataChanges, sessionMetadataChanges } from "../../../packages/runtime-client/src/session-metadata.mjs";
+import { extractDocumentLeadPreview } from "../../../extensions/shared/session-preview.js";
+import { measureRequestStage } from "./request-performance.mjs";
+import {
+  hydrateSessionCardMetadata, prepareSessionCardMetadata, readSessionCardBody,
+  prepareSessionCardBodies, readSessionCardBodies, sessionCardStorageMode
+} from "./session-card-bodies.mjs";
+import { sessionCardDetails } from "./session-card-projection.mjs";
+import { hydratedSessionCard } from "../../../packages/runtime-client/src/session-card-bodies.mjs";
+import * as Y from "yjs";
+import {
+  acquireCollaborationDocument, assertCollaborationUpdateIntegrated,
+  collaborationCacheKey, collaborationDocumentCache, collaborationStateSelect,
+  collaborationStorageHash, collaborationUpdateHash, COLLABORATION_LOG_MAX_BYTES, COLLABORATION_LOG_MAX_ROWS,
+  readCollaborationState
+} from "./collaboration-update-log.mjs";
 
 const MAX_SESSION_REVISIONS = 20;
 const MAX_SESSION_REVISION_BYTES = 8 * 1024 * 1024;
@@ -87,6 +103,9 @@ function normalizeConversationTextForDisplay(text) {
 
 function normalizeSessionMeta(sessionId, text, meta = {}, timestamp = nowMs()) {
   const current = isObject(meta) ? meta : {};
+  if (["tools", "thinking"].some(kind => current.annotations?.[kind]?.some?.(item => item?.detailRef))) {
+    throw Object.assign(new Error("Card detail projections cannot be stored"), { statusCode: 400 });
+  }
   const placeholder = isPlaceholderSessionTitle(current.title, sessionId, current);
   const derivedTitle = placeholder ? deriveSessionTitleFromContent(text) : "";
   const title = derivedTitle || String(current.title || "新会话").trim() || "新会话";
@@ -95,6 +114,10 @@ function normalizeSessionMeta(sessionId, text, meta = {}, timestamp = nowMs()) {
   const hasUpdatedAt = Object.prototype.hasOwnProperty.call(current, "updatedAt");
   return {
     ...current,
+    ...(Number(current.documentPreviewVersion || 0) >= 1 ? {
+      documentPreview: extractDocumentLeadPreview(text),
+      documentPreviewVersion: 1
+    } : {}),
     ...(placeholder ? { titleAuto: true } : {}),
     id: sessionId,
     title,
@@ -121,9 +144,11 @@ const CATALOG_META_KEYS = [
 ];
 // Select only summaries from PostgreSQL; annotations and previews can be
 // much larger than the document and must not cross the startup/search path.
-const CATALOG_META_SQL = `jsonb_strip_nulls(jsonb_build_object(${
-  CATALOG_META_KEYS.map(key => `'${key}', m.meta_json->'${key}'`).join(", ")
-}))`;
+// Decode large toasted metadata once. Repeated -> extraction decompresses the
+// annotation-bearing JSONB for each summary field.
+const CATALOG_META_JOIN_SQL = `LEFT JOIN LATERAL jsonb_to_record(m.meta_json)
+  AS summary(${CATALOG_META_KEYS.map(key => `"${key}" jsonb`).join(", ")}) ON TRUE`;
+const CATALOG_META_SQL = "jsonb_strip_nulls(to_jsonb(summary))";
 
 function catalogSessionMeta(sessionId, meta = {}) {
   const current = isObject(meta) ? meta : {};
@@ -257,6 +282,7 @@ function eventFromRow(row) {
 
 export class PostgresWorkbenchStateStore {
   backend = "postgres";
+  collaborationUpdates = true;
 
   constructor(pool, { spaceId, now = nowMs } = {}) {
     if (!pool?.query || !pool?.connect) {
@@ -279,25 +305,44 @@ export class PostgresWorkbenchStateStore {
     if (externalClient) {
       if (!Array.isArray(afterCommit)) throw new Error("External Workbench transactions require an after-commit queue");
       const published = [];
-      await this.ensureState(this.now(), externalClient);
+      await this.ensureStateExists(this.now(), externalClient);
       await externalClient.query(
         "SELECT revision FROM runtime_workbench_state WHERE space_id = $1 FOR UPDATE", [this.spaceId]);
-      const result = await action(externalClient, published);
+      const result = await action(externalClient, published, afterCommit);
       afterCommit.push(() => { for (const event of published) this.publish(event); });
       return result;
     }
-    const client = await this.pool.connect();
+    const client = await measureRequestStage("db_pool", () => this.pool.connect());
     const published = [];
+    const committed = [];
     try {
       await client.query("BEGIN");
-      await this.ensureState(this.now(), client);
-      await client.query(
+      await measureRequestStage("db_setup", () => this.ensureStateExists(this.now(), client));
+      await measureRequestStage("db_lock", () => client.query(
         "SELECT revision FROM runtime_workbench_state WHERE space_id = $1 FOR UPDATE",
         [this.spaceId]
-      );
-      const result = await action(client, published);
-      await client.query("COMMIT");
+      ));
+      const result = await measureRequestStage("db_work", () => action(client, published, committed));
+      await measureRequestStage("db_commit", () => client.query("COMMIT"));
+      for (const callback of committed) callback();
       for (const event of published) this.publish(event);
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      for (const callback of committed) callback.rollback?.();
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async consistentRead(action) {
+    await this.ensureStateExists();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const result = await action(client);
+      await client.query("COMMIT");
       return result;
     } catch (error) {
       await client.query("ROLLBACK");
@@ -327,7 +372,7 @@ export class PostgresWorkbenchStateStore {
     return result.rows[0] || null;
   }
 
-  async ensureState(timestamp = this.now(), client = this.pool) {
+  async ensureStateExists(timestamp = this.now(), client = this.pool) {
     await client.query(
       `INSERT INTO runtime_workbench_state
        (space_id, version, revision, tree_json, index_json, updated_at)
@@ -335,36 +380,49 @@ export class PostgresWorkbenchStateStore {
        ON CONFLICT (space_id) DO NOTHING`,
       [this.spaceId, JSON.stringify(defaultTree()), timestamp]
     );
+  }
+
+  async ensureState(timestamp = this.now(), client = this.pool) {
+    await this.ensureStateExists(timestamp, client);
     return this.state(client);
   }
 
   async revision(client = this.pool) {
-    const row = await this.state(client);
+    const result = await client.query(
+      "SELECT revision FROM runtime_workbench_state WHERE space_id = $1", [this.spaceId]
+    );
+    const row = result.rows[0];
     return row ? `runtime:${Number(row.revision)}` : null;
   }
 
   async bumpRevision(client, timestamp = this.now(), patch = {}) {
-    const current = await this.ensureState(timestamp, client);
+    await this.ensureStateExists(timestamp, client);
+    // KV updates need only the sequence number. Preserve untouched JSON columns
+    // in PostgreSQL rather than loading and rewriting the entire session catalog.
+    const values = [timestamp, this.spaceId];
+    const updates = ["revision = revision + 1", "updated_at = $1"];
+    for (const [key, column, encode, cast] of [
+      ["version", "version", Number, ""],
+      ["tree", "tree_json", JSON.stringify, "::jsonb"],
+      ["index", "index_json", JSON.stringify, "::jsonb"]
+    ]) {
+      if (patch[key] == null) continue;
+      values.push(encode(patch[key]));
+      updates.push(`${column} = $${values.length}${cast}`);
+    }
     const result = await client.query(
       `UPDATE runtime_workbench_state
-       SET version = $1, revision = revision + 1, tree_json = $2::jsonb,
-           index_json = $3::jsonb, updated_at = $4
-       WHERE space_id = $5
+       SET ${updates.join(", ")}
+       WHERE space_id = $2
        RETURNING revision`,
-      [
-        Number(patch.version ?? current.version ?? 1),
-        JSON.stringify(patch.tree ?? jsonValue(current.tree_json, defaultTree())),
-        JSON.stringify(patch.index ?? jsonValue(current.index_json, [])),
-        timestamp,
-        this.spaceId
-      ]
+      values
     );
     return `runtime:${Number(result.rows[0].revision)}`;
   }
 
-  async currentSession(sessionId, client = this.pool) {
+  async currentSession(sessionId, client = this.pool, { cardView = "full" } = {}) {
     const result = await client.query(
-      `SELECT d.text, m.meta_json, h.revision, h.updated_at
+      `SELECT d.text, m.meta_json, h.revision, h.updated_at, h.content_hash
        FROM (SELECT $2::text AS id) input
        LEFT JOIN runtime_workbench_documents d
          ON d.space_id = $1 AND d.id = input.id
@@ -375,17 +433,32 @@ export class PostgresWorkbenchStateStore {
       [this.spaceId, sessionId]
     );
     const row = result.rows[0] || {};
+    const meta = await hydrateSessionCardMetadata(client, this.spaceId, sessionId, jsonValue(row.meta_json, {}),
+      { onlyExpanded: cardView === "render" });
+    let computedContentHash = row.content_hash;
+    if (!computedContentHash && (row.text != null || row.meta_json != null)) {
+      const fullMeta = cardView === "render"
+        ? await hydrateSessionCardMetadata(client, this.spaceId, sessionId, jsonValue(row.meta_json, {}))
+        : meta;
+      // Without a head, reconstruct the original complete JSONB key order.
+      // Reference hydration must not change hashes or hash only a card view.
+      const hashMeta = (await client.query("SELECT $1::jsonb AS meta",
+        [JSON.stringify(fullMeta)])).rows[0].meta;
+      computedContentHash = contentHash(row.text, hashMeta);
+    }
     return {
       exists: row.text != null || row.meta_json != null,
       text: String(row.text || ""),
-      meta: jsonValue(row.meta_json, {}),
+      meta,
       revision: Number(row.revision || 0),
+      contentHash: computedContentHash,
       updatedAt: Number(row.updated_at || 0)
     };
   }
 
   async projectRevisionMeta(meta, timestamp, client) {
-    const projected = clone(meta, {});
+    const projected = clone(await prepareSessionCardMetadata(
+      client, this.spaceId, meta.id, meta, timestamp), {});
     if (!Object.prototype.hasOwnProperty.call(projected, "annotations")) {
       return projected;
     }
@@ -417,12 +490,12 @@ export class PostgresWorkbenchStateStore {
     return projected;
   }
 
-  async hydrateRevisionMeta(meta, client = this.pool) {
+  async hydrateRevisionMeta(meta, client = this.pool, sessionId = meta?.id) {
     const hydrated = clone(meta, {});
     const reference = hydrated[REVISION_ANNOTATIONS_KEY];
     delete hydrated[REVISION_ANNOTATIONS_KEY];
     const ref = String(reference?.ref || "");
-    if (!ref) return hydrated;
+    if (!ref) return hydrateSessionCardMetadata(client, this.spaceId, sessionId, hydrated);
     const result = await client.query(
       `SELECT annotations_json FROM runtime_workbench_revision_annotations
        WHERE space_id = $1 AND ref = $2`,
@@ -431,7 +504,7 @@ export class PostgresWorkbenchStateStore {
     if (result.rows[0]) {
       hydrated.annotations = jsonValue(result.rows[0].annotations_json, {});
     }
-    return hydrated;
+    return hydrateSessionCardMetadata(client, this.spaceId, sessionId, hydrated);
   }
 
   async shouldSnapshotSessionRevision(
@@ -464,7 +537,11 @@ export class PostgresWorkbenchStateStore {
     ) >= REVISION_SNAPSHOT_TEXT_DELTA_BYTES;
   }
 
-  async saveSessionRevision(
+  async saveSessionRevision(...args) {
+    return measureRequestStage("db_history", () => this.writeSessionRevision(...args));
+  }
+
+  async writeSessionRevision(
     sessionId,
     session,
     revision,
@@ -661,23 +738,71 @@ export class PostgresWorkbenchStateStore {
   async readCollaborationDocument(sessionId, client = this.pool) {
     const id = normalizeId(sessionId);
     const result = await client.query(
-      `SELECT state_blob, state_hash, version, updated_at
-       FROM runtime_collaboration_documents
-       WHERE space_id = $1 AND session_id = $2`,
+      collaborationStateSelect,
       [this.spaceId, id]
     );
     const row = result.rows[0];
     return row ? {
       sessionId: id,
-      state: new Uint8Array(row.state_blob),
+      state: readCollaborationState(row),
       stateHash: row.state_hash,
       version: Number(row.version),
       updatedAt: Number(row.updated_at)
     } : null;
   }
 
+  async prepareRunCardBodies(sessionId, { document, projector, ...input }, { client } = {}) {
+    if (!client) return this.transaction(db => this.prepareRunCardBodies(sessionId,
+      { document, projector, ...input }, { client: db }));
+    const originalPlan = projector.planCards({ document, ...input });
+    if (!originalPlan.cards.size) return null;
+    const snapshot = () => JSON.stringify([
+      document.getMap("runProjection").get(input.runId),
+      [...originalPlan.originals.keys()].map(id => [id, document.getMap("cards").get(id)])
+    ]);
+    const captured = snapshot();
+    const capturedCards = new Map([...originalPlan.originals].map(([id, card]) =>
+      [id, card && typeof card === "object" ? JSON.parse(JSON.stringify(card)) : card]));
+    const mode = await sessionCardStorageMode(client);
+    const full = new Map(capturedCards), referenced = [];
+    for (const [id, card] of capturedCards) {
+      if (card?.bodyRef) referenced.push({ kind: card.kind === "tool" ? "tools" : "thinking", card });
+    }
+    const predecessorBodies = referenced.length === 1
+      ? [await readSessionCardBody(client, this.spaceId, sessionId, referenced[0].kind, referenced[0].card)]
+      : await readSessionCardBodies(client, this.spaceId, sessionId, referenced);
+    for (const [index, { card }] of referenced.entries()) {
+      full.set(card.id, hydratedSessionCard(card, predecessorBodies[index]));
+    }
+    if (snapshot() !== captured) throw Object.assign(new Error("Card projection changed during body hydration"),
+      { code: "collaboration_projection_changed", statusCode: 409 });
+    const plan = projector.planCards({ document, ...input, readCard: id => full.get(id) });
+    const originals = new Map([...plan.originals].map(([id, value]) => [id, JSON.stringify(value)]));
+    const originalProjection = JSON.stringify(plan.originalProjection);
+    const plannedCards = [...plan.cards.values()];
+    const preparedCards = await prepareSessionCardBodies(client, this.spaceId, sessionId,
+      plannedCards.map(card => ({ kind: card.kind === "tool" ? "tools" : "thinking", card })), this.now(), mode);
+    const prepared = new Map(plannedCards.map((card, index) => [card.id, preparedCards[index].card]));
+    return {
+      assertCurrent(target) {
+        if (JSON.stringify(target.getMap("runProjection").get(input.runId)) !== originalProjection
+          || [...originals].some(([id, value]) => JSON.stringify(target.getMap("cards").get(id)) !== value)) {
+          throw Object.assign(new Error("Card projection changed during body preparation"),
+            { code: "collaboration_projection_changed", statusCode: 409 });
+        }
+      },
+      readCard: id => full.get(id),
+      prepareCard(card) {
+        if (!prepared.has(card.id)) throw new Error("Card body preparation is missing");
+        return prepared.get(card.id);
+      }
+    };
+  }
+
   async writeCollaborationDocument(sessionId, state, {
     text,
+    replaceSnapshot = false,
+    expectedVersion,
     sourceClientId = "",
     timestamp = this.now(),
     emitEvent = true
@@ -685,11 +810,15 @@ export class PostgresWorkbenchStateStore {
     const id = normalizeId(sessionId);
     const bytes = Buffer.from(state || []);
     if (!bytes.length) throw new Error("collaboration document state required");
-    const stateHash = createHash("sha256").update(bytes).digest("hex");
-    return this.transaction(async (client, published) => {
+    let mergedDocument;
+    const cacheKey = collaborationCacheKey(this.pool, this.spaceId, id);
+    return this.transaction(async (client, published, committed) => {
+      const mode = (await client.query(
+        "SELECT mode FROM runtime_collaboration_storage_mode WHERE id='global' FOR SHARE"
+      )).rows[0]?.mode;
+      if (!mode) throw new Error("Collaboration storage mode is missing");
       const existingResult = await client.query(
-        `SELECT state_hash, version FROM runtime_collaboration_documents
-         WHERE space_id = $1 AND session_id = $2 FOR UPDATE`,
+        collaborationStateSelect + " FOR UPDATE OF d",
         [this.spaceId, id]
       );
       const existing = existingResult.rows[0];
@@ -701,35 +830,113 @@ export class PostgresWorkbenchStateStore {
           session_revision: tombstone.session_revision
         };
       }
-      const nextText = text == null ? null : String(text);
+      if (replaceSnapshot && (
+        !Number.isSafeInteger(expectedVersion)
+        || expectedVersion !== Number(existing?.version || 0)
+        || String(text || "") !== String(current.text || "")
+      )) throw Object.assign(new Error("Collaboration snapshot changed during bootstrap"),
+        { code: "collaboration_snapshot_changed", statusCode: 409 });
+      // Validate and exclusively take the accepted owner even for replacement.
+      mergedDocument = acquireCollaborationDocument(existing, { key: cacheKey });
+      if (replaceSnapshot) {
+        mergedDocument.destroy();
+        mergedDocument = new Y.Doc();
+      }
+      Y.applyUpdate(mergedDocument, bytes);
+      assertCollaborationUpdateIntegrated(mergedDocument, bytes);
+      const cardMode = await sessionCardStorageMode(client);
+      let normalizedBodies = false;
+      const cardEntries = [];
+      for (const [key, card] of mergedDocument.getMap("cards")) {
+        if (!card || typeof card !== "object") continue;
+        if (card.bodyRef != null && key !== card.id) throw Object.assign(new Error("Card body identity does not match its key"),
+          { statusCode: 403, code: "CARD_BODY_SCOPE_MISMATCH" });
+        const kind = card.kind === "tool" ? "tools" : card.kind === "thinking" ? "thinking" : null;
+        if (!kind) {
+          if (card.bodyRef != null) throw Object.assign(new Error("Invalid referenced card kind"),
+            { statusCode: 403, code: "CARD_BODY_SCOPE_MISMATCH" });
+          continue;
+        }
+        // Legacy inline maps need not repeat their key inside each value.
+        // Only a complete matching identity can acquire a durable reference.
+        if (key !== card.id) continue;
+        cardEntries.push({ key, kind, card });
+      }
+      const preparedCards = await prepareSessionCardBodies(client, this.spaceId, id, cardEntries, timestamp, cardMode);
+      for (const [index, { key, card }] of cardEntries.entries()) {
+        const prepared = preparedCards[index];
+        if (JSON.stringify(prepared.card) !== JSON.stringify(card)) {
+          mergedDocument.getMap("cards").set(key, prepared.card);
+          normalizedBodies = true;
+        }
+      }
+      const merged = Buffer.from(Y.encodeStateAsUpdate(mergedDocument));
+      const stateHash = collaborationUpdateHash(merged);
+      const mergedText = mergedDocument.getText("content").toString();
+      const nextText = text == null ? null : mergedText;
+      await transactionOptions?.validateCollaborationText?.(mergedText);
+      const returnToCache = (version, storedRow) => {
+        const document = mergedDocument;
+        const callback = () => collaborationDocumentCache.put(cacheKey, document,
+          { version, stateHash, storageHash: collaborationStorageHash(storedRow), bytes: merged.length });
+        callback.rollback = () => document.destroy();
+        committed.push(callback);
+        mergedDocument = null;
+      };
       if (
         existing?.state_hash === stateHash
         && (nextText == null || current.text === nextText)
+        && !(mode === "snapshot" && existing.base_version != null)
       ) {
+        returnToCache(Number(existing.version), existing);
         return {
           ok: true,
           duplicate: true,
           sessionId: id,
           stateHash,
-          version: Number(existing.version)
+          version: Number(existing.version),
+          state: new Uint8Array(merged)
         };
       }
       const version = Number(existing?.version || 0) + 1;
-      await client.query(
+      const count = Number(existing?.update_count || 0) + 1;
+      const updateBytes = Number(existing?.update_bytes || 0) + bytes.length;
+      const compact = !existing || replaceSnapshot || mode === "snapshot" || normalizedBodies
+        || count >= COLLABORATION_LOG_MAX_ROWS || updateBytes > COLLABORATION_LOG_MAX_BYTES;
+      if (compact) {
+        await client.query("DELETE FROM runtime_collaboration_updates WHERE space_id=$1 AND session_id=$2",
+          [this.spaceId, id]);
+        await client.query(
         `INSERT INTO runtime_collaboration_documents
-         (space_id, session_id, state_blob, state_hash, version, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
+         (space_id, session_id, state_blob, state_hash, version, updated_at,
+          base_version, base_hash, update_count, update_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0)
          ON CONFLICT (space_id, session_id) DO UPDATE SET
            state_blob = EXCLUDED.state_blob,
            state_hash = EXCLUDED.state_hash,
            version = EXCLUDED.version,
-           updated_at = EXCLUDED.updated_at`,
-        [this.spaceId, id, bytes, stateHash, version, timestamp]
-      );
+           updated_at = EXCLUDED.updated_at,
+           base_version=EXCLUDED.base_version, base_hash=EXCLUDED.base_hash,
+           update_count=0, update_bytes=0`,
+        [this.spaceId, id, merged, stateHash, version, timestamp,
+          mode === "snapshot" ? null : version, mode === "snapshot" ? null : stateHash]);
+      } else {
+        await client.query(`UPDATE runtime_collaboration_documents SET
+          base_version=COALESCE(base_version,version), base_hash=COALESCE(base_hash,state_hash),
+          version=$3, state_hash=$4, updated_at=$5, update_count=$6, update_bytes=$7
+          WHERE space_id=$1 AND session_id=$2`,
+        [this.spaceId, id, version, stateHash, timestamp, count, updateBytes]);
+        await client.query(`INSERT INTO runtime_collaboration_updates
+          (space_id,session_id,version,update_blob,update_hash,created_at)
+          VALUES($1,$2,$3,$4,$5,$6)`,
+        [this.spaceId, id, version, bytes, collaborationUpdateHash(bytes), timestamp]);
+      }
 
       let sessionRevision = current.revision;
       let revision = await this.revision(client);
-      if (nextText != null && (!current.exists || current.text !== nextText)) {
+      // An empty collaboration handshake has no session metadata. Keep its
+      // Yjs state without racing the creator's first document/metadata save.
+      if (nextText != null && (current.exists ? current.text !== nextText : nextText.length > 0)) {
         if (!current.exists) {
           const sessionResult = await this.updateSessionInTransaction(id, {
             text: nextText,
@@ -767,7 +974,7 @@ export class PostgresWorkbenchStateStore {
              SET index_json = $1::jsonb, updated_at = $2
              WHERE space_id = $3`,
             [
-              JSON.stringify(await this.rebuildIndexFromTree(tree, client)),
+              JSON.stringify(await this.updateSessionIndex(tree, id, this.sessionIndexEntry(id, nextMeta, nextText), client)),
               timestamp,
               this.spaceId
             ]
@@ -784,15 +991,28 @@ export class PostgresWorkbenchStateStore {
             timestamp
           }, client, published)
         : null;
+      returnToCache(version, compact ? {
+        version, state_hash: stateHash, updates: []
+      } : {
+        base_version: existing.base_version ?? existing.version,
+        base_hash: existing.base_hash ?? existing.state_hash,
+        updates: [...(existing.updates || []), { version, hash: collaborationUpdateHash(bytes) }]
+      });
       return {
         ok: true,
         sessionId: id,
         stateHash,
         version,
+        state: new Uint8Array(merged),
+        storage: { compacted: compact, updateRows: compact ? 0 : count,
+          updateBytes: compact ? 0 : updateBytes, writtenStateBytes: compact ? merged.length : bytes.length },
         session_revision: sessionRevision,
         event_sequence: event?.sequence ?? 0
       };
-    }, transactionOptions);
+    }, transactionOptions).catch(error => {
+      mergedDocument?.destroy();
+      throw error;
+    });
   }
 
   async deleteCollaborationDocument(sessionId) {
@@ -827,24 +1047,27 @@ export class PostgresWorkbenchStateStore {
        USING stale
        WHERE target.space_id = $1
          AND target.session_id = stale.session_id
-         AND target.revision = stale.revision`,
+         AND target.revision = stale.revision
+       RETURNING target.meta_json->'${REVISION_ANNOTATIONS_KEY}'->>'ref' AS annotation_ref`,
       [this.spaceId, id, MAX_SESSION_REVISIONS, MAX_SESSION_REVISION_BYTES]
     );
-    await this.pruneRevisionAnnotations(client);
+    const refs = [...new Set(result.rows.map(row => row.annotation_ref).filter(Boolean))];
+    if (refs.length) await this.pruneRevisionAnnotations(client, refs);
     return Number(result.rowCount || 0);
   }
 
-  async pruneRevisionAnnotations(client = this.pool) {
+  async pruneRevisionAnnotations(client = this.pool, refs = null) {
     const result = await client.query(
       `DELETE FROM runtime_workbench_revision_annotations annotations
        WHERE annotations.space_id = $1
+         AND ($2::text[] IS NULL OR annotations.ref = ANY($2))
          AND NOT EXISTS (
            SELECT 1 FROM runtime_workbench_session_revisions revisions
            WHERE revisions.space_id = $1
              AND revisions.meta_json->'${REVISION_ANNOTATIONS_KEY}'->>'ref'
                = annotations.ref
          )`,
-      [this.spaceId]
+      [this.spaceId, refs]
     );
     return Number(result.rowCount || 0);
   }
@@ -910,12 +1133,13 @@ export class PostgresWorkbenchStateStore {
   async listSessionIndexEntries(client = this.pool) {
     const result = await client.query(
       `SELECT d.id,
-         CASE WHEN COALESCE(m.meta_json->>'hash', '') <> ''
-           AND m.meta_json->>'size' IS NOT NULL THEN '' ELSE d.text END AS text,
+         CASE WHEN COALESCE(summary.hash #>> '{}', '') <> ''
+           AND summary.size IS NOT NULL THEN '' ELSE d.text END AS text,
          ${CATALOG_META_SQL} AS meta_json
        FROM runtime_workbench_documents d
        LEFT JOIN runtime_workbench_metadata m
          ON m.space_id = d.space_id AND m.id = d.id
+       ${CATALOG_META_JOIN_SQL}
        WHERE d.space_id = $1
        ORDER BY d.updated_at DESC, d.id`,
       [this.spaceId]
@@ -958,12 +1182,13 @@ export class PostgresWorkbenchStateStore {
     if (!ids.length) return [];
     const result = await client.query(
       `SELECT d.id,
-         CASE WHEN COALESCE(m.meta_json->>'hash', '') <> ''
-           AND m.meta_json->>'size' IS NOT NULL THEN '' ELSE d.text END AS text,
+         CASE WHEN COALESCE(summary.hash #>> '{}', '') <> ''
+           AND summary.size IS NOT NULL THEN '' ELSE d.text END AS text,
          ${CATALOG_META_SQL} AS meta_json
        FROM runtime_workbench_documents d
        LEFT JOIN runtime_workbench_metadata m
          ON m.space_id = d.space_id AND m.id = d.id
+       ${CATALOG_META_JOIN_SQL}
        WHERE d.space_id = $1 AND d.id = ANY($2::text[])`,
       [this.spaceId, ids]
     );
@@ -979,12 +1204,39 @@ export class PostgresWorkbenchStateStore {
     });
   }
 
+  async updateSessionIndex(...args) {
+    return measureRequestStage("db_index", () => this.updateSessionIndexEntries(...args));
+  }
+
+  async updateSessionIndexEntries(tree, sessionId, entry, client) {
+    // Single-session writes already hold the shared state lock. Its committed
+    // index is authoritative; do not decompress every other session's metadata.
+    const state = await this.state(client);
+    const entries = new Map(jsonValue(state?.index_json, []).map(item => [String(item.id), item]));
+    if (entry) entries.set(sessionId, entry);
+    else entries.delete(sessionId);
+    const index = [];
+    let missing = false;
+    const visit = node => {
+      if (isSessionNode(node)) {
+        const item = entries.get(String(node.id));
+        if (item) index.push(item);
+        else missing = true;
+      }
+      for (const child of node?.children || []) visit(child);
+    };
+    visit(tree);
+    // Older imported state can lack summaries; repair it once on that path.
+    return missing ? this.rebuildIndexFromTree(tree, client) : index;
+  }
+
   async stateTree(client = this.pool) {
     const state = await this.ensureState(this.now(), client);
     return jsonValue(state.tree_json, defaultTree());
   }
 
   async writeSessionRows(id, text, meta, timestamp, client) {
+    const storedMeta = await prepareSessionCardMetadata(client, this.spaceId, id, meta, timestamp);
     await client.query(
       `INSERT INTO runtime_workbench_documents (space_id, id, text, updated_at)
        VALUES ($1, $2, $3, $4)
@@ -997,7 +1249,7 @@ export class PostgresWorkbenchStateStore {
        VALUES ($1, $2, $3::jsonb, $4)
        ON CONFLICT (space_id, id) DO UPDATE SET
          meta_json = EXCLUDED.meta_json, updated_at = EXCLUDED.updated_at`,
-      [this.spaceId, id, JSON.stringify(meta), timestamp]
+      [this.spaceId, id, JSON.stringify(storedMeta), timestamp]
     );
     await client.query(
       `DELETE FROM runtime_workbench_tombstones
@@ -1050,7 +1302,7 @@ export class PostgresWorkbenchStateStore {
       });
       const revision = await this.bumpRevision(client, timestamp, {
         tree,
-        index: await this.rebuildIndexFromTree(tree, client)
+        index: await this.updateSessionIndex(tree, id, this.sessionIndexEntry(id, meta, text), client)
       });
       const event = await this.recordEvent("session.created", {
         sessionId: id,
@@ -1083,6 +1335,7 @@ export class PostgresWorkbenchStateStore {
   }
 
   async readSnapshot(client = this.pool) {
+    if (client === this.pool) return this.consistentRead(tx => this.readSnapshot(tx));
     const state = await this.state(client);
     if (!state) return null;
     const [docs, metas, tombstones, kv, bounds] = await Promise.all([
@@ -1123,10 +1376,10 @@ export class PostgresWorkbenchStateStore {
         session_revision: Number(row.session_revision || 0),
         content_hash: row.content_hash
       })),
-      metas: metas.rows.map((row) => ({
+      metas: await Promise.all(metas.rows.map(async (row) => ({
         id: row.id,
-        meta: jsonValue(row.meta_json, {})
-      })),
+        meta: await hydrateSessionCardMetadata(client, this.spaceId, row.id, jsonValue(row.meta_json, {}))
+      }))),
       tombstones: tombstones.rows.map((row) => ({
         id: row.id,
         revision: Number(row.revision),
@@ -1154,8 +1407,9 @@ export class PostgresWorkbenchStateStore {
               substring(d.text FROM greatest(1, strpos(lower(d.text), lower($2)) - 80) FOR 240) AS snippet
        FROM runtime_workbench_documents d
        LEFT JOIN runtime_workbench_metadata m ON m.space_id = d.space_id AND m.id = d.id
+       ${CATALOG_META_JOIN_SQL}
        WHERE d.space_id = $1 AND ($5::text[] IS NULL OR d.id=ANY($5)) AND ($2 = '' OR strpos(lower(d.text), lower($2)) > 0
-         OR strpos(lower(COALESCE(m.meta_json->>'title', d.id)), lower($2)) > 0)
+         OR strpos(lower(COALESCE(summary.title #>> '{}', d.id)), lower($2)) > 0)
        ORDER BY d.updated_at DESC, d.id
        LIMIT $3 OFFSET $4`,
       [this.spaceId, term, take + 1, skip, allowedSessionIds]
@@ -1170,11 +1424,12 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async readCatalog({ metadataLimit = null } = {}) {
-    const tree = await this.readTree();
+  async readCatalog({ metadataLimit = null, view = "" } = {}, client = this.pool) {
+    if (client === this.pool) return this.consistentRead(tx => this.readCatalog({ metadataLimit, view }, tx));
+    const tree = await this.readTree(client);
     const take = metadataLimit == null ? null : Math.min(100, Math.max(1, Number(metadataLimit) || 100));
     const [sessions, metas, kv] = await Promise.all([
-      this.pool.query(
+      client.query(
         `SELECT d.id, COALESCE(h.revision, 0) AS session_revision
          FROM runtime_workbench_documents d
          LEFT JOIN runtime_workbench_session_heads h
@@ -1182,20 +1437,23 @@ export class PostgresWorkbenchStateStore {
          WHERE d.space_id = $1 ORDER BY d.id`,
         [this.spaceId]
       ),
-      this.pool.query(
+      client.query(
         `SELECT m.id, ${CATALOG_META_SQL} AS meta_json
          FROM runtime_workbench_metadata m
+         ${CATALOG_META_JOIN_SQL}
          WHERE space_id = $1 ORDER BY id LIMIT $2`,
         [this.spaceId, take]
       ),
-      this.pool.query(
+      client.query(
         `SELECT key, value_json FROM runtime_workbench_kv
          WHERE space_id = $1 AND key LIKE 'sessions.%' ORDER BY key`,
         [this.spaceId]
       )
     ]);
     return {
-      ...tree,
+      ...(view === "compact"
+        ? { revision: tree.revision, event_cursor: tree.event_cursor, updated_at: tree.updated_at }
+        : tree),
       catalog: {
         metadataPartial: take != null,
         tree: tree.tree,
@@ -1238,20 +1496,48 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async readSessionMeta(sessionId) {
+  async readSessionMeta(sessionId, client = this.pool) {
+    if (client === this.pool) return this.consistentRead(tx => this.readSessionMeta(sessionId, tx));
     const id = normalizeId(sessionId);
-    const result = await this.pool.query(
+    const result = await client.query(
       `SELECT meta_json FROM runtime_workbench_metadata
        WHERE space_id = $1 AND id = $2`,
       [this.spaceId, id]
     );
     return result.rows[0]
-      ? { ...jsonValue(result.rows[0].meta_json, {}), id }
+      ? { ...await hydrateSessionCardMetadata(client, this.spaceId, id, jsonValue(result.rows[0].meta_json, {})), id }
       : null;
   }
 
+  async readSessionMetadataRecord(sessionId, options = {}, client = this.pool) {
+    if (client === this.pool) return this.consistentRead(tx => this.readSessionMetadataRecord(sessionId, options, tx));
+    const id = normalizeId(sessionId);
+    // One statement keeps metadata and its head paired without fetching d.text
+    // (or detoasting the potentially multi-megabyte document).
+    const result = await client.query(
+      `SELECT m.meta_json, h.revision, h.updated_at, t.revision AS deleted_revision, t.deleted_at
+       FROM (SELECT $2::text AS id) input
+       LEFT JOIN runtime_workbench_metadata m ON m.space_id = $1 AND m.id = input.id
+       LEFT JOIN runtime_workbench_session_heads h ON h.space_id = $1 AND h.id = input.id
+       LEFT JOIN runtime_workbench_tombstones t ON t.space_id = $1 AND t.id = input.id`,
+      [this.spaceId, id]
+    );
+    const row = result.rows[0] || {};
+    if (row.meta_json != null) return {
+      id, meta: { ...await hydrateSessionCardMetadata(client, this.spaceId, id, jsonValue(row.meta_json, {}),
+        { onlyExpanded: options.cardView === "render" }), id },
+      session_revision: Number(row.revision || 0),
+      updated_at: Number(row.updated_at || 0)
+    };
+    return row.deleted_revision != null ? {
+      id, deleted: true, session_revision: Number(row.deleted_revision),
+      deleted_at: Number(row.deleted_at)
+    } : null;
+  }
+
   async readTree(client = this.pool) {
-    const state = await this.ensureState(this.now(), client);
+    if (client === this.pool) return this.consistentRead(tx => this.readTree(tx));
+    const state = await this.state(client);
     const bounds = await this.eventBounds(client);
     return {
       tree: jsonValue(state.tree_json, defaultTree()),
@@ -1308,9 +1594,11 @@ export class PostgresWorkbenchStateStore {
     }
     for (const item of Array.isArray(snapshot.metas) ? snapshot.metas : []) {
       const id = normalizeId(item?.id);
-      const meta = isObject(item?.meta) ? { ...item.meta, id } : { id };
+      const submittedMeta = isObject(item?.meta) ? { ...item.meta, id } : { id };
+      const meta = await prepareSessionCardMetadata(client, this.spaceId, id, submittedMeta, timestamp);
       const previous = await this.currentSession(id, client);
-      if (!previous.exists || JSON.stringify(previous.meta) !== JSON.stringify(meta)) {
+      const fullMeta = await hydrateSessionCardMetadata(client, this.spaceId, id, meta);
+      if (!previous.exists || sessionMetadataChanges(previous.meta, fullMeta).length) {
         changedIds.add(id);
       }
       await client.query(
@@ -1414,9 +1702,11 @@ export class PostgresWorkbenchStateStore {
     };
   }
 
-  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "", baseTree = null, transactionOptions) {
+  async writeTree(tree, _index = [], expectedRevision = null, sourceClientId = "", baseTree = null, operationId = null, transactionOptions) {
     if (!isObject(tree)) throw new Error("tree must be an object");
     return this.transaction(async (client, published) => {
+      const duplicate = await this.duplicateOperation(operationId, client);
+      if (duplicate) return duplicate;
       const currentRevision = await this.revision(client);
       if (expectedRevision != null && expectedRevision !== currentRevision) {
         return { ok: false, conflict: true, revision: currentRevision };
@@ -1438,20 +1728,24 @@ export class PostgresWorkbenchStateStore {
         payload: { changes: sessionTreeChanges(currentTree, completeTree) },
         timestamp
       }, client, published);
-      return { ok: true, revision, tree: completeTree, index, event_sequence: event.sequence };
+      const result = { ok: true, revision, tree: completeTree, index, event_sequence: event.sequence };
+      await this.recordOperation(operationId, "tree", 0, result, timestamp, client);
+      return result;
     }, transactionOptions);
   }
 
-  async readSession(sessionId, client = this.pool) {
+  async readSession(sessionId, client = this.pool, options = {}) {
+    if (client && typeof client.query !== "function") { options = client; client = this.pool; }
+    if (client === this.pool) return this.consistentRead(tx => this.readSession(sessionId, tx, options));
     const id = normalizeId(sessionId);
-    const current = await this.currentSession(id, client);
+    const current = await this.currentSession(id, client, options);
     if (current.exists) {
       return {
         id,
         text: normalizeConversationTextForDisplay(current.text),
         meta: { ...current.meta, id },
         session_revision: current.revision,
-        content_hash: contentHash(current.text, current.meta),
+        content_hash: current.contentHash || contentHash(current.text, current.meta),
         updated_at: current.updatedAt
       };
     }
@@ -1467,6 +1761,56 @@ export class PostgresWorkbenchStateStore {
       session_revision: Number(tombstone.revision),
       deleted_at: Number(tombstone.deleted_at)
     } : null;
+  }
+
+  async readSessionCardDetails(sessionId, requests, client = this.pool) {
+    if (client === this.pool) return this.consistentRead(tx => this.readSessionCardDetails(sessionId, requests, tx));
+    const id = normalizeId(sessionId);
+    if (!Array.isArray(requests) || !requests.length || requests.length > 100
+      || requests.some(r => !["tools", "thinking"].includes(r?.kind)
+        || typeof r.id !== "string" || !/^[a-f0-9]{64}$/.test(r.ref || "")
+        || (r.storage != null && r.storage !== "body"))) {
+      throw Object.assign(new Error("Invalid card detail request"), { statusCode: 400 });
+    }
+    const current = await client.query(
+      `SELECT m.meta_json,h.revision FROM runtime_workbench_metadata m
+       LEFT JOIN runtime_workbench_session_heads h ON h.space_id=m.space_id AND h.id=m.id
+       WHERE m.space_id=$1 AND m.id=$2`, [this.spaceId, id]);
+    if (!current.rowCount) return null;
+    const meta = jsonValue(current.rows[0].meta_json, {});
+    const yCards = new Map();
+    if (requests.some(request => request.storage === "body")) {
+      const state = await this.readCollaborationDocument(id, client);
+      const document = new Y.Doc();
+      try {
+        if (state?.state) Y.applyUpdate(document, state.state);
+        for (const [key, card] of document.getMap("cards")) yCards.set(key, card);
+      } finally { document.destroy(); }
+    }
+    const details = [];
+    for (const request of requests) {
+      const projected = yCards.get(request.id);
+      const metadataCard = meta.annotations?.[request.kind]?.find(item => item.id === request.id);
+      const card = request.storage === "body" ? projected || metadataCard : metadataCard;
+      const actualKind = card?.kind === "tool" ? "tools" : card?.kind === "thinking" ? "thinking" : request.kind;
+      if (request.storage === "body") {
+        if (actualKind !== request.kind || !card?.bodyRef || card.bodyRef !== request.ref) throw Object.assign(
+          new Error("卡片内容已变化，请重新打开会话后重试。"), { statusCode: 409, code: "CARD_DETAIL_CHANGED" });
+        details.push({ ...request, body: await readSessionCardBody(client, this.spaceId, id, request.kind, card) });
+      } else {
+        let transportCard = card;
+        if (card?.bodyRef) {
+          const body = await readSessionCardBody(client, this.spaceId, id, request.kind, card);
+          // Legacy transport hashes were computed from JSONB metadata values.
+          // Reproduce that field order after the canonical immutable body read.
+          transportCard = (await client.query("SELECT $1::jsonb AS card",
+            [JSON.stringify(hydratedSessionCard(card, body))])).rows[0].card;
+        }
+        details.push(...sessionCardDetails({ id, meta: { annotations: { [request.kind]: transportCard ? [transportCard] : [] } } },
+          [request]).details);
+      }
+    }
+    return { session_revision: Number(current.rows[0].revision || 0), details };
   }
 
   async updateSession(sessionId, input = {}, transactionOptions) {
@@ -1492,9 +1836,12 @@ export class PostgresWorkbenchStateStore {
         throw error;
       }
     }
+    const metadataOnly = Array.isArray(input.meta_changes)
+      && input.text == null && input.title == null && input.meta == null;
     if (
       input.expected_session_revision != null
       && Number(input.expected_session_revision) !== current.revision
+      && !metadataOnly
     ) {
       return {
         ok: false,
@@ -1506,9 +1853,51 @@ export class PostgresWorkbenchStateStore {
     const timestamp = this.now();
     const nextText = input.text == null ? current.text : String(input.text);
     const explicitMeta = isObject(input.meta) ? input.meta : {};
-    const metaCandidate = input.meta == null
+    let metaCandidate = input.meta == null
       ? { ...current.meta }
       : { ...current.meta, ...explicitMeta, id };
+    if (input.meta_changes != null) {
+      // Validate all paths even when an automatic title intent will supersede
+      // its comparison values. Manual metadata edits retain field-level CAS.
+      let merged = applySessionMetadataChanges(current.meta, input.meta_changes);
+      // Older clients persist derived previews. An obsolete preview cannot
+      // block a real edit or replace the newer preview from another window.
+      const derivedFields = new Set(["documentPreview", "documentPreviewVersion"]);
+      if (metadataOnly && merged.conflicts.some(path => derivedFields.has(path))) {
+        merged = applySessionMetadataChanges(current.meta,
+          input.meta_changes.filter(change => !derivedFields.has(change.path[0])));
+      }
+      if (metadataOnly && input.automatic_title === true) {
+        const titleFields = new Set(["title", "titleAuto"]);
+        const remaining = input.meta_changes.filter(change =>
+          !titleFields.has(change.path[0]) && !derivedFields.has(change.path[0]));
+        merged = applySessionMetadataChanges(current.meta, remaining);
+        if (current.meta.titleAuto === true) {
+          // Derive from the committed document, never from a stale window's
+          // proposed title. A concurrent manual rename always wins.
+          const derived = deriveSessionTitleFromContent(current.text);
+          if (derived) merged.meta.title = derived;
+        }
+      }
+      if (merged.conflicts.length) return {
+        ok: false, conflict: true, revision: globalRevision,
+        session_revision: current.revision, metadata_conflicts: merged.conflicts
+      };
+      const changes = sessionMetadataChanges(current.meta, merged.meta);
+      if (metadataOnly && current.exists && !changes.length) {
+        const result = { ok: true, unchanged: true, revision: globalRevision,
+          session_revision: current.revision };
+        await this.recordOperation(input.operation_id, id, current.revision, result, timestamp, client);
+        return result;
+      }
+      metaCandidate = { ...merged.meta, id };
+      // Card state and derived previews do not represent conversation activity.
+      // Loading an old session must not move it above recently edited sessions.
+      if (changes.some(change => ![
+        "annotations", "documentPreview", "documentPreviewVersion",
+        "autoRenameChatTriggeredAt"
+      ].includes(change.path?.[0]))) metaCandidate.updatedAt = timestamp;
+    }
     if (input.title != null) metaCandidate.title = String(input.title || "");
     if (input.text != null) {
       if (!Object.prototype.hasOwnProperty.call(explicitMeta, "size")) delete metaCandidate.size;
@@ -1517,14 +1906,25 @@ export class PostgresWorkbenchStateStore {
         delete metaCandidate.updatedAt;
       }
     }
-    const metaTimestamp = input.meta == null && input.title == null && input.text == null
+    const metaTimestamp = input.meta == null && input.meta_changes == null && input.title == null && input.text == null
       ? Number(current.meta?.updatedAt || timestamp) || timestamp
       : timestamp;
     const next = {
       text: nextText,
       meta: normalizeSessionMeta(id, nextText, metaCandidate, metaTimestamp)
     };
-    await this.writeSessionRows(id, next.text, next.meta, timestamp, client);
+    if (metadataOnly && current.exists) {
+      const storedMeta = await prepareSessionCardMetadata(client, this.spaceId, id, next.meta, timestamp);
+      await client.query(
+        `INSERT INTO runtime_workbench_metadata (space_id, id, meta_json, updated_at)
+         VALUES ($1, $2, $3::jsonb, $4)
+         ON CONFLICT (space_id, id) DO UPDATE
+           SET meta_json = EXCLUDED.meta_json, updated_at = EXCLUDED.updated_at`,
+        [this.spaceId, id, JSON.stringify(storedMeta), timestamp]
+      );
+    } else {
+      await this.writeSessionRows(id, next.text, next.meta, timestamp, client);
+    }
     const sessionRevision = current.revision + 1;
     const reason = String(input.reason || "update");
     await this.saveSessionRevision(
@@ -1557,7 +1957,7 @@ export class PostgresWorkbenchStateStore {
         });
     const revision = await this.bumpRevision(client, timestamp, {
       tree,
-      index: await this.rebuildIndexFromTree(tree, client)
+      index: await this.updateSessionIndex(tree, id, this.sessionIndexEntry(id, next.meta, next.text), client)
     });
     const event = await this.recordEvent(current.exists ? "session.updated" : "session.created", {
       sessionId: id,
@@ -1568,7 +1968,7 @@ export class PostgresWorkbenchStateStore {
         reason,
         changed: [
           ...(input.text == null ? [] : ["document"]),
-          ...(input.meta == null && input.title == null ? [] : ["metadata"])
+          ...(input.meta == null && input.meta_changes == null && input.title == null ? [] : ["metadata"])
         ],
         indexEntry: this.sessionIndexEntry(id, next.meta, next.text)
       },
@@ -1593,7 +1993,11 @@ export class PostgresWorkbenchStateStore {
 
   async deleteSession(sessionId, input = {}, transactionOptions) {
     const id = normalizeId(sessionId);
-    return this.transaction(async (client, published) => {
+    return this.transaction((client, published) =>
+      this.deleteSessionInTransaction(id, input, client, published), transactionOptions);
+  }
+
+  async deleteSessionInTransaction(id, input, client, published) {
       const duplicate = await this.duplicateOperation(input.operation_id, client);
       if (duplicate) return duplicate;
       const globalRevision = await this.revision(client);
@@ -1664,7 +2068,7 @@ export class PostgresWorkbenchStateStore {
       removeSessionNode(tree, id);
       const revision = await this.bumpRevision(client, timestamp, {
         tree,
-        index: await this.rebuildIndexFromTree(tree, client)
+        index: await this.updateSessionIndex(tree, id, null, client)
       });
       const event = await this.recordEvent("session.deleted", {
         sessionId: id,
@@ -1688,6 +2092,59 @@ export class PostgresWorkbenchStateStore {
         timestamp,
         client
       );
+      return result;
+  }
+
+  async deleteFolder(folderId, input = {}, transactionOptions) {
+    const id = normalizeId(folderId, "folder id");
+    if (id === "root" || !isObject(input.base_tree) || !input.operation_id) {
+      throw Object.assign(new Error("Folder deletion requires a base tree and operation id"), { statusCode: 400 });
+    }
+    return this.transaction(async (client, published) => {
+      const duplicate = await this.duplicateOperation(input.operation_id, client);
+      if (duplicate) return duplicate;
+      const tree = await this.stateTree(client);
+      const { node, parent } = findNodeAndParent(tree, id);
+      const expected = findNodeAndParent(input.base_tree, id).node;
+      if (!expected || expected.type !== "folder") {
+        throw Object.assign(new Error("Folder is missing from the deletion base"), { statusCode: 400 });
+      }
+      if (!node) return { ok: true, tree, index: await this.rebuildIndexFromTree(tree, client), deleted_session_ids: [] };
+      if (node.type !== "folder" || !parent) {
+        throw Object.assign(new Error("Invalid folder deletion"), { statusCode: 400 });
+      }
+      const layout = folder => {
+        const result = [];
+        const visit = (entry, parentId) => {
+          result.push([entry.id, entry.type, parentId]);
+          for (const child of entry.children || []) visit(child, entry.id);
+        };
+        visit(folder, null);
+        return result.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+      };
+      if (JSON.stringify(layout(expected)) !== JSON.stringify(layout(node))) {
+        throw Object.assign(new Error("Folder contents changed in another window; refresh before deleting"), { statusCode: 409 });
+      }
+      const sessionIds = layout(node).filter(([, type]) => type === "session").map(([sessionId]) => sessionId);
+      for (const sessionId of sessionIds) {
+        await this.deleteSessionInTransaction(sessionId, {
+          operation_id: `${input.operation_id}:session:${sessionId}`,
+          source_client_id: input.source_client_id
+        }, client, published);
+      }
+      const remaining = await this.stateTree(client);
+      const target = findNodeAndParent(remaining, id);
+      target.parent.children = target.parent.children.filter(child => child.id !== id);
+      const timestamp = this.now();
+      const index = await this.rebuildIndexFromTree(remaining, client);
+      const revision = await this.bumpRevision(client, timestamp, { tree: remaining, index });
+      const event = await this.recordEvent("tree.updated", {
+        revision, sourceClientId: input.source_client_id,
+        payload: { reason: "folder-delete", folderId: id, sessionIds }, timestamp
+      }, client, published);
+      const result = { ok: true, revision, tree: remaining, index, event_sequence: event.sequence,
+        deleted_session_ids: sessionIds };
+      await this.recordOperation(input.operation_id, `folder:${id}`, 0, result, timestamp, client);
       return result;
     }, transactionOptions);
   }
@@ -1728,7 +2185,7 @@ export class PostgresWorkbenchStateStore {
         text: row.text,
         meta: await this.hydrateRevisionMeta(
           jsonValue(row.meta_json, {}),
-          client
+          client, id
         ),
         operation_id: operationId,
         reason: "restore"
@@ -1755,52 +2212,67 @@ export class PostgresWorkbenchStateStore {
     sourceClientId = "",
     expectedValue
   } = {}) {
+    return this.transaction((client, published) =>
+      this.writeKVInTransaction(key, value, { sourceClientId, expectedValue }, client, published));
+  }
+
+  // Related catalog/source rows and selection changes commit under one Space
+  // lock, including when more than one Runtime process serves the Space.
+  async withKVTransaction(operation) {
+    return this.transaction((client, published) => operation({
+      readKV: (key) => this.readKV(key, client),
+      writeKV: (key, value, options = {}) =>
+        this.writeKVInTransaction(key, value, options, client, published)
+    }));
+  }
+
+  async writeKVInTransaction(key, value, {
+    sourceClientId = "", expectedValue
+  }, client, published) {
     const normalized = normalizeId(key, "key");
-    return this.transaction(async (client, published) => {
-      const timestamp = this.now();
-      const existing = await this.readKV(normalized, client);
-      if (expectedValue !== undefined
-        && JSON.stringify(existing?.value ?? null) !== JSON.stringify(expectedValue)) {
-        throw Object.assign(new Error("State changed; read its current revision before updating"), {
-          statusCode: 409, code: "revision_conflict"
-        });
-      }
-      if (
-        existing
-        && JSON.stringify(existing.value) === JSON.stringify(value)
-      ) {
-        return {
-          ok: true,
-          duplicate: true,
-          key: normalized,
-          updated_at: existing.updated_at,
-          revision: await this.revision(client),
-          event_sequence: 0
-        };
-      }
-      await client.query(
-        `INSERT INTO runtime_workbench_kv (space_id, key, value_json, updated_at)
-         VALUES ($1, $2, $3::jsonb, $4)
-         ON CONFLICT (space_id, key) DO UPDATE SET
-           value_json = EXCLUDED.value_json,
-           updated_at = EXCLUDED.updated_at`,
-        [this.spaceId, normalized, JSON.stringify(value), timestamp]
-      );
-      const revision = await this.bumpRevision(client, timestamp);
-      const event = await this.recordEvent("kv.updated", {
-        revision,
-        sourceClientId,
-        payload: { key: normalized },
-        timestamp
-      }, client, published);
+    const timestamp = this.now();
+    const existing = await this.readKV(normalized, client);
+    if (expectedValue !== undefined
+      && JSON.stringify(existing?.value ?? null) !== JSON.stringify(expectedValue)) {
+      throw Object.assign(new Error("State changed; read its current revision before updating"), {
+        statusCode: 409, code: "revision_conflict"
+      });
+    }
+    if (
+      existing
+      && JSON.stringify(existing.value) === JSON.stringify(value)
+    ) {
       return {
         ok: true,
+        duplicate: true,
         key: normalized,
-        updated_at: timestamp,
-        revision,
-        event_sequence: event.sequence
+        updated_at: existing.updated_at,
+        revision: await this.revision(client),
+        event_sequence: 0
       };
-    });
+    }
+    await client.query(
+      `INSERT INTO runtime_workbench_kv (space_id, key, value_json, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4)
+       ON CONFLICT (space_id, key) DO UPDATE SET
+         value_json = EXCLUDED.value_json,
+         updated_at = EXCLUDED.updated_at`,
+      [this.spaceId, normalized, JSON.stringify(value), timestamp]
+    );
+    const revision = await this.bumpRevision(client, timestamp);
+    const event = await this.recordEvent("kv.updated", {
+      revision,
+      sourceClientId,
+      payload: { key: normalized },
+      timestamp
+    }, client, published);
+    return {
+      ok: true,
+      key: normalized,
+      updated_at: timestamp,
+      revision,
+      event_sequence: event.sequence
+    };
   }
 
   async deleteKV(key, { expectedValue } = {}) {

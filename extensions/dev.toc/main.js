@@ -1072,13 +1072,15 @@ export function createConversationOutlineController(ctx, host, options = {}) {
       ui?.dragCleanup?.();
       closeSideTOC(ui);
       if (ui?.panel) ui.panel.remove();
-      if (ui?.originalParent && ui?.editorEl) {
+      if (!ui?.surfaceOwnsLayout && ui?.originalParent && ui?.editorEl) {
         ui.originalParent.insertBefore(ui.editorEl, ui.originalNextSibling || null);
       }
-      if (ui?.wrapper) ui.wrapper.remove();
+      if (ui?.surfaceOwnsLayout) ui?.button?.remove();
+      else if (ui?.wrapper) ui.wrapper.remove();
     } catch {}
     try {
       ui.wrapper = null;
+      ui.surfaceOwnsLayout = false;
       ui.panel = null;
       ui.button = null;
       ui.editorEl = null;
@@ -1284,10 +1286,14 @@ export function createConversationOutlineController(ctx, host, options = {}) {
           const originalParent = edEl.parentElement;
           const originalNextSibling = edEl.nextSibling;
 
-          const wrapper = createTOCWrapper();
-          // Insert a simple layout at the editor-slot level: TOC on the left, real editor on the right.
-          originalParent.insertBefore(wrapper, edEl);
-          wrapper.appendChild(edEl);
+          ui.surfaceOwnsLayout = originalParent.classList.contains("zion-conversation-layout");
+          const wrapper = ui.surfaceOwnsLayout ? originalParent : createTOCWrapper();
+          // Shared editor surfaces establish their layout before the first render.
+          // Keep the fallback for independent editors using the contribution.
+          if (!ui.surfaceOwnsLayout) {
+            originalParent.insertBefore(wrapper, edEl);
+            wrapper.appendChild(edEl);
+          }
 
           // Left side panel
           const panel = document.createElement("div");

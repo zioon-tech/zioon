@@ -1,4 +1,5 @@
 import { clearTimeout, setTimeout } from "node:timers";
+import { RECEIPT_CACHE_MAX_BYTES } from "./receipt-bodies.mjs";
 import {
   DEVICE_PROTOCOL_VERSION,
   normalizeNodeRegistration,
@@ -12,6 +13,7 @@ import {
   parseTerminalReference
 } from "../../../packages/node-protocol/src/resource-references.mjs";
 import {
+  isInteractiveDeviceRead,
   invocationReference,
   scopeServiceResult,
   translateInvocation
@@ -19,6 +21,23 @@ import {
 
 const INTERNAL_CAPABILITY_PREFIX = "zion.internal.";
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+const INTERACTIVE_DEVICE_READ_RECEIPT = {
+  ok: false,
+  content: "Device read completed. Its response is no longer retained.",
+  failureCode: "device_read_result_not_retained",
+  retryable: false
+};
+
+function successfulServiceResponse(result) {
+  if (!result.ok || result.error || result.artifactIds?.length) return false;
+  try {
+    const envelope = JSON.parse(result.content);
+    return Number.isInteger(envelope?.status) && envelope.status >= 200
+      && envelope.status < 300 && typeof envelope.bodyBase64 === "string";
+  } catch {
+    return false;
+  }
+}
 
 function statusError(statusCode, message, failureCode, retryable) {
   const error = new Error(message);
@@ -120,6 +139,7 @@ export class NodeBroker {
     offlineAfterMs = 60_000,
     presencePersistenceMs = 10_000,
     maxReceipts = 1_000,
+    maxReceiptBytes = RECEIPT_CACHE_MAX_BYTES,
     invocationLeaseMs = 120_000,
     invocationDeliveryGraceMs = 30_000,
     scheduleTimeout = defaultScheduleTimeout,
@@ -139,6 +159,8 @@ export class NodeBroker {
     this.offlineAfterMs = offlineAfterMs;
     this.presencePersistenceMs = presencePersistenceMs;
     this.maxReceipts = maxReceipts;
+    this.maxReceiptBytes = Number.isSafeInteger(maxReceiptBytes) && maxReceiptBytes >= 0
+      ? maxReceiptBytes : RECEIPT_CACHE_MAX_BYTES;
     this.invocationLeaseMs = invocationLeaseMs;
     this.invocationDeliveryGraceMs = invocationDeliveryGraceMs;
     this.scheduleTimeout = scheduleTimeout;
@@ -148,11 +170,17 @@ export class NodeBroker {
     this.projectBindings = new Map();
     this.pending = new Map();
     this.receipts = new Map();
+    this.receiptSizes = new Map();
+    this.receiptBytes = 0;
+    this.receiptPins = new Set();
+    this.receiptPersistenceFlights = new Set();
+    this.receiptPersistenceFailures = 0;
     this.durableReceiptCount = 0;
     this.closed = false;
 
     const restored = this.stateStore?.loadState?.({
-      receiptLimit: this.maxReceipts
+      receiptLimit: this.maxReceipts,
+      receiptMaxBytes: this.maxReceiptBytes
     });
     this.initialization = restored && typeof restored.then === "function"
       ? restored.then((state) => this.restoreState(state))
@@ -199,7 +227,8 @@ export class NodeBroker {
     for (const receipt of restored?.receipts || []) {
       this.rememberReceipt(
         String(receipt.invocationId),
-        normalizeToolResult(receipt.result)
+        normalizeToolResult(receipt.result),
+        { durable: true }
       );
     }
   }
@@ -254,11 +283,15 @@ export class NodeBroker {
             };
             this.rememberReceipt(pending.invocationId, result);
             if (this.stateStore?.saveReceipt) {
-              receiptWrites.push(this.stateStore.saveReceipt({
+              receiptWrites.push(mapMaybePromise(this.trackReceiptWrite(this.stateStore.saveReceipt({
                 invocationId: pending.invocationId,
                 nodeId: pending.nodeId,
                 result,
                 completedAt: observedAt
+              })), receipt => {
+                this.rememberReceipt(pending.invocationId, normalizeToolResult(receipt.result), { durable: true });
+                if (!receipt.duplicate) this.durableReceiptCount += 1;
+                return receipt;
               }));
             }
             pending.reject(statusError(409, message, result.failureCode, false));
@@ -341,6 +374,9 @@ export class NodeBroker {
       if (!pending || pending.nodeId !== nodeId) {
         throw statusError(404, `Invocation not found: ${invocationId}`);
       }
+      if (pending.writingReceipt) {
+        return pending.writingReceipt.then(receipt => ({ ...receipt, duplicate: true }));
+      }
 
       let result;
       try {
@@ -357,7 +393,7 @@ export class NodeBroker {
         };
       }
       const finish = (receipt = null) => {
-        const persistedResult = receipt
+        const persistedResult = receipt && (receipt.duplicate || !compactReceipt)
           ? normalizeToolResult(receipt.result)
           : result;
         const duplicate = receipt?.duplicate === true;
@@ -365,18 +401,22 @@ export class NodeBroker {
         pending.cancellation.dispose();
         pending.lease.dispose();
         this.pending.delete(invocationId);
-        this.rememberReceipt(invocationId, persistedResult);
+        this.rememberReceipt(invocationId, persistedResult, { durable: !!receipt });
         pending.resolve(persistedResult);
         return { accepted: true, duplicate, result: persistedResult };
       };
-      return this.stateStore?.saveReceipt
-        ? mapMaybePromise(this.stateStore.saveReceipt({
-            invocationId,
-            nodeId,
-            result,
-            completedAt: this.now()
-          }), finish)
-        : finish();
+      const compactReceipt = pending.compactInteractiveRead && successfulServiceResponse(result);
+      if (!this.stateStore?.saveReceipt) return finish();
+      const writing = this.trackReceiptWrite(this.stateStore.saveReceipt({
+        invocationId, nodeId,
+        result: compactReceipt ? INTERACTIVE_DEVICE_READ_RECEIPT : result,
+        completedAt: this.now()
+      }));
+      if (!writing || typeof writing.then !== "function") return finish(writing);
+      pending.writingReceipt = writing.then(finish).finally(() => {
+        pending.writingReceipt = null;
+      });
+      return pending.writingReceipt;
     });
   }
 
@@ -446,7 +486,11 @@ export class NodeBroker {
     );
   }
 
-  async invoke(invocation, signal) {
+  invokeInteractiveRead(invocation, signal) {
+    return this.invoke(invocation, signal, { interactiveRead: true });
+  }
+
+  async invoke(invocation, signal, { interactiveRead = false } = {}) {
     if (this.closed) throw new Error("Node Broker is closed");
     signal.throwIfCancelled();
     let receipt = this.findReceipt(invocation.invocationId);
@@ -572,6 +616,7 @@ export class NodeBroker {
       node: target.node,
       resource: target.resource,
       execution,
+      compactInteractiveRead: interactiveRead && isInteractiveDeviceRead(invocation),
       referenceBound: !!reference.terminal || !!explicit.instanceId,
       state: "queued",
       command,
@@ -619,6 +664,10 @@ export class NodeBroker {
         ),
       pendingInvocations: this.pending.size,
       receiptCount: this.receipts.size,
+      receiptBytes: this.receiptBytes,
+      maxReceiptBytes: this.maxReceiptBytes,
+      pinnedReceipts: this.receiptPins.size,
+      receiptPersistenceFailures: this.receiptPersistenceFailures,
       durableReceiptCount: this.stateStore
         ? this.durableReceiptCount
         : this.receipts.size
@@ -626,7 +675,7 @@ export class NodeBroker {
   }
 
   close(reason = "node-broker-shutdown") {
-    if (this.closed) return;
+    if (this.closed) return this.receiptDrain;
     this.closed = true;
     for (const node of this.nodes.values()) {
       this.resolveWaiter(node, null);
@@ -638,6 +687,8 @@ export class NodeBroker {
       pending.reject(new Error(`Tool invocation cancelled: ${reason}`));
     }
     this.pending.clear();
+    this.receiptDrain = Promise.allSettled([...this.receiptPersistenceFlights]);
+    return this.receiptDrain;
   }
 
   selectTarget(projectId, toolName, requested = {}) {
@@ -823,11 +874,38 @@ export class NodeBroker {
     resolve(command);
   }
 
-  rememberReceipt(invocationId, result) {
+  rememberReceipt(invocationId, result, { durable = false } = {}) {
+    const previousBytes = this.receiptSizes.get(invocationId) || 0;
+    this.receipts.delete(invocationId);
+    this.receiptSizes.delete(invocationId);
+    this.receiptBytes -= previousBytes;
+    this.receiptPins.delete(invocationId);
+    const bytes = Buffer.byteLength(JSON.stringify(result));
+    // In-memory-only brokers must retain their receipts for replay. Durable
+    // brokers can evict bodies and recover the exact value by invocation ID.
+    if (this.stateStore?.getReceipt && durable && bytes > this.maxReceiptBytes) return;
+    if (this.stateStore?.getReceipt && !durable) this.receiptPins.add(invocationId);
     this.receipts.set(invocationId, result);
-    while (this.receipts.size > this.maxReceipts) {
-      this.receipts.delete(this.receipts.keys().next().value);
+    this.receiptSizes.set(invocationId, bytes);
+    this.receiptBytes += bytes;
+    while (this.receipts.size > this.maxReceipts
+      || (this.stateStore?.getReceipt && this.receiptBytes > this.maxReceiptBytes)) {
+      const first = [...this.receipts.keys()].find(key => !this.receiptPins.has(key));
+      if (first === undefined) break;
+      this.receiptBytes -= this.receiptSizes.get(first) || 0;
+      this.receiptSizes.delete(first);
+      this.receipts.delete(first);
     }
+  }
+
+  trackReceiptWrite(writing) {
+    if (!writing || typeof writing.then !== "function") return writing;
+    const flight = Promise.resolve(writing);
+    this.receiptPersistenceFlights.add(flight);
+    // Handle both outcomes without creating a second unhandled rejection.
+    flight.then(() => this.receiptPersistenceFlights.delete(flight),
+      () => this.receiptPersistenceFlights.delete(flight));
+    return flight;
   }
 
   findReceipt(invocationId) {
@@ -837,7 +915,7 @@ export class NodeBroker {
     return mapMaybePromise(persisted, (receipt) => {
       if (!receipt) return null;
       const result = normalizeToolResult(receipt.result);
-      this.rememberReceipt(invocationId, result);
+      this.rememberReceipt(invocationId, result, { durable: true });
       return result;
     });
   }
@@ -878,6 +956,19 @@ export class NodeBroker {
     if (pending.state === "delivered") {
       const result = expiredExecutionResult(invocationId, pending.execution);
       this.rememberReceipt(invocationId, result);
+      if (this.stateStore?.saveReceipt) {
+        // Keep cache-only safety facts pinned until the durable write succeeds.
+        // A timeout is not proof that an external effect did not happen.
+        const flight = Promise.resolve().then(() => this.stateStore.saveReceipt({
+          invocationId, nodeId: pending.nodeId, result, completedAt: this.now()
+        })).then(receipt => {
+          this.rememberReceipt(invocationId, normalizeToolResult(receipt.result), { durable: true });
+          if (!receipt.duplicate) this.durableReceiptCount += 1;
+        }).catch(() => {
+          this.receiptPersistenceFailures += 1;
+        }).finally(() => { this.receiptPersistenceFlights.delete(flight); });
+        this.trackReceiptWrite(flight);
+      }
       pending.resolve(result);
       return;
     }

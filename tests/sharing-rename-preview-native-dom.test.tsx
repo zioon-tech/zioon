@@ -21,7 +21,7 @@ describe.skipIf(!enabled)("rename synchronization in the persistent local previe
       await act(async () => {
         const response = await native(config.runtimeUrl + path, { method, headers: {
           authorization: `Bearer ${user.token}`, "x-zioon-space-id": user.personalSpaceId,
-          "content-type": "application/json", "x-zion-workbench-protocol": "5"
+          "content-type": "application/json", "x-zion-workbench-protocol": "6"
         }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
         result = { status: response.status, value: await response.json() };
       });

@@ -112,7 +112,7 @@ async function jsonRequest(path, options = {}) {
     ...options,
     headers: {
       "content-type": "application/json",
-      "x-zion-workbench-protocol": "5",
+      "x-zion-workbench-protocol": "6",
       ...(options.headers || {})
     }
   });
@@ -138,10 +138,10 @@ describe("Runtime control plane HTTP", () => {
     );
 
     expect(response.status).toBe(426);
-    expect(response.headers.get("x-zion-workbench-protocol")).toBe("5");
+    expect(response.headers.get("x-zion-workbench-protocol")).toBe("6");
     expect(response.headers.get("clear-site-data")).toBeNull();
     await expect(response.json()).resolves.toMatchObject({
-      expectedProtocol: "5"
+      expectedProtocol: "6"
     });
     expect((await resource.workbenchState.readSession("protected-session")).text)
       .toBe("user complete\nassistant complete");

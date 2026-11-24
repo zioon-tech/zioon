@@ -3,7 +3,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { normalizeToolExecution } from "../../../../packages/plugin-sdk/src/tool-execution.mjs";
 import { fingerprint } from "../../../../packages/sandbox/src/provider.mjs";
 import { canonicalSandboxPath, sandboxPathWithinRoots } from "../../../../packages/sandbox/src/paths.mjs";
-import { LOCAL_TOOLS_TOOL_DEFINITIONS } from "../../../../packages/local-tools-client/src/index.mjs";
+import {
+  LOCAL_TOOLS_TOOL_DEFINITIONS,
+  LOCAL_TOOLS_BASH_DEFAULT_TIMEOUT_MS,
+  LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS
+} from "../../../../packages/local-tools-client/src/index.mjs";
 import { workspaceFileCommand } from "./workspace-file-command.mjs";
 import { unknownToolOutcomeResult } from "../tool-invocation-lifecycle.mjs";
 
@@ -38,13 +42,15 @@ export const SANDBOX_TOOL_DEFINITIONS = LOCAL_TOOLS_TOOL_DEFINITIONS
       ...tool.inputSchema,
       properties: {
         ...tool.inputSchema.properties,
-        node_id: { type: "string", description: "Node ID from terminalInventory. Omit for the current cloud workspace." },
-        ...(tool.name === "Bash" ? { timeout: { type: "integer", minimum: 1, maximum: 60000, default: 60000 } } : {})
+        node_id: { type: "string", description: "Node ID from terminalInventory. Omit for the current cloud workspace." }
       }
     },
     execution: normalizeToolExecution({
-      effect: tool.execution.effect, timeoutMs: tool.name === "Bash" ? 180000 : 120000,
-      maxTimeoutMs: tool.name === "Bash" ? 180000 : 120000
+      // The command deadline is enforced by the host. Allow provisioning and
+      // result delivery to finish even for the longest supported command.
+      effect: tool.execution.effect,
+      timeoutMs: tool.name === "Bash" ? LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS + 120000 : 120000,
+      maxTimeoutMs: tool.name === "Bash" ? LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS + 120000 : 120000
     })
   }));
 
@@ -439,7 +445,7 @@ export class SandboxToolBroker {
       && !["workspace-write", "trusted-automation"].includes(invocation.policy.preset)) throw denied("sandbox_write_denied");
     if (name === "Bash" && invocation.policy.allowedCommandPrefixes?.length) throw denied("sandbox_command_policy_restricted");
     if (name === "Bash" && (typeof args.command !== "string" || !args.command
-      || Buffer.byteLength(args.command) > 32000 || (args.timeout != null && (!Number.isInteger(args.timeout) || args.timeout < 1 || args.timeout > 60000)))) {
+      || Buffer.byteLength(args.command) > 32000 || (args.timeout != null && (!Number.isInteger(args.timeout) || args.timeout < 1 || args.timeout > LOCAL_TOOLS_BASH_MAX_TIMEOUT_MS)))) {
       throw new Error("Invalid sandbox command or timeout");
     }
     if (FILE_TOOLS.has(name) && args.path == null && ["glob", "grep", "tree"].includes(name)) args.path = "/workspace";
@@ -583,7 +589,7 @@ export class SandboxToolBroker {
                 execution,
                 signal: executionSignal,
                 onStarted: (identity) => tx.execution(identity),
-                timeoutMs: args.timeout || 60000,
+                timeoutMs: args.timeout || (name === "Bash" ? LOCAL_TOOLS_BASH_DEFAULT_TIMEOUT_MS : 60000),
                 internal: name !== "Bash",
                 maxOutputBytes: args._plugin_data
                   ? MAX_FILE_BYTES + 512 * 1024
