@@ -530,16 +530,28 @@ export class PostgresSharingStore {
       for (const origin of [...new Set(rows.map(row => row.origin_space_id))]) {
         const shares = rows.filter(row => row.origin_space_id === origin);
         const tree = await this.tree(origin, client);
-        const metadata = new Map((await client.query(`SELECT d.id,d.updated_at,m.meta_json
+        const grantedNodes = new Map(shares.map(grant => [grant.id, pathTo(tree, grant.source_id)?.at(-1)]));
+        const documentIds = new Set();
+        const collect = node => {
+          if (node?.type === "session") documentIds.add(node.id);
+          else if (node?.type === "folder") (node.children || []).forEach(collect);
+        };
+        for (const grant of shares) {
+          if (grant.kind === "document") documentIds.add(grant.source_id);
+          else collect(grantedNodes.get(grant.id));
+        }
+        // A sidebar/tool index only needs granted document names. Do not load
+        // unrelated sessions or the owner's potentially large card metadata.
+        const metadata = new Map((await client.query(`SELECT d.id,d.updated_at,m.meta_json->>'title' AS title
           FROM (SELECT id,MAX(updated_at) AS updated_at FROM
-            (SELECT id,updated_at FROM runtime_workbench_documents WHERE space_id=$1
-              UNION ALL SELECT id,updated_at FROM runtime_sessions WHERE space_id=$1) content GROUP BY id) d
+            (SELECT id,updated_at FROM runtime_workbench_documents WHERE space_id=$1 AND id=ANY($2::text[])
+              UNION ALL SELECT id,updated_at FROM runtime_sessions WHERE space_id=$1 AND id=ANY($2::text[])) content GROUP BY id) d
           LEFT JOIN runtime_workbench_metadata m ON m.space_id=$1 AND m.id=d.id
           WHERE NOT EXISTS (SELECT 1 FROM runtime_workbench_tombstones t WHERE t.space_id=$1 AND t.id=d.id)
             AND NOT EXISTS (SELECT 1 FROM space_documents s WHERE s.space_id=$1 AND s.id=d.id AND s.lifecycle='deleted')`,
-        [origin])).rows.map(row => [row.id, row]));
+        [origin, [...documentIds]])).rows.map(row => [row.id, row]));
         const privateIds = new Set((await client.query(`SELECT document_id FROM account_document_privacy
-          WHERE origin_space_id=$1 AND private`, [origin])).rows.map(row => row.document_id));
+          WHERE origin_space_id=$1 AND document_id=ANY($2::text[]) AND private`, [origin, [...documentIds]])).rows.map(row => row.document_id));
         const roots = new Map();
         const roles = new Map();
         const folderGrants = new Map();
@@ -552,14 +564,14 @@ export class PostgresSharingStore {
           if (origin === own.id) sentIds.add(node.id);
           const meta = metadata.get(node.id);
           const result = { id: node.id, type: node.type,
-            title: String(meta?.meta_json?.title || node.title || grant.name || node.id),
+            title: String(meta?.title || node.title || grant.name || node.id),
             originSpaceId: origin, providerName: grant.owner_name || "", shareId: grant.id };
           if (node.type === "folder") result.children = (node.children || []).map(child => project(child, grant)).filter(Boolean);
           else result.updatedAt = Number(meta?.updated_at || 0);
           return result;
         };
         for (const grant of shares) {
-          let node = pathTo(tree, grant.source_id)?.at(-1);
+          let node = grantedNodes.get(grant.id);
           if (grant.kind === "document" && metadata.has(grant.source_id)) {
             node = { id: grant.source_id, type: "session", title: node?.title || grant.name };
           }
