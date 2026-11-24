@@ -985,7 +985,13 @@ const interactionProfileStore = new FileInteractionProfileStore(
   interactionProfilePath
 );
 if (accountStore) {
-  accessControl.resolveProfile = (id) => {
+  accessControl.resolveProfile = async (id, principal) => {
+    const requesterSpace = principal?.spaceId || principal?.space?.id;
+    if (principal?.contentScope && requesterSpace !== runtimeSpaceId) {
+      const lease = await spaceBroker.acquireRuntime(requesterSpace);
+      try { return await lease.app.resolveContentProfile(id, principal); }
+      finally { lease.release(); }
+    }
     if (id === SANDBOX_TERMINAL_PROFILE_ID) {
       return { id, policy: SANDBOX_TERMINAL_POLICY };
     }
@@ -1435,6 +1441,9 @@ function createSessionManagerPluginService({ workbenchState }) {
         principal = { kind: "account", user: { id: principal.userId },
           space: await accountStore.space(principal.spaceId), contentScope: principal.contentScope };
       }
+      // Session tools browse the actor's account catalog and its received
+      // documents. The Run's original grant still guards the shared document.
+      principal = { ...principal, contentScope: undefined };
       const store = createAuthorizedWorkbenchStore({ store: workbenchState, spaces: sharedSpaces, principal });
       return createSessionManagerSharingService({ store, sharing, principal,
         readSharedSession: async (contentPrincipal, id) => {
@@ -1754,6 +1763,14 @@ try {
 collaboration.setDocumentProjector(sessionDocumentProjector);
 const extensionExecution = marketplace ? new ExtensionExecutionService({
   runs,
+  resolveRun: async context => {
+    const origin = context.principal?.contentScope?.originSpaceId;
+    if (!origin || origin === runtimeSpaceId) return runs.get(context.runId);
+    await accessControl.authorizeRunExecution(context);
+    const lease = await spaceBroker.acquireRuntime(origin);
+    try { return await lease.app.readContentRun(context); }
+    finally { lease.release(); }
+  },
   marketplace, tools: () => tools,
   resolveConfig: async (config, principal) => {
     if (config.nodeId !== "managed:account") return config;
@@ -1824,7 +1841,7 @@ if (extensionExecution) extensionExecution.publishEvents = (...args) => extensio
 startupCleanup.push(() => extensionOutbox?.close());
 startupCleanup.push(() => extensionExecution?.bridge.close());
 const pluginTools = withExtensionTools(runtimePlugins, extensionExecution);
-const runtimeTools = new RuntimeToolBroker({
+const runtimeToolOptions = {
   localTools: analysisTools,
   pluginTools,
   receipts: runs,
@@ -1843,8 +1860,30 @@ const runtimeTools = new RuntimeToolBroker({
     }
     return authorized;
   }
-});
-tools = sharedRuntime ? sharedRuntime.wrapTools(runtimeTools) : runtimeTools;
+};
+const runtimeTools = new RuntimeToolBroker(runtimeToolOptions);
+const contentToolBrokers = new WeakMap();
+const accountTools = {
+  get supportedToolNames() { return runtimeTools.supportedToolNames; },
+  getToolDefinitions: () => runtimeTools.getToolDefinitions(),
+  async listTools(request) {
+    if (!request.principal?.contentScope || request.principal.spaceId === runtimeSpaceId) {
+      return runtimeTools.listTools(request);
+    }
+    const lease = await spaceBroker.acquireRuntime(request.principal.spaceId);
+    try { return await lease.app.listContentTools(request); }
+    finally { lease.release(); }
+  },
+  async invoke(invocation, signal) {
+    if (!invocation.principal?.contentScope || invocation.principal.spaceId === runtimeSpaceId) {
+      return runtimeTools.invoke(invocation, signal);
+    }
+    const lease = await spaceBroker.acquireRuntime(invocation.principal.spaceId);
+    try { return await lease.app.invokeContentTool(invocation, signal); }
+    finally { lease.release(); }
+  }
+};
+tools = sharedRuntime ? sharedRuntime.wrapTools(accountTools) : accountTools;
 observabilityProjection.tools = new Set(tools.supportedToolNames);
 observabilityProjection.start();
 const knownToolDefinitions = new Map(
@@ -2004,7 +2043,7 @@ const deviceServiceWebSocketHandler = createDeviceServiceWebSocketHandler({
     : null
 });
 const listRunControllers = (request) => {
-  if (request?.principal?.contentScope) return [];
+  if (request?.principal?.contentScope && request.principal.spaceId !== runtimeSpaceId) return [];
   const controllers = [...runtimePlugins.getRunControllers(), ...configuredRunControllers];
   if (new Set(controllers.map((controller) => controller.id)).size !== controllers.length) {
     throw new Error("Duplicate Runtime Hook controller id");
@@ -2018,14 +2057,37 @@ executor = createAgentExecutor({
   contexts: runtimePlugins.getContextProviders().map(provider => ({ ...provider,
     id: provider.id, order: provider.order, stage: provider.stage, required: provider.required,
     ...(provider.prepare ? { prepare: async context => context.request?.principal?.contentScope
-      && provider.id !== "dev.identity.context" ? null : provider.prepare(context) } : {}),
+      && context.request.principal.spaceId !== runtimeSpaceId ? null : provider.prepare(context) } : {}),
     ...(provider.contribute ? { contribute: async (messages, context) => context.request?.principal?.contentScope
-      && provider.id !== "dev.identity.context" ? messages : provider.contribute(messages, context) } : {})
+      && context.request.principal.spaceId !== runtimeSpaceId ? messages : provider.contribute(messages, context) } : {})
   })),
   controllers: [],
   bindRun: async (request, context) => {
     const spaceBindings = await sharedRuntime?.prepare(request, context);
-    const bindings = spaceBindings || (extensionBindings ? await extensionBindings.prepare(request, context) : {});
+    let callerLease, resourceBindings = {};
+    try {
+      if (request.principal?.contentScope && request.principal.spaceId !== runtimeSpaceId) {
+        callerLease = await spaceBroker.acquireRuntime(request.principal.spaceId);
+        resourceBindings = await callerLease.app.prepareContentBindings(request, context);
+      } else if (extensionBindings) resourceBindings = await extensionBindings.prepare(request, context);
+    } catch (error) {
+      callerLease?.release();
+      await spaceBindings?.dispose?.();
+      throw error;
+    }
+    const bindings = {
+      ...resourceBindings,
+      contexts: [...(spaceBindings?.contexts || []), ...(resourceBindings.contexts || [])],
+      controllers: [...(spaceBindings?.controllers || []), ...(resourceBindings.controllers || [])],
+      metadata: { ...resourceBindings.metadata, ...spaceBindings?.metadata },
+      async dispose() {
+        try { await resourceBindings.dispose?.(); }
+        finally {
+          try { await spaceBindings?.dispose?.(); }
+          finally { callerLease?.release(); }
+        }
+      }
+    };
     try {
       let model = !spaceBindings && accountModelEngine ? await accountModelEngine.prepare(request, context) : {};
       if (request.principal?.contentScope && isExtensionModel(request.model)) {
@@ -2481,7 +2543,60 @@ async function shutdown() {
   if (failures.length) throw new AggregateError(failures, "Runtime cleanup failed");
 }
 return {
-  runtime, accessControl, credentials, listModelProfiles, documentStore: workbenchState, sharing,
+  runtime, accessControl, credentials, listModelProfiles, documentStore: workbenchState, sharing, runStore: runs,
+  async readContentRun(context) {
+    if (context.principal?.contentScope?.originSpaceId !== runtimeSpaceId) {
+      throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    }
+    await accessControl.authorizeRunExecution(context);
+    const run = await runs.get(context.runId);
+    if (!run || run.principal?.userId !== context.principal.userId
+      || run.principal?.grantId !== context.principal.grantId) {
+      throw Object.assign(new Error("content_run_denied"), { statusCode: 403 });
+    }
+    return run;
+  },
+  async resolveContentProfile(id, principal) {
+    if ((principal?.spaceId || principal?.space?.id) !== runtimeSpaceId || !principal.contentScope) {
+      throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    }
+    await sharing.documentAccess(principal.userId || principal.user?.id, contentSpaceId(principal),
+      principal.contentScope.documentId, "edit");
+    return id === SANDBOX_TERMINAL_PROFILE_ID
+      ? { id, policy: SANDBOX_TERMINAL_POLICY } : interactionProfileStore.get(id);
+  },
+  async listContentTools(request) {
+    if (request.principal?.spaceId !== runtimeSpaceId || !request.principal.contentScope) {
+      throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    }
+    const policy = await accessControl.authorizeRunExecution(request);
+    return runtimeTools.listTools({ ...request, policy });
+  },
+  async invokeContentTool(invocation, signal) {
+    if (invocation.principal?.spaceId !== runtimeSpaceId || !invocation.principal.contentScope) {
+      throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    }
+    await accessControl.authorizeInvocation(invocation);
+    const lease = await spaceBroker.acquireRuntime(invocation.principal.contentScope.originSpaceId);
+    try {
+      await lease.app.readContentRun(invocation);
+      let broker = contentToolBrokers.get(lease.app.runStore);
+      if (!broker) {
+        broker = new RuntimeToolBroker({ ...runtimeToolOptions, receipts: lease.app.runStore });
+        contentToolBrokers.set(lease.app.runStore, broker);
+      }
+      return await broker.invoke(invocation, signal);
+    } finally { lease.release(); }
+  },
+  async prepareContentBindings(request, context) {
+    if (request.principal?.spaceId !== runtimeSpaceId || !request.principal.contentScope) {
+      throw Object.assign(new Error("content_resource_denied"), { statusCode: 403 });
+    }
+    await accessControl.authorizeRunExecution(request);
+    const bindings = extensionBindings ? await extensionBindings.prepare(request, context) : {};
+    return { ...bindings, contexts: [...runtimePlugins.getContextProviders(), ...(bindings.contexts || [])],
+      controllers: [...listRunControllers(request), ...(bindings.controllers || [])] };
+  },
   listDocumentPresence: documentId => collaboration.listDocumentPresence(documentId),
   listDocumentVisitors: (documentId, options) => collaboration.listDocumentVisitors(documentId, options),
   registerDocumentVisit: (documentId, input) => collaboration.registerDocumentVisit(documentId, input),

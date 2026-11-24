@@ -3,6 +3,7 @@ import { CancellationController, createAgentExecutor, MemoryRunStore } from "../
 import { SpaceCapabilityBroker, SharedSpaceRuntime, SPACE_CAPABILITY_TOOL } from "../src/spaces/space-runtime.mjs";
 import { createProviderCapabilities } from "../src/spaces/provider-capabilities.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
+import { workflowScope } from "../../../packages/plugin-sdk/src/runtime-workflow.mjs";
 
 const principal = { userId: "bob", spaceId: "together", version: 1, grantId: "grant", kind: "user" };
 const policy = { preset: "trusted-automation", allowedTools: ["webFetch", "spaceCapabilityCall"], maxToolCalls: 5 };
@@ -56,6 +57,33 @@ function fixture() {
 }
 
 describe("shared Space execution through the actual Agent executor", () => {
+  it("separates private and foreign document workflow state even when their document IDs match", () => {
+    const own = workflowScope({ sessionId: "same-id", principal });
+    const shared = originSpaceId => workflowScope({ sessionId: "same-id",
+      principal: { ...principal, contentScope: { originSpaceId, documentId: "same-id" } } });
+    expect(shared("together").key).toBe(own.key);
+    expect(shared("provider-a").key).not.toBe(own.key);
+    expect(shared("provider-a").key).not.toBe(shared("provider-b").key);
+  });
+  it("preserves account tools and their targets in document shares, and rechecks authority before replay", async () => {
+    const h = fixture(), parent = new CancellationController();
+    const request = { ...h.request, principal: { ...principal, contentScope: {
+      originSpaceId: "together", documentId: "document" } },
+      policy: { ...policy, allowedTools: ["Bash", "write"] }, target: { nodeId: "caller-node" } };
+    h.rawTools.listTools.mockResolvedValue([{ name: "Bash" }, { name: "write" }]);
+    h.runtime.authorizeExecution = vi.fn(async () => {});
+    await h.runtime.prepare(request, { runId: "account-run", signal: parent.signal });
+    const tools = h.runtime.wrapTools(h.rawTools);
+    expect((await tools.listTools(request)).map(tool => tool.name)).toEqual(["Bash", "write"]);
+    const invocation = { ...request, runId: "account-run", invocationId: "account-tool",
+      toolCall: { name: "Bash", arguments: { command: "pwd" } } };
+    expect((await tools.invoke(invocation, parent.signal)).ok).toBe(true);
+    expect(h.rawTools.invoke).toHaveBeenCalledWith(expect.objectContaining({
+      target: { nodeId: "caller-node" }, principal: request.principal }), parent.signal);
+    h.runtime.authorizeExecution.mockRejectedValueOnce(Object.assign(new Error("revoked"), { code: "grant_revoked" }));
+    await expect(tools.invoke(invocation, parent.signal)).rejects.toMatchObject({ code: "grant_revoked" });
+    expect(h.rawTools.invoke).toHaveBeenCalledOnce();
+  });
   it("makes only currently authorized shared resources available by default, with explicit opt-out", async () => {
     const h = fixture(), controller = new CancellationController();
     h.spaces.bindings = vi.fn(async () => [

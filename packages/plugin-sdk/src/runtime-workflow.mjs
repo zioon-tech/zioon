@@ -11,9 +11,12 @@ export function workflowScope(context) {
   const request = context.request || context;
   const sessionId = String(context.sessionId || request.sessionId || "");
   if (!sessionId) throw new Error("A persistent Session is required");
-  const owner = workflowOwner(context.principal || request.principal);
+  const principal = context.principal || request.principal;
+  const owner = workflowOwner(principal);
   if (owner.some((part) => !part)) throw new Error("Workflow owner is required");
-  return { sessionId, owner, key: createHash("sha256").update(JSON.stringify([...owner, sessionId])).digest("hex") };
+  const origin = principal?.contentScope?.originSpaceId;
+  const identity = origin && origin !== owner[0] ? [...owner, origin, sessionId] : [...owner, sessionId];
+  return { sessionId, owner, key: createHash("sha256").update(JSON.stringify(identity)).digest("hex") };
 }
 
 export function canonicalJson(value) {

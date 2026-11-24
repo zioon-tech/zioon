@@ -5,7 +5,6 @@ import { accountError, roleScopes, intersectAccountPolicy } from "./account-poli
 import { verifyMemoryDelegation } from "./memory-delegation.mjs";
 import { resolveMemoryScope } from "../spaces/memory-scope.mjs";
 import { authorizeContentScope, contentSpaceId, assertContentRun } from "../sharing/content-scope.mjs";
-import { SHARED_DOCUMENT_SAFE_TOOLS } from "../spaces/space-runtime.mjs";
 import { measureRequestStage } from "../request-performance.mjs";
 
 const writeMethod = (method) => !["GET", "HEAD", "OPTIONS"].includes(method);
@@ -312,13 +311,12 @@ export class AccountAccessControl extends RuntimeAccessControl {
     const contentScope = principal.contentScope || (sharedDocument ? {
       originSpaceId: spaceId, documentId: request.sessionId, ownerId: principal.user.id
     } : null);
-    if (contentScope) {
-      policy = { ...policy, allowedTools: policy.allowedTools.filter(t => SHARED_DOCUMENT_SAFE_TOOLS.has(t)),
-        maxMailPerRun: 0, allowedRecipients: [], allowedCommandPrefixes: [], allowedTerminalSessionIds: [] };
-      request = { ...request, projectId: undefined, target: undefined,
-        metadata: Object.fromEntries(Object.entries(request.metadata || {}).filter(([key]) =>
-          ["interactionProfileId", "documentProjection", "workbenchClientId", "clientRequestId", "source", "documentRevision"].includes(key))) };
-    }
+    // Content ownership scopes document access, not the caller's tool authority.
+    // Space-provider bindings are a separate delegation and cannot be injected
+    // by an account document share.
+    if (contentScope) request = { ...request, metadata: Object.fromEntries(
+      Object.entries(request.metadata || {}).filter(([key]) =>
+        !["identity", "spaceBindingId", "spaceCapabilities", "sharedCapabilities", "sharedDocumentId"].includes(key))) };
     return {
       ...request,
       principal: await this.accounts.issueGrant(principal.user.id, policy, {
@@ -350,7 +348,7 @@ export class AccountAccessControl extends RuntimeAccessControl {
         request.interactionProfileId || request.metadata?.interactionProfileId || grant.profileId
       ]);
       for (const id of profileIds) {
-        const profile = id && this.resolveProfile(id);
+        const profile = id && await this.resolveProfile(id, grant.principal);
         if (!profile?.policy) throw accountError(403, "grant_profile_unavailable");
         const membership = await this.accounts.membership(
           grant.principal.userId,

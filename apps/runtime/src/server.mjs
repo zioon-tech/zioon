@@ -616,7 +616,9 @@ export function createRuntimeServer({
     } else {
       const profileId = runRequest.interactionProfileId
         || runRequest.metadata?.interactionProfileId || DEFAULT_INTERACTION_PROFILE_ID;
-      const profile = interactionProfiles?.get?.(profileId);
+      const profile = accessControl.resolveProfile
+        ? await accessControl.resolveProfile(profileId, principal)
+        : interactionProfiles?.get?.(profileId);
       if (!profile) throw Object.assign(new Error("An administrator-configured interaction profile is required"), {
         statusCode: 403
       });

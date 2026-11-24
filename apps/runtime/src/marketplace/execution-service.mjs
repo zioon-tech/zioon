@@ -46,18 +46,19 @@ export function withExtensionTools(plugins, service) {
 }
 
 export class ExtensionExecutionService {
-  constructor({ marketplace, tools, allowNode, hostBridge, runs, resolveConfig = (config) => config }) {
+  constructor({ marketplace, tools, allowNode, hostBridge, runs, resolveRun, resolveConfig = (config) => config }) {
     this.marketplace = marketplace;
     this.tools = tools;
     this.allowNode = allowNode;
     this.bridge = hostBridge || new ExtensionHostBridge({ tools });
     this.resolveConfig = resolveConfig;
     this.runs = runs;
+    this.resolveRun = resolveRun;
     this.workspace = new InstallationWorkspaceService(this);
   }
 
   async runForContext(context) {
-    const run = this.runs && context.runId ? await this.runs.get(context.runId) : null;
+    const run = context.runId ? await (this.resolveRun ? this.resolveRun(context) : this.runs?.get(context.runId)) : null;
     if (run && String(run.principal?.userId || run.principal?.user?.id || "")
       !== String(context.principal?.userId || context.principal?.user?.id || "")) {
       fail("extension_run_account_denied", "扩展调用不属于当前账户");
