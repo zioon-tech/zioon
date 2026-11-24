@@ -4,8 +4,10 @@ import { PostgresWorkbenchStateStore } from "../src/postgres-workbench-state-sto
 describe("deleted Workbench session persistence", () => {
   function fixture(deleted = true) {
     const store = Object.create(PostgresWorkbenchStateStore.prototype);
-    const client = { query: vi.fn(async () => ({ rows: [] })) };
+    const client = { query: vi.fn(async sql => String(sql).includes("runtime_collaboration_storage_mode")
+      ? { rows: [{ mode: "incremental" }] } : { rows: [] }) };
     Object.assign(store, {
+      pool: { query: client.query, connect: async () => client },
       spaceId: "s", now: () => 1,
       duplicateOperation: async () => null,
       revision: async () => "r",
@@ -16,7 +18,7 @@ describe("deleted Workbench session persistence", () => {
       stateTree: async () => ({ id: "root", type: "folder", children: [] }),
       rebuildIndexFromTree: async () => [], bumpRevision: async () => "r2",
       recordEvent: async () => ({ sequence: 1 }), recordOperation: async () => {},
-      transaction: action => action(client, [])
+      transaction: action => action(client, [], [])
     });
     return { store, client };
   }

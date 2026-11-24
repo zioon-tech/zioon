@@ -23,6 +23,70 @@ function prepare(source: string, offset = source.length) {
 const finish = document => projector.projectEvents({ document, runId: "r", events: events() });
 
 describe("final document projection", () => {
+  it("publishes one prepared final tool body per batch while preserving arguments and anchors", () => {
+    const document = new Y.Doc();
+    const text = document.getText("content");
+    text.insert(0, "user question");
+    const anchor = Y.createRelativePositionFromTypeIndex(text, 4);
+    const argumentsValue = { text: "参数".repeat(2_000), count: 0, nullable: null };
+    const result = { output: "结果".repeat(2_000), ok: false, values: [] };
+    const batch = [
+      { runId: "r", sequence: 1, type: "tool.requested", data: { callId: "c", name: "read", arguments: argumentsValue } },
+      { runId: "r", sequence: 2, type: "tool.completed", data: { callId: "c", result, artifactIds: ["artifact"] } }
+    ];
+    const plan = projector.planCards({ document, runId: "r", events: batch });
+    const full = plan.cards.get("tool:r:c");
+    expect(full).toMatchObject({ args: argumentsValue, result, ok: true, artifactIds: ["artifact"], sequence: 2 });
+    const { args, result: ignored, ...header } = full;
+    const compact = { ...header, bodyRef: "a".repeat(64), bodySessionId: "s", bodyKind: "tools", bodyBytes: 24000 };
+    let prepared = 0;
+    projector.projectEvents({ document, runId: "r", events: batch, prepareCard(card) {
+      prepared++;
+      expect(card).toEqual(full);
+      return compact;
+    } });
+    expect(prepared).toBe(1);
+    expect(document.getMap("cards").get("tool:r:c")).toEqual(compact);
+    expect(text.toString().match(/zion-tool:id=tool:r:c/g)).toHaveLength(1);
+    expect(Y.createAbsolutePositionFromRelativePosition(anchor, document)?.index).toBe(4);
+    const restored = new Y.Doc();
+    try {
+      Y.applyUpdate(restored, Y.encodeStateAsUpdate(document));
+      expect(restored.getMap("cards").get("tool:r:c")).toEqual(compact);
+      expect(JSON.stringify(restored.getMap("cards").toJSON())).not.toContain(argumentsValue.text);
+    } finally { document.destroy(); restored.destroy(); }
+  });
+
+  it("continues a completed referenced reasoning segment from its hydrated predecessor", () => {
+    const document = new Y.Doc();
+    const original = { id: "thinking:r:seg", kind: "thinking", runId: "r", segmentKey: "seg",
+      text: "完整思考".repeat(1000), status: "completed", sequence: 2 };
+    document.getMap("cards").set(original.id, { ...original, text: undefined, bodyRef: "a".repeat(64) });
+    document.getMap("runProjection").set("r", { lastSequence: 2, reasoningIds: { seg: original.id }, reasoningCount: 1 });
+    const batch = [
+      { runId: "r", sequence: 3, type: "reasoning.delta", data: { reasoningSegmentId: "seg", delta: "，继续。" } },
+      { runId: "r", sequence: 4, type: "reasoning.completed", data: { reasoningSegmentId: "seg" } }
+    ];
+    const readCard = id => id === original.id ? original : undefined;
+    const plan = projector.planCards({ document, runId: "r", events: batch, readCard });
+    expect(plan.cards.get(original.id).text).toBe(original.text + "，继续。");
+    projector.projectEvents({ document, runId: "r", events: batch, readCard });
+    expect(document.getMap("cards").get(original.id).text).toBe(original.text + "，继续。");
+    expect(document.getMap("cards").get(original.id)).not.toHaveProperty("bodyRef");
+    expect(projector.planCards({ document, runId: "r", events: batch }).cards.size).toBe(0);
+    document.destroy();
+  });
+
+  it("does not prepare card bodies for a detached projection", () => {
+    const document = new Y.Doc();
+    document.getMap("runProjection").set("r", { detached: true, lastSequence: 0 });
+    const batch = [{ runId: "r", sequence: 1, type: "tool.completed", data: { callId: "c", result: "body" } }];
+    expect(projector.planCards({ document, runId: "r", events: batch }).cards.size).toBe(0);
+    expect(projector.projectEvents({ document, runId: "r", events: batch })).toBe(false);
+    expect(document.getMap("cards").size).toBe(0);
+    document.destroy();
+  });
+
   it.each(["live", "final"])("appends a single durable input only at tail completion (%s)", mode => {
     const { document, text, anchor } = prepare("user question");
     document.getMap("runProjection").delete("r");

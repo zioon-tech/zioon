@@ -6,6 +6,7 @@ import { createAccountOidcFixture } from "./helpers/account-oidc-fixture.mjs";
 import { startAccountRuntimeFixture, browserAccountLogin } from "./helpers/account-runtime-fixture.mjs";
 import { createDocumentLinkHttpHandler } from "../src/sharing/document-link-http-handler.mjs";
 import { createDocumentPresenceHttpHandler } from "../src/sharing/document-presence-http-handler.mjs";
+import { COLLABORATION_PROTOCOL } from "../src/collaboration-service.mjs";
 import { HocuspocusProvider } from "@hocuspocus/provider";
 import WebSocket from "ws";
 import * as Y from "yjs";
@@ -18,7 +19,7 @@ async function fixture() {
   const runtime = await startAccountRuntimeFixture({ directory, spaceId: "space:link-fixture", idp }); cleanup.push(runtime.close);
   const api = async (user, path, body, method = body === undefined ? "GET" : "POST") => {
     const response = await fetch(runtime.url + path, { method, headers: { cookie: user.cookie, origin: runtime.url,
-      "content-type": "application/json", "x-zion-workbench-protocol": "5",
+      "content-type": "application/json", "x-zion-workbench-protocol": "6",
       ...(user.spaceId ? { "x-zioon-space-id": user.spaceId } : {}),
       ...(user.scope ? { "x-zioon-content-space": user.scope.origin, "x-zioon-content-document": user.scope.doc } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -108,7 +109,7 @@ describe("document links through the native gateway, OIDC and image storage", ()
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Owner socket timed out")), 4000);
       provider = new HocuspocusProvider({ url: `${h.runtime.url.replace(/^http/, "ws")}/v1/collaboration?${new URLSearchParams({
-        protocol: "6", space: h.owner.spaceId })}`, name: doc, document: ydoc, token: "", WebSocketPolyfill: OwnerSocket,
+        protocol: COLLABORATION_PROTOCOL, space: h.owner.spaceId })}`, name: doc, document: ydoc, token: "", WebSocketPolyfill: OwnerSocket,
         onSynced() { clearTimeout(timer); resolve(); }, onAuthenticationFailed({ reason }) { clearTimeout(timer); reject(new Error(reason)); } });
     });
     cleanup.push(() => { provider.destroy(); ydoc.destroy(); });

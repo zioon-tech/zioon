@@ -16,6 +16,22 @@ function createEditor(initialText = "") {
 }
 
 describe("EditorCore session-load history", () => {
+  it.each([
+    { remote: "remote\nuser question\nassistant answer", cursor: 22 },
+    { remote: "user question\nassistant answer\nnew tail", cursor: 15 }
+  ])("preserves positions in unchanged text during hydration: $remote", ({ remote, cursor }) => {
+    const { core, cleanup } = createEditor("user question\nassistant answer");
+    try {
+      core.view.dispatch({ selection: { anchor: 15 } });
+      core.setValue(remote, { source: "collaboration-hydration" });
+      expect(core.getValue()).toBe(remote);
+      expect(core.view.state.selection.main.head).toBe(cursor);
+      expect(undoDepth(core.view.state)).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("does not let undo revert a loaded session back to the previous document", () => {
     const { core, cleanup } = createEditor("");
     try {

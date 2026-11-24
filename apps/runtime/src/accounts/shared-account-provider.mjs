@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createAccountClient } from "../../../../packages/zioon-account/src/client.mjs";
@@ -6,6 +6,7 @@ import { accountPublicUrl, safeReturnTo } from "./oidc-provider.mjs";
 import { accountError } from "./account-policy.mjs";
 import { cookieValue, headerValue } from "../access-control.mjs";
 import { identityStyles } from "./identity-ui.mjs";
+import { measureRequestStage } from "../request-performance.mjs";
 
 const random = () => randomBytes(32).toString("base64url");
 const escape = (value) => String(value || "").replace(/[&<>"']/g, (char) =>
@@ -55,6 +56,7 @@ export async function createSharedAccountProvider({
     issuer, adcOrigin, clientId, callbackUrl: `${origin}/v1/account/callback`,
     scope: "openid profile email zion.api"
   });
+  const validationFlights = new Map();
   await store.pool.query(`CREATE TABLE IF NOT EXISTS account_shared_grants (
     session_id TEXT PRIMARY KEY REFERENCES account_sessions(id) ON DELETE CASCADE,
     issuer TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL, expires_at BIGINT NOT NULL
@@ -209,16 +211,32 @@ export async function createSharedAccountProvider({
         token: tokens.access_token, expiresAt: now() + tokens.expires_in * 1000 });
     },
     async validateSession(principal, { browser = false, cookies = "" } = {}) {
-      const grant = await grantFor(principal.sessionId);
-      if (!grant) {
-        if (browser) throw accountError(401, "authentication_required");
+      // Share only overlapping validations. Each later request still checks the
+      // authority, and browser proofs never share results with bearer requests
+      // or a different browser cookie. Local permissions are rechecked separately.
+      const key = createHash("sha256").update(JSON.stringify([
+        principal.sessionId, principal.user.id, browser, browser ? cookies : ""
+      ])).digest("hex");
+      const existing = validationFlights.get(key);
+      if (existing) return measureRequestStage("auth-identity-shared", () => existing);
+      const pending = (async () => {
+        const grant = await measureRequestStage("auth-grant", () => grantFor(principal.sessionId));
+        if (!grant) {
+          if (browser) throw accountError(401, "authentication_required");
+          return true;
+        }
+        const identity = await measureRequestStage("auth-userinfo", () =>
+          client.userinfo(grant.token, browser ? cookies : undefined));
+        checkIdentity(identity);
+        const linked = await measureRequestStage("auth-link", () =>
+          store.identityForUser(principal.user.id, client.issuer));
+        if (linked?.subject !== identity.sub) throw accountError(401, "authentication_required");
         return true;
-      }
-      const identity = await client.userinfo(grant.token, browser ? cookies : undefined);
-      checkIdentity(identity);
-      const linked = await store.identityForUser(principal.user.id, client.issuer);
-      if (linked?.subject !== identity.sub) throw accountError(401, "authentication_required");
-      return true;
+      })().finally(() => {
+        if (validationFlights.get(key) === pending) validationFlights.delete(key);
+      });
+      validationFlights.set(key, pending);
+      return pending;
     },
     async revokeSession(sessionId) {
       const grant = await grantFor(sessionId).catch(() => null);

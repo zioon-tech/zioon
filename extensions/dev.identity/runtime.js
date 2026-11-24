@@ -696,9 +696,18 @@ export function activateRuntimePlugin(context) {
           return;
         }
         const initialFileContext = postProcessorFileContext(run, memoryRoot);
-        const location = hasDataLocation
-          ? await provider.locationFor(initialFileContext, "write")
-          : null;
+        let location = null;
+        try {
+          location = hasDataLocation
+            ? await provider.locationFor(initialFileContext, "write")
+            : null;
+        } catch (error) {
+          // The accepted task grant is immutable. Retrying an optional memory
+          // write outside that grant cannot succeed, and must not widen it.
+          if (!["policy_outside_grant", "file_write_denied", "file_outside_grant"].includes(error?.code)) throw error;
+          context.log?.("info", `biography distillation skipped for run ${run.runId}: ${error.code}`);
+          return;
+        }
         const fileRoot = String(location?.root || memoryRoot).trim();
         if (!fileRoot) return;
         context.log?.(

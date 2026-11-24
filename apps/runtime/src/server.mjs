@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
+import { measureRequestStage, withRequestPerformance } from "./request-performance.mjs";
 import { CancellationController, normalizeModelProviderMetadata, dispatchRunHook } from "../../../packages/runtime/dist/index.js";
 import { parseByteSize, requestBodyLimitError } from "../../../packages/node-protocol/src/index.mjs";
 import { DEFAULT_INTERACTION_PROFILE_ID, resolveInteractionRequest } from "./interaction-profile-store.mjs";
@@ -19,6 +20,7 @@ import {
   createConversationInputSnapshot
 } from "./conversation-input.mjs";
 import { createMobileHttpHandler } from "./mobile-http-handler.mjs";
+import { sessionMetadataChanges } from "../../../packages/runtime-client/src/session-metadata.mjs";
 import {
   deriveSessionTitleFromContent,
   isPlaceholderSessionTitle
@@ -469,9 +471,11 @@ function allowBrowserOrigin(request, response, accessControl) {
   response.setHeader("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   response.setHeader(
     "access-control-allow-headers",
-    "content-type, authorization, last-event-id, x-api-key, api-key, "
-    + "anthropic-version, anthropic-beta, x-zion-workbench-protocol, x-zioon-space-id"
+    "content-type, authorization, last-event-id, if-none-match, x-api-key, api-key, "
+    + "anthropic-version, anthropic-beta, x-zion-workbench-protocol, x-zioon-space-id, "
+    + "x-zion-navigation-id, x-zion-read-source"
   );
+  response.setHeader("access-control-expose-headers", "etag, server-timing, x-zion-request-id");
   response.setHeader("vary", "Origin");
   return true;
 }
@@ -757,10 +761,17 @@ export function createRuntimeServer({
   const presentSession = async (session) => {
     if (!session?.id) return session;
     const presentation = await presentationForSession(session.id);
-    return presentation?.title
+    const presented = presentation?.title
       && !isPlaceholderSessionTitle(presentation.title, session.id, presentation)
       ? { ...session, title: String(presentation.title) }
       : session;
+    return {
+      ...presented,
+      ...(presentation?.model ? { model: presentation.model } : {}),
+      ...(presentation?.skills ? {
+        metadata: { ...presented.metadata, skills: presentation.skills }
+      } : {})
+    };
   };
   const activeRunForSession = async (sessionId) => {
     const handle = sessionHandles.get(sessionId);
@@ -1009,7 +1020,15 @@ export function createRuntimeServer({
     });
     for (const processor of processors) {
       try {
-        await accessControl?.authorizeRunExecution?.(postProcessRequest);
+        try {
+          await accessControl?.authorizeRunExecution?.(postProcessRequest);
+        } catch (error) {
+          // Deletion withdraws permission for optional postprocessing. Confirm
+          // the tombstone so temporary authorization failures remain retryable.
+          if (error?.code === "document_not_found"
+            && (await sessionEventStore?.readSession?.(context.sessionId))?.deleted) return;
+          throw error;
+        }
         await processor.process(context);
       } catch (error) {
         if (retryErrors) throw error;
@@ -1089,6 +1108,9 @@ export function createRuntimeServer({
             }
             await sessionDocumentService?.reconcileTranscript?.(run.sessionId, await sessions.getSessionMessages(run.sessionId), run.id);
             } catch (error) {
+              // A tombstone is permanent. Keep the accepted Run and transcript,
+              // but do not recreate a deleted working copy or retry forever.
+              if (error.code === "session_deleted") return;
               // Revocation discards document projection, while retaining the
               // accepted Run's facts. It must not hold the writer forever.
               if (!accessControl?.sharedSpaces || !["document_not_found", "space_membership_required"].includes(error.code)) throw error;
@@ -1452,13 +1474,14 @@ export function createRuntimeServer({
           ok: true,
           service: "zion-runtime",
           authRequired: !!accessControl,
-          ...serviceInfo
+          ...serviceInfo,
+          ...(accessControl?.mode ? { authMode: accessControl.mode } : {})
         });
         return;
       }
 
       if (accessControl) {
-        request.zionPrincipal = await accessControl.authorizeRuntimeRequest(request);
+        request.zionPrincipal = await measureRequestStage("auth", () => accessControl.authorizeRuntimeRequest(request));
       }
       const pluginCommandPath = url.pathname.match(/^\/v1\/plugins\/([^/]+)\/commands$/);
       if (request.method === "POST" && pluginCommandPath && pluginCommands) {
@@ -2133,6 +2156,7 @@ export function createRuntimeServer({
         if (projectionFailure) {
           throw projectionFailure[1];
         }
+        session = await presentSession(session);
         session = await maybeAutoTitleSession(session, {
           history,
           content: canonicalContent,
@@ -2426,6 +2450,24 @@ export function createRuntimeServer({
           });
           return;
         }
+        // Both clients read the same Workbench metadata. A Mobile model/Skill
+        // edit must survive a later Workbench metadata save and vice versa.
+        if (sessionEventStore?.updateSession && (patch.model || patch.metadata?.skills)) {
+          const base = await presentationForSession(sessionId);
+          if (base) {
+            const desired = { ...base,
+              ...(patch.model ? { model: patch.model } : {}),
+              ...(patch.metadata?.skills ? { skills: patch.metadata.skills } : {})
+            };
+            const result = await sessionEventStore.updateSession(sessionId, {
+              meta_changes: sessionMetadataChanges(base, desired)
+            });
+            if (result?.ok === false) {
+              json(response, 409, { error: "Session configuration changed; refresh and retry" });
+              return;
+            }
+          }
+        }
         const session = await sessions.updateSession(sessionId, patch, Date.now());
         publishSessionEvent("session.updated", {
           sessionId,
@@ -2513,8 +2555,8 @@ export function createRuntimeServer({
         "/projection/stream"
       );
       if (request.method === "GET" && projectionStreamRunId) {
+        response.setHeader("content-type", "text/event-stream; charset=utf-8");
         response.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache, no-transform",
           connection: "keep-alive",
           "x-zion-stream-mode": "projection"
@@ -2648,8 +2690,8 @@ export function createRuntimeServer({
 
       const streamRunId = matchRunPath(url.pathname, "/events/stream");
       if (request.method === "GET" && streamRunId) {
+        response.setHeader("content-type", "text/event-stream; charset=utf-8");
         response.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache, no-transform",
           connection: "keep-alive"
         });
@@ -2836,7 +2878,12 @@ export function createRuntimeServer({
       json(response, 404, { error: "Not found" });
     } catch (error) {
       if (response.headersSent) {
-        response.end();
+        if (!response.destroyed && !response.writableEnded
+          && String(response.getHeader("content-type") || "").startsWith("text/event-stream")) {
+          response.end(`event: error\ndata: ${JSON.stringify(errorPayload(error))}\n\n`);
+        } else {
+          response.end();
+        }
         return;
       }
       json(response, Number(error?.statusCode || 500), errorPayload(error));
@@ -2845,7 +2892,9 @@ export function createRuntimeServer({
       releaseAdmission?.();
     }
   };
-  const server = createServer(handleRequest);
+  const measuredHandleRequest = (request, response) =>
+    withRequestPerformance(request, response, () => handleRequest(request, response));
+  const server = createServer(measuredHandleRequest);
   const normalizedUpgradeHandlers = (Array.isArray(upgradeHandlers)
     ? upgradeHandlers
     : []
@@ -2862,7 +2911,7 @@ export function createRuntimeServer({
   if (normalizedUpgradeHandlers.length) server.on("upgrade", handleUpgrade);
 
   return {
-    handleRequest,
+    handleRequest: measuredHandleRequest,
     handleUpgrade,
     async abortRun(runId, reason = "user") {
       const handle = handles.get(runId);

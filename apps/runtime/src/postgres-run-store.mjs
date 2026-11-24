@@ -2,14 +2,34 @@ import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { gunzip, gzip } from "node:zlib";
 import { snapshotContextMessages } from "./conversation-input.mjs";
+import { archiveHistoricalEvents, eventArchiveReadSql, hydrateEventRows } from "./run-event-archives.mjs";
+import { encodeReceiptBody, hydrateReceiptRows, receiptReadSql, storeReceiptBody } from "./receipt-bodies.mjs";
 
 const SESSION_MESSAGE_COMMAND_STALE_MS = 15 * 60_000;
 const DEFAULT_MODEL_REQUEST_DETAIL_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MODEL_REQUEST_DETAIL_MAX_ROWS = 2_000;
 const DEFAULT_MODEL_REQUEST_DETAIL_MAX_STORED_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MODEL_REQUEST_DETAIL_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const DEFAULT_MODEL_REQUEST_DETAIL_GLOBAL_MAX_BYTES = 512 * 1024 * 1024;
+const DEFAULT_MODEL_REQUEST_DETAIL_GLOBAL_MAX_ROWS = 20_000;
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
+const conversationInputSelect = `SELECT c.*,
+  CASE WHEN c.status='reserved' AND c.reserved_until <= EXTRACT(EPOCH FROM clock_timestamp()) * 1000
+    THEN 'rejected' ELSE c.status END AS effective_status,
+  CASE WHEN c.messages_ref IS NOT NULL
+    THEN runtime_read_message_blob(c.space_id,c.messages_ref) END AS frozen_messages,
+  CASE WHEN c.context_ref IS NOT NULL
+    THEN runtime_read_message_blob(c.space_id,c.context_ref) END AS frozen_context
+  FROM runtime_conversation_inputs c`;
+const pendingMessageSpaceSelect = `SELECT space_id FROM (
+  SELECT space_id FROM runtime_message_blobs WHERE segment_refs IS NULL
+  UNION ALL SELECT space_id FROM runtime_run_inputs
+    WHERE messages_ref IS NULL AND jsonb_typeof(messages_json)='array'
+  UNION ALL SELECT space_id FROM runtime_conversation_inputs
+    WHERE (messages_ref IS NULL AND jsonb_typeof(payload_json->'messages')='array')
+      OR (context_ref IS NULL AND jsonb_typeof(payload_json->'contextMessages')='array')
+) pending WHERE ($1::text IS NULL OR space_id>$1) ORDER BY space_id LIMIT 1`;
 
 function clone(value) {
   if (value == null) return value;
@@ -57,15 +77,17 @@ function summarizeModelRequestEvent(event, { detailAvailable = false } = {}) {
     ? data.payload
     : null;
   if (!requestPayload) {
+    const { detailAvailable: _detailAvailable, rawRunId: _rawRunId,
+      rawEventSequence: _rawEventSequence, ...summary } = data;
     return detailAvailable ? {
       ...event,
       data: {
-        ...data,
+        ...summary,
         detailAvailable: true,
         rawRunId: String(event.runId || ""),
         rawEventSequence: Number(event.sequence)
       }
-    } : event;
+    } : event?.type === "model.request" ? { ...event, data: summary } : event;
   }
   const messages = Array.isArray(requestPayload.messages) ? requestPayload.messages : [];
   const tools = Array.isArray(requestPayload.tools) ? requestPayload.tools : [];
@@ -74,7 +96,9 @@ function summarizeModelRequestEvent(event, { detailAvailable = false } = {}) {
     "model", "presence_penalty", "reasoning_effort", "seed", "stop", "stream",
     "temperature", "thinking", "top_p"
   ];
-  const { payload: _payload, ...metadata } = data;
+  const { payload: _payload, detailAvailable: _detailAvailable, rawRunId: _rawRunId,
+    rawEventSequence: _rawEventSequence, ...metadata } = data;
+  const canonicalPayload = canonicalJson(requestPayload);
   return {
     ...event,
     data: {
@@ -83,8 +107,8 @@ function summarizeModelRequestEvent(event, { detailAvailable = false } = {}) {
       messageCount: messages.length,
       toolCount: tools.length,
       toolNames: Array.from(new Set(tools.map(toolName).filter(Boolean))),
-      payloadBytes: Buffer.byteLength(canonicalJson(requestPayload), "utf8"),
-      payloadHash: hashJson(requestPayload),
+      payloadBytes: Buffer.byteLength(canonicalPayload, "utf8"),
+      payloadHash: createHash("sha256").update(canonicalPayload).digest("hex"),
       messagesHash: hashJson(messages),
       toolsHash: hashJson(tools),
       ...(detailAvailable ? {
@@ -105,7 +129,7 @@ function receiptFromRow(row) {
     runId: String(row.run_id),
     toolName: String(row.tool_name),
     requestHash: String(row.request_hash),
-    result: payload({ payload_json: row.result_json }),
+    result: clone(row.result_json),
     completedAt: Number(row.completed_at)
   } : null;
 }
@@ -121,6 +145,8 @@ export class PostgresRunStore {
     modelRequestDetailMaxStoredBytes =
       DEFAULT_MODEL_REQUEST_DETAIL_MAX_STORED_BYTES,
     modelRequestDetailRetentionMs = DEFAULT_MODEL_REQUEST_DETAIL_RETENTION_MS,
+    modelRequestDetailGlobalMaxBytes = DEFAULT_MODEL_REQUEST_DETAIL_GLOBAL_MAX_BYTES,
+    modelRequestDetailGlobalMaxRows = DEFAULT_MODEL_REQUEST_DETAIL_GLOBAL_MAX_ROWS,
     now = () => Date.now()
   }) {
     if (!pool?.query || !pool?.connect) throw new Error("PostgreSQL Run Store requires a Pool");
@@ -145,6 +171,8 @@ export class PostgresRunStore {
       0,
       Number(modelRequestDetailRetentionMs) || 0
     );
+    this.modelRequestDetailGlobalMaxBytes = Math.max(0, Number(modelRequestDetailGlobalMaxBytes) || 0);
+    this.modelRequestDetailGlobalMaxRows = Math.max(0, Math.floor(Number(modelRequestDetailGlobalMaxRows) || 0));
     this.now = now;
     this.eventListeners = new Set();
   }
@@ -165,13 +193,60 @@ export class PostgresRunStore {
     }
   }
 
-  async runStorageMaintenanceBatch() {
-    return {
-      complete: true,
-      transientEvents: { complete: true, scannedRows: 0, deletedRows: 0, cursor: 0, totalDeletedRows: 0 },
-      checkpoints: { complete: true, deletedRows: 0 },
-      modelRequests: { complete: true, scannedRows: 0, rewrittenRows: 0, cursor: 0 }
-    };
+  async runStorageMaintenanceBatch({ maxRows = 128 } = {}) {
+    const limit = Math.max(1, Math.min(128, Math.floor(Number(maxRows) || 128)));
+    const startedAt = this.now();
+    let phase = "checkpoints";
+    const result = await this.transaction(async client => {
+      await client.query("SET LOCAL lock_timeout = '500ms'");
+      await client.query("SET LOCAL statement_timeout = '2000ms'");
+      // Never remove a waiting/running recovery point, or one whose durable
+      // terminal projection has not finished. Receipts and frozen inputs survive.
+      const checkpoints = await client.query(`WITH eligible AS (
+        SELECT c.space_id,c.run_id,c.sequence FROM runtime_run_checkpoints c
+        JOIN runtime_runs r ON r.space_id=c.space_id AND r.id=c.run_id
+        WHERE c.space_id=$1 AND r.status = 'completed'
+          AND r.updated_at<$2
+          AND NOT EXISTS (SELECT 1 FROM runtime_run_completion_tasks t
+            WHERE t.space_id=c.space_id AND t.run_id=c.run_id AND t.status<>'completed')
+        ORDER BY c.created_at LIMIT $3 FOR UPDATE OF c SKIP LOCKED
+      ) DELETE FROM runtime_run_checkpoints c USING eligible e
+        WHERE c.space_id=e.space_id AND c.run_id=e.run_id AND c.sequence=e.sequence`,
+      [this.spaceId, this.now() - 7 * 24 * 60 * 60_000, limit]);
+      phase = "model-details";
+      const details = await this.maintainModelDetails(client, limit);
+      phase = "message-segments";
+      const inputs = await this.migrateGlobalMessageSegments(client, 1);
+      phase = "event-archives";
+      const transientEvents = await archiveHistoricalEvents(client, {
+        cutoff: this.now() - 7 * 24 * 60 * 60_000, cursor: this.eventArchiveCursor, maxRows: limit,
+        onCandidate: cursor => { this.eventArchiveCursor = cursor; },
+        probeLimits: this.eventArchiveProbeLimits ||= new Map()
+      });
+      this.eventArchiveCursor = transientEvents.cursor;
+      return {
+        complete: checkpoints.rowCount < limit && details.complete && inputs.complete && transientEvents.complete,
+        checkpoints: { complete: checkpoints.rowCount < limit, deletedRows: checkpoints.rowCount },
+        modelRequests: details,
+        inputs,
+        transientEvents
+      };
+    }).catch(error => {
+      this.maintenanceStats = { ...this.maintenanceStats, lastFailedAt: this.now(),
+        phase, elapsedMs: this.now() - startedAt, errorCode: String(error?.code || "unknown"),
+        failures: (this.maintenanceStats?.failures || 0) + 1 };
+      error.maintenancePhase = phase;
+      throw error;
+    });
+    this.maintenanceStats = { ...result, lastCompletedAt: this.now(),
+      phase: "complete", elapsedMs: this.now() - startedAt, failures: this.maintenanceStats?.failures || 0,
+      totalDeletedCheckpoints: (this.maintenanceStats?.totalDeletedCheckpoints || 0) + result.checkpoints.deletedRows,
+      totalDeletedDetails: (this.maintenanceStats?.totalDeletedDetails || 0) + result.modelRequests.deletedDetails,
+      totalSegmentedInputs: (this.maintenanceStats?.totalSegmentedInputs || 0) + result.inputs.rewrittenRows,
+      totalArchivedEvents: (this.maintenanceStats?.totalArchivedEvents || 0) + result.transientEvents.rewrittenRows,
+      totalArchivedRawBytes: (this.maintenanceStats?.totalArchivedRawBytes || 0) + result.transientEvents.rawBytes,
+      totalArchivedCompressedBytes: (this.maintenanceStats?.totalArchivedCompressedBytes || 0) + result.transientEvents.compressedBytes };
+    return result;
   }
 
   async create(record) {
@@ -183,10 +258,12 @@ export class PostgresRunStore {
          VALUES ($1, $2, $3::jsonb, $4, $5)`,
         [this.spaceId, record.id, JSON.stringify(storedRecord), record.status, record.updatedAt]
       );
-      if (Array.isArray(inputMessages)) await client.query(
-        `INSERT INTO runtime_run_inputs (space_id, run_id, messages_json) VALUES ($1, $2, $3::jsonb)`,
-        [this.spaceId, record.id, JSON.stringify(inputMessages)]
-      );
+      if (Array.isArray(inputMessages)) {
+        const ref = await this.storeMessages(client, inputMessages);
+        await client.query(
+          `INSERT INTO runtime_run_inputs (space_id, run_id, messages_json, messages_ref)
+           VALUES ($1, $2, 'null'::jsonb, $3)`, [this.spaceId, record.id, ref]);
+      }
       const inputId = record.metadata?.conversationInputId;
       if (inputId) {
         const claimed = await client.query(
@@ -213,22 +290,24 @@ export class PostgresRunStore {
   async append(inputEvent, patch, detailEvent = null, outbox = [], checkpoint = null, waitId = null) {
     if (!Array.isArray(outbox) || outbox.length > 100) throw new Error("invalid_run_outbox");
     const rawDetailEvent = detailEvent || inputEvent;
-    const rawEvent = rawDetailEvent?.type === "model.request"
+    const captureEnabled = this.modelRequestDetailMaxBytes > 0
+      && this.modelRequestDetailMaxRows > 0
+      && this.modelRequestDetailMaxStoredBytes > 0
+      && this.modelRequestDetailGlobalMaxBytes > 0
+      && this.modelRequestDetailGlobalMaxRows > 0
+      && this.modelRequestDetailRetentionMs > 0;
+    const rawEvent = captureEnabled && rawDetailEvent?.type === "model.request"
       && rawDetailEvent?.data?.payload
       ? JSON.stringify(rawDetailEvent)
       : "";
     const rawBytes = rawEvent ? Buffer.byteLength(rawEvent, "utf8") : 0;
-    const detail = rawBytes > 0
-      && rawBytes <= this.modelRequestDetailMaxBytes
-      && this.modelRequestDetailMaxRows > 0
-      && this.modelRequestDetailMaxStoredBytes > 0
-      && this.modelRequestDetailRetentionMs > 0
+    const detail = rawBytes > 0 && rawBytes <= this.modelRequestDetailMaxBytes
       ? await gzipAsync(Buffer.from(rawEvent, "utf8"), { level: 1 })
       : null;
     const retainedDetail = detail?.length <= this.modelRequestDetailMaxStoredBytes
       ? detail
       : null;
-    const event = summarizeModelRequestEvent(inputEvent, {
+    let event = summarizeModelRequestEvent(inputEvent, {
       detailAvailable: !!retainedDetail
     });
     const written = await this.transaction(async (client) => {
@@ -272,53 +351,22 @@ export class PostgresRunStore {
         ]
       );
       if (retainedDetail) {
-        await client.query(
-          `INSERT INTO runtime_run_event_details
-           (space_id, run_id, sequence, codec, payload_blob,
-            uncompressed_bytes, compressed_bytes, created_at)
-           VALUES ($1, $2, $3, 'gzip-json-v1', $4, $5, $6, $7)`,
+        const captured = await client.query(
+          `SELECT runtime_capture_model_detail($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) AS captured`,
           [
-            this.spaceId,
-            event.runId,
-            event.sequence,
-            retainedDetail,
-            rawBytes,
-            retainedDetail.length,
-            event.timestamp
-          ]
-        );
-        await client.query(
-          `DELETE FROM runtime_run_event_details
-           WHERE space_id = $1 AND created_at < $2`,
-          [this.spaceId, this.now() - this.modelRequestDetailRetentionMs]
-        );
-        await client.query(
-          `WITH ranked AS (
-             SELECT run_id, sequence,
-               ROW_NUMBER() OVER (
-                 ORDER BY created_at DESC, run_id DESC, sequence DESC
-               ) AS row_number,
-               SUM(compressed_bytes) OVER (
-                 ORDER BY created_at DESC, run_id DESC, sequence DESC
-               ) AS retained_bytes
-             FROM runtime_run_event_details
-             WHERE space_id = $1
-           )
-           DELETE FROM runtime_run_event_details target
-           USING ranked
-           WHERE target.space_id = $1
-             AND target.run_id = ranked.run_id
-             AND target.sequence = ranked.sequence
-             AND (
-               ranked.row_number > $2
-               OR ranked.retained_bytes > $3
-             )`,
-          [
-            this.spaceId,
+            this.spaceId, event.runId, event.sequence, retainedDetail, rawBytes, event.timestamp,
             this.modelRequestDetailMaxRows,
-            this.modelRequestDetailMaxStoredBytes
+            this.modelRequestDetailMaxStoredBytes,
+            this.modelRequestDetailGlobalMaxRows,
+            this.modelRequestDetailGlobalMaxBytes
           ]
         );
+        if (!captured.rows[0]?.captured) {
+          event = summarizeModelRequestEvent(inputEvent, { detailAvailable: false });
+          await client.query(`UPDATE runtime_run_events SET payload_json=$4::jsonb
+            WHERE space_id=$1 AND run_id=$2 AND sequence=$3`,
+          [this.spaceId, event.runId, event.sequence, JSON.stringify(event)]);
+        }
       }
       await client.query(
         `UPDATE runtime_runs SET payload_json = $1::jsonb, status = $2, updated_at = $3
@@ -373,8 +421,8 @@ export class PostgresRunStore {
     return { dispose: () => this.eventListeners.delete(listener) };
   }
 
-  async get(runId) {
-    const result = await this.pool.query(
+  async get(runId, client = this.pool) {
+    const result = await client.query(
       "SELECT payload_json FROM runtime_runs WHERE space_id = $1 AND id = $2",
       [this.spaceId, String(runId)]
     );
@@ -420,12 +468,10 @@ export class PostgresRunStore {
 
   async getEvents(runId, afterSequence = 0) {
     const result = await this.pool.query(
-      `SELECT payload_json FROM runtime_run_events
-       WHERE space_id = $1 AND run_id = $2 AND sequence > $3
-       ORDER BY sequence`,
+      eventArchiveReadSql("space_id=$1 AND run_id=$2 AND sequence>$3::bigint"),
       [this.spaceId, String(runId), Number(afterSequence) || 0]
     );
-    return result.rows.map(payload);
+    return hydrateEventRows(result.rows);
   }
 
   async getRunForSpace(runId, spaceId) {
@@ -439,9 +485,7 @@ export class PostgresRunStore {
   } = {}) {
     if (String(spaceId) !== this.spaceId) return [];
     const result = await this.pool.query(
-      `SELECT payload_json FROM runtime_run_events
-       WHERE space_id = $1 AND run_id = $2 AND sequence BETWEEN $3 AND $4
-       ORDER BY sequence`,
+      eventArchiveReadSql("space_id=$1 AND run_id=$2 AND sequence BETWEEN $3::bigint AND $4::bigint"),
       [
         this.spaceId,
         String(runId),
@@ -449,7 +493,7 @@ export class PostgresRunStore {
         Math.max(1, Number(toSequence) || Number.MAX_SAFE_INTEGER)
       ]
     );
-    return result.rows.map(payload);
+    return hydrateEventRows(result.rows);
   }
 
   async getToolCallEventsForSpace(runId, attemptId, callId, spaceId) {
@@ -494,12 +538,28 @@ export class PostgresRunStore {
   }
 
   async projectionStart(since) {
-    const result = await this.pool.query(
-      `SELECT COALESCE(MIN(cursor), 1)::bigint - 1 AS position
-       FROM runtime_run_events WHERE space_id = $1 AND created_at >= $2`,
-      [this.spaceId, Number(since)]
-    );
-    return Number(result.rows[0]?.position || 0);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN READ ONLY");
+      await client.query("SET LOCAL statement_timeout = '3s'");
+      // Fence MIN's cursor-first optimization: with a sparse recent range it
+      // otherwise walks the entire old ledger looking for one qualifying row.
+      const result = await client.query(
+        `WITH recent AS MATERIALIZED (
+           SELECT cursor FROM runtime_run_events
+           WHERE space_id = $1 AND created_at >= $2
+         )
+         SELECT COALESCE(MIN(cursor), 1)::bigint - 1 AS position FROM recent`,
+        [this.spaceId, Number(since)]
+      );
+      await client.query("COMMIT");
+      return Number(result.rows[0]?.position || 0);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async projectionPage(after, limit = 500) {
@@ -553,8 +613,12 @@ export class PostgresRunStore {
 
   async getEvent(runId, sequence) {
     const result = await this.pool.query(
-      `SELECT event.payload_json, detail.codec, detail.payload_blob
+      `SELECT event.*, 'event' AS row_kind,
+         detail.codec AS detail_codec,detail.payload_blob AS detail_blob,
+         a.codec,a.payload_blob,a.raw_bytes,a.event_count
        FROM runtime_run_events event
+       LEFT JOIN runtime_run_event_archives a ON a.space_id=event.space_id
+         AND a.run_id=event.run_id AND a.ref=event.archive_ref
        LEFT JOIN runtime_run_event_details detail
          ON detail.space_id = event.space_id
         AND detail.run_id = event.run_id
@@ -564,9 +628,12 @@ export class PostgresRunStore {
     );
     const row = result.rows[0];
     if (!row) return null;
-    if (row.codec === "gzip-json-v1" && row.payload_blob) {
+    if (row.archive_ref != null) {
+      return (await hydrateEventRows([row, { ...row, row_kind: "archive" }]))[0];
+    }
+    if (row.detail_codec === "gzip-json-v1" && row.detail_blob) {
       try {
-        return JSON.parse((await gunzipAsync(row.payload_blob)).toString("utf8"));
+        return JSON.parse((await gunzipAsync(row.detail_blob)).toString("utf8"));
       } catch {
         // Keep the summary readable if one diagnostic detail is corrupted.
       }
@@ -686,12 +753,17 @@ export class PostgresRunStore {
       // the durable transcript does not duplicate earlier tool/assistant turns.
       const checkpointMessages = payload(checkpoint.rows[0])?.messages || [];
       const lastUser = checkpointMessages.findLastIndex(message => message.role === "user");
-      await client.query(
-        `INSERT INTO runtime_run_inputs
-         (space_id, run_id, messages_json, source, source_checkpoint_sequence)
-         VALUES ($1, $2, $3::jsonb, 'checkpoint', $4) ON CONFLICT DO NOTHING`,
-        [this.spaceId, runId, JSON.stringify(checkpointMessages.slice(0, lastUser + 1)), checkpointSequence]
-      );
+      const existingInput = await client.query("SELECT 1 FROM runtime_run_inputs WHERE space_id=$1 AND run_id=$2",
+        [this.spaceId, runId]);
+      if (!existingInput.rowCount) {
+        const inputRef = await this.storeMessages(client, checkpointMessages.slice(0, lastUser + 1));
+        await client.query(
+          `INSERT INTO runtime_run_inputs
+           (space_id, run_id, messages_json, source, source_checkpoint_sequence, messages_ref)
+           VALUES ($1, $2, 'null'::jsonb, 'checkpoint', $3, $4) ON CONFLICT DO NOTHING`,
+          [this.spaceId, runId, checkpointSequence, inputRef]
+        );
+      }
       if (waitId) {
         const saved = payload(checkpoint.rows[0]);
         if (!saved.pending) return false;
@@ -769,7 +841,10 @@ export class PostgresRunStore {
 
   async getRunInputMessages(runId) {
     const result = await this.pool.query(
-      `SELECT messages_json FROM runtime_run_inputs WHERE space_id = $1 AND run_id = $2`,
+      `SELECT CASE WHEN i.messages_ref IS NOT NULL
+         THEN runtime_read_message_blob(i.space_id,i.messages_ref) ELSE i.messages_json END AS messages_json
+       FROM runtime_run_inputs i
+       WHERE i.space_id = $1 AND i.run_id = $2`,
       [this.spaceId, runId]
     );
     return result.rows[0]?.messages_json ?? null;
@@ -1053,7 +1128,11 @@ export class PostgresRunStore {
 
   conversationInputRow(row) {
     return row ? {
-      ...payload(row), status: row.status, runId: row.run_id,
+      ...payload(row),
+      ...(row.messages_ref ? { messages: clone(row.frozen_messages) } : {}),
+      ...(row.context_ref ? { contextMessages: clone(row.frozen_context) } : {}),
+      status: row.effective_status || row.status,
+      runId: row.run_id,
       baseSequence: Number(row.base_sequence), ordinal: Number(row.ordinal),
       reservedUntil: Number(row.reserved_until),
       response: payload({ payload_json: row.response_json })
@@ -1062,10 +1141,8 @@ export class PostgresRunStore {
 
   async getConversationInput(sessionId, clientRequestId, client = this.pool) {
     const result = await client.query(
-      `SELECT *, CASE WHEN status = 'reserved'
-           AND reserved_until <= EXTRACT(EPOCH FROM clock_timestamp()) * 1000
-         THEN 'rejected' ELSE status END AS status FROM runtime_conversation_inputs
-       WHERE space_id = $1 AND session_id = $2 AND client_request_id = $3`,
+      `${conversationInputSelect}
+       WHERE c.space_id = $1 AND c.session_id = $2 AND c.client_request_id = $3`,
       [this.spaceId, sessionId, clientRequestId]
     );
     return this.conversationInputRow(result.rows[0]);
@@ -1073,16 +1150,16 @@ export class PostgresRunStore {
 
   async getLatestConversationInput(sessionId, client = this.pool) {
     const result = await client.query(
-      `SELECT * FROM runtime_conversation_inputs
-       WHERE space_id = $1 AND session_id = $2 AND status = 'accepted'
-       ORDER BY ordinal DESC LIMIT 1`, [this.spaceId, sessionId]
+      `${conversationInputSelect}
+       WHERE c.space_id = $1 AND c.session_id = $2 AND c.status = 'accepted'
+       ORDER BY c.ordinal DESC LIMIT 1`, [this.spaceId, sessionId]
     );
     return this.conversationInputRow(result.rows[0]);
   }
 
   async getRunConversationInput(runId) {
     const result = await this.pool.query(
-      `SELECT * FROM runtime_conversation_inputs WHERE space_id = $1 AND run_id = $2`,
+      `${conversationInputSelect} WHERE c.space_id = $1 AND c.run_id = $2`,
       [this.spaceId, runId]
     );
     return this.conversationInputRow(result.rows[0]);
@@ -1114,21 +1191,168 @@ export class PostgresRunStore {
         );
         if (!parent.rowCount) throw Object.assign(new Error("Input parent does not belong to this Session"), { statusCode: 400 });
       }
+      const { messages, contextMessages, ...storedSnapshot } = snapshot;
+      const messagesRef = hashJson(messages), contextRef = hashJson(contextMessages);
+      const arrays = new Map([[messagesRef, messages], [contextRef, contextMessages]]);
+      for (const [, array] of [...arrays].sort(([a], [b]) => a.localeCompare(b))) {
+        await this.storeMessages(client, array);
+      }
       const result = await client.query(
         `INSERT INTO runtime_conversation_inputs
          (space_id, session_id, id, client_request_id, fingerprint, principal_id,
-          base_sequence, status, payload_json, response_json, created_at, reserved_until)
+          base_sequence, status, payload_json, response_json, created_at, reserved_until, messages_ref, context_ref)
          VALUES ($1, $2, $3, $4, $5, $6,
            (SELECT COALESCE(MAX(sequence), 0) FROM runtime_session_messages
             WHERE space_id = $1 AND session_id = $2),
            'reserved', $7::jsonb, $8::jsonb, $9,
-           EXTRACT(EPOCH FROM clock_timestamp()) * 1000 + 120000) RETURNING *`,
+           EXTRACT(EPOCH FROM clock_timestamp()) * 1000 + 120000, $10, $11) RETURNING *`,
         [this.spaceId, snapshot.sessionId, snapshot.id, snapshot.clientRequestId,
-          snapshot.fingerprint, snapshot.principalId, JSON.stringify(snapshot),
-          JSON.stringify(response), snapshot.createdAt]
+          snapshot.fingerprint, snapshot.principalId, JSON.stringify(storedSnapshot),
+          JSON.stringify(response), snapshot.createdAt, messagesRef, contextRef]
       );
-      return { reserved: true, input: this.conversationInputRow(result.rows[0]) };
+      return { reserved: true, input: this.conversationInputRow({
+        ...result.rows[0], frozen_messages: messages, frozen_context: contextMessages
+      }) };
     });
+  }
+
+  async storeMessages(client, messages) {
+    if (!Array.isArray(messages)) throw new Error("Immutable messages must be an array");
+    const json = canonicalJson(messages);
+    const ref = createHash("sha256").update(json).digest("hex");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 73198425))", [this.spaceId]);
+    const existing = await client.query(`SELECT 1 FROM runtime_message_blobs
+      WHERE space_id=$1 AND ref=$2 AND segment_refs IS NOT NULL`, [this.spaceId, ref]);
+    if (existing.rowCount) return ref;
+    const segments = new Map();
+    const refs = messages.map(message => {
+      const body = canonicalJson(message);
+      const key = createHash("sha256").update(body).digest("hex");
+      segments.set(key, body);
+      return key;
+    });
+    // Take the manifest lock before segment locks, matching the converter.
+    // Neither representation is visible until every segment commits.
+    await client.query(`INSERT INTO runtime_message_blobs (space_id,ref,messages_json,segment_refs,created_at)
+      VALUES ($1,$2,NULL,$3::text[],$4) ON CONFLICT (space_id,ref) DO UPDATE
+      SET messages_json=NULL,segment_refs=EXCLUDED.segment_refs
+      WHERE runtime_message_blobs.segment_refs IS NULL`,
+    [this.spaceId, ref, refs, this.now()]);
+    // Deterministic insertion order avoids concurrent histories taking shared
+    // segment locks in opposite orders. Batch parameters, preserving all bodies.
+    const entries = [...segments].sort(([a], [b]) => a.localeCompare(b));
+    for (let start = 0; start < entries.length; start += 128) {
+      const batch = entries.slice(start, start + 128);
+      await client.query(`INSERT INTO runtime_message_segments (space_id,ref,message_json,created_at)
+        SELECT $1,item.ref,item.body::jsonb,$4 FROM unnest($2::text[],$3::text[]) AS item(ref,body)
+        ON CONFLICT (space_id,ref) DO NOTHING`,
+      [this.spaceId, batch.map(([key]) => key), batch.map(([, body]) => body), this.now()]);
+    }
+    return ref;
+  }
+
+  async migrateMessageSegments(client, limit) {
+    const gate = await client.query("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 73198425)) AS acquired", [this.spaceId]);
+    if (!gate.rows[0]?.acquired) return { complete: false, rewrittenRows: 0, busy: true };
+    const blobs = await client.query(`SELECT ref,messages_json,messages_json::text AS original_json FROM runtime_message_blobs
+      WHERE space_id=$1 AND segment_refs IS NULL ORDER BY ref
+      LIMIT $2 FOR UPDATE SKIP LOCKED`, [this.spaceId, limit]);
+    for (const row of blobs.rows) {
+      if (hashJson(row.messages_json) !== row.ref) throw new Error("Immutable message blob hash mismatch");
+      await this.storeMessages(client, row.messages_json);
+      const restored = await client.query(`SELECT runtime_read_message_blob($1,$2)=$3::jsonb AS equal`,
+        [this.spaceId, row.ref, row.original_json]);
+      if (!restored.rows[0]?.equal) throw new Error("Immutable message segmentation changed input");
+    }
+    const inputs = await client.query(`SELECT run_id,messages_json FROM runtime_run_inputs
+      WHERE space_id=$1 AND messages_ref IS NULL AND jsonb_typeof(messages_json)='array'
+      ORDER BY run_id LIMIT $2 FOR UPDATE SKIP LOCKED`, [this.spaceId, limit]);
+    for (const row of inputs.rows) {
+      const ref = await this.storeMessages(client, row.messages_json);
+      const converted = await client.query(`UPDATE runtime_run_inputs SET messages_json='null'::jsonb,messages_ref=$3
+        WHERE space_id=$1 AND run_id=$2 AND runtime_read_message_blob(space_id,$3)=messages_json RETURNING run_id`,
+      [this.spaceId, row.run_id, ref]);
+      if (!converted.rowCount) throw new Error("Immutable input conversion changed input");
+    }
+    const snapshots = await client.query(`SELECT id,payload_json,messages_ref,context_ref FROM runtime_conversation_inputs
+      WHERE space_id=$1 AND ((messages_ref IS NULL AND jsonb_typeof(payload_json->'messages')='array')
+        OR (context_ref IS NULL AND jsonb_typeof(payload_json->'contextMessages')='array'))
+      ORDER BY ordinal LIMIT $2 FOR UPDATE SKIP LOCKED`, [this.spaceId, limit]);
+    for (const row of snapshots.rows) {
+      const value = payload(row);
+      const messagesRef = row.messages_ref || (Array.isArray(value.messages)
+        ? await this.storeMessages(client, value.messages) : null);
+      const contextRef = row.context_ref || (Array.isArray(value.contextMessages)
+        ? await this.storeMessages(client, value.contextMessages) : null);
+      const converted = await client.query(`UPDATE runtime_conversation_inputs
+        SET payload_json=CASE WHEN $4::text IS NOT NULL
+          THEN (CASE WHEN $3::text IS NOT NULL THEN payload_json-'messages' ELSE payload_json END)-'contextMessages'
+          ELSE (CASE WHEN $3::text IS NOT NULL THEN payload_json-'messages' ELSE payload_json END) END,
+          messages_ref=$3,context_ref=$4 WHERE space_id=$1 AND id=$2
+          AND ($3::text IS NULL OR messages_ref IS NOT NULL OR runtime_read_message_blob(space_id,$3)=payload_json->'messages')
+          AND ($4::text IS NULL OR context_ref IS NOT NULL OR runtime_read_message_blob(space_id,$4)=payload_json->'contextMessages')
+          RETURNING id`,
+      [this.spaceId, row.id, messagesRef, contextRef]);
+      if (!converted.rowCount) throw new Error("Immutable snapshot conversion changed input");
+    }
+    return { complete: blobs.rowCount < limit && inputs.rowCount < limit && snapshots.rowCount < limit,
+      rewrittenRows: blobs.rowCount + inputs.rowCount + snapshots.rowCount };
+  }
+
+  async migrateGlobalMessageSegments(client, limit) {
+    const gate = await client.query("SELECT pg_try_advisory_xact_lock(hashtextextended(current_schema(), 73198426)) AS acquired");
+    if (!gate.rows[0]?.acquired) return { complete: false, rewrittenRows: 0, busy: true };
+    const cursor = this.messageMigrationCursor || null;
+    let spaceId = (await client.query(pendingMessageSpaceSelect, [cursor])).rows[0]?.space_id;
+    if (!spaceId && cursor) spaceId = (await client.query(pendingMessageSpaceSelect, [null])).rows[0]?.space_id;
+    if (!spaceId) return { complete: true, rewrittenRows: 0 };
+    // Advance even when this owner's writer is busy, so another owner can
+    // progress on the next pass. Empty/finished scopes naturally drop out.
+    this.messageMigrationCursor = spaceId;
+    // Inactive accounts have no worker of their own. The internal converter
+    // scopes every lookup/write to the selected owner and shares no bodies.
+    const owner = spaceId === this.spaceId ? this
+      : new PostgresRunStore(this.pool, { spaceId, now: this.now });
+    const result = await owner.migrateMessageSegments(client, limit);
+    return { ...result, complete: !(await client.query(pendingMessageSpaceSelect, [null])).rowCount };
+  }
+
+  async maintainModelDetails(client, limit) {
+    const owned = (await client.query("SELECT * FROM runtime_model_detail_usage WHERE scope_key=$1",
+      [`space:${this.spaceId}`])).rows[0];
+    const details = await client.query(`WITH candidates AS (
+      SELECT space_id,run_id,sequence,created_at,compressed_bytes FROM runtime_run_event_details
+      WHERE space_id=$1 ORDER BY created_at,run_id,sequence LIMIT $2 FOR UPDATE SKIP LOCKED
+    ), ranked AS (
+      SELECT *,row_number() OVER (ORDER BY created_at,run_id,sequence) AS ordinal,
+        sum(compressed_bytes) OVER (ORDER BY created_at,run_id,sequence) - compressed_bytes AS prior_bytes
+      FROM candidates
+    ) DELETE FROM runtime_run_event_details d USING ranked r
+      WHERE d.space_id=r.space_id AND d.run_id=r.run_id AND d.sequence=r.sequence
+        AND (r.created_at<$3
+          OR ($4::bigint >= floor($5::numeric*0.95) AND $4::bigint-r.ordinal+1 > floor($5::numeric*0.9))
+          OR ($6::bigint >= floor($7::numeric*0.95) AND $6::bigint-r.prior_bytes > floor($7::numeric*0.9)))`,
+    [this.spaceId, limit, this.now() - this.modelRequestDetailRetentionMs,
+      owned?.stored_rows || 0, this.modelRequestDetailMaxRows,
+      owned?.stored_bytes || 0, this.modelRequestDetailMaxStoredBytes]);
+    const total = (await client.query("SELECT * FROM runtime_model_detail_usage WHERE scope_key='global'")).rows[0];
+    const globalDetails = await client.query(`WITH candidates AS (
+      SELECT space_id,run_id,sequence,created_at,compressed_bytes FROM runtime_run_event_details
+      WHERE created_at<$6 OR ($2::bigint >= floor($3::numeric*0.95) OR $4::bigint >= floor($5::numeric*0.95))
+      ORDER BY created_at,space_id,run_id,sequence LIMIT $1 FOR UPDATE SKIP LOCKED
+    ), ranked AS (
+      SELECT *,row_number() OVER (ORDER BY created_at,space_id,run_id,sequence) AS ordinal,
+        sum(compressed_bytes) OVER (ORDER BY created_at,space_id,run_id,sequence)-compressed_bytes AS prior_bytes
+      FROM candidates
+    ) DELETE FROM runtime_run_event_details d USING ranked r
+      WHERE d.space_id=r.space_id AND d.run_id=r.run_id AND d.sequence=r.sequence
+        AND (r.created_at<$6 OR ($2::bigint >= floor($3::numeric*0.95) AND $2::bigint-r.ordinal+1 > floor($3::numeric*0.9))
+          OR ($4::bigint >= floor($5::numeric*0.95) AND $4::bigint-r.prior_bytes > floor($5::numeric*0.9)))`,
+    [limit, total?.stored_rows || 0, this.modelRequestDetailGlobalMaxRows,
+      total?.stored_bytes || 0, this.modelRequestDetailGlobalMaxBytes,
+      this.now() - this.modelRequestDetailRetentionMs]);
+    return { complete: details.rowCount < limit && globalDetails.rowCount < limit,
+      deletedDetails: details.rowCount + globalDetails.rowCount, deletedGlobalDetails: globalDetails.rowCount };
   }
 
   async rejectConversationInput(inputId) {
@@ -1343,12 +1567,11 @@ export class PostgresRunStore {
 
   async getToolReceipt(invocationId) {
     const result = await this.pool.query(
-      `SELECT invocation_id, run_id, tool_name, request_hash, result_json, completed_at
-       FROM runtime_tool_invocation_receipts
-       WHERE space_id = $1 AND invocation_id = $2`,
+      receiptReadSql(`SELECT * FROM runtime_tool_invocation_receipts
+        WHERE space_id=$1 AND invocation_id=$2`),
       [this.spaceId, String(invocationId)]
     );
-    return receiptFromRow(result.rows[0]);
+    return receiptFromRow((await hydrateReceiptRows(result.rows))[0]);
   }
 
   async getToolReceiptForSpace(invocationId, runId, spaceId) {
@@ -1359,12 +1582,11 @@ export class PostgresRunStore {
 
   async findToolReceiptByRequestHash(runId, toolName, requestHash) {
     const result = await this.pool.query(
-      `SELECT invocation_id, run_id, tool_name, request_hash, result_json, completed_at
-       FROM runtime_tool_invocation_receipts
+      receiptReadSql(`SELECT * FROM runtime_tool_invocation_receipts
        WHERE space_id = $1 AND run_id = $2 AND tool_name = $3
          AND request_hash = $4
        ORDER BY completed_at DESC
-       LIMIT 1`,
+       LIMIT 1`),
       [
         this.spaceId,
         String(runId),
@@ -1372,7 +1594,7 @@ export class PostgresRunStore {
         String(requestHash)
       ]
     );
-    return receiptFromRow(result.rows[0]);
+    return receiptFromRow((await hydrateReceiptRows(result.rows))[0]);
   }
 
   async saveToolReceipt({
@@ -1383,17 +1605,24 @@ export class PostgresRunStore {
     result,
     completedAt = Date.now()
   }) {
-    const inserted = await this.pool.query(
+    const encoded = await encodeReceiptBody(result);
+    const inserted = await this.transaction(async client => {
+      const write = await client.query(
       `INSERT INTO runtime_tool_invocation_receipts
-       (space_id, invocation_id, run_id, tool_name, request_hash, result_json, completed_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+       (space_id, invocation_id, run_id, tool_name, request_hash, result_json, completed_at, result_skip_reason)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
        ON CONFLICT (space_id, invocation_id) DO NOTHING
        RETURNING invocation_id`,
       [
         this.spaceId, String(invocationId), String(runId), String(toolName),
-        String(requestHash), JSON.stringify(result), Number(completedAt)
+        String(requestHash), JSON.stringify(encoded.body ? encoded.header : encoded.value), Number(completedAt),
+        encoded.skipReason || null
       ]
-    );
+      );
+      if (write.rowCount && encoded.body) await storeReceiptBody(client, "runtime_tool_invocation_receipts",
+        this.spaceId, String(invocationId), result, encoded);
+      return write;
+    });
     const receipt = await this.getToolReceipt(invocationId);
     if (!receipt) throw new Error(`Tool receipt was not persisted: ${invocationId}`);
     return { ...receipt, duplicate: inserted.rowCount === 0 };

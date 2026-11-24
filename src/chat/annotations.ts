@@ -41,6 +41,7 @@ type CreateChatAnnotationsApiOptions = {
   events: EventsLike;
   commands: CommandsLike;
   getSessionMeta?: (sessionId: string) => any;
+  peekSessionAnnotations?: (sessionId: string) => Readonly<SessionAnnotations> | null;
   getActivePanelId?: () => string | null;
 };
 
@@ -71,6 +72,31 @@ function mergeAnnotationItem(stored: any, live: any): any {
     out[key] = hasMeaningfulValue(liveValue) ? liveValue : storedValue;
   }
   if (hasMeaningfulValue(a.id) || hasMeaningfulValue(b.id)) out.id = hasMeaningfulValue(b.id) ? b.id : a.id;
+  // Empty strings, null arguments and empty collections are exact body values,
+  // rather than missing widget preferences.
+  for (const [referenceKey, hydratedKey, bodyKeys] of [
+    ["bodyRef", "bodyHydratedRef", ["args", "result", "text"]],
+    ["detailRef", "detailHydratedRef", ["result", "text"]]
+  ] as const) {
+    const hydratedRef = out[hydratedKey];
+    if (!hydratedRef || (out[referenceKey] && out[referenceKey] !== hydratedRef)) continue;
+    const body = b[hydratedKey] === hydratedRef ? b : a;
+    for (const key of bodyKeys) {
+      if (Object.prototype.hasOwnProperty.call(body, key)) out[key] = body[key];
+    }
+  }
+  // A hydrated body supersedes only the exact projection it was loaded from.
+  // Pending-restore and metadata fallbacks must not resurrect that reference.
+  if (out.detailRef && out.detailHydratedRef === out.detailRef) {
+    delete out.detailRef;
+    delete out.detailSessionId;
+  }
+  if (out.bodyRef && out.bodyHydratedRef === out.bodyRef) {
+    delete out.bodyRef;
+    delete out.bodySessionId;
+    delete out.bodyKind;
+    delete out.bodyBytes;
+  }
   return out;
 }
 
@@ -81,10 +107,28 @@ function mergeAnnotationList(stored: any, live: any): any[] | undefined {
 
   const byId = new Map<string, any>();
   const anonymous: any[] = [];
+  const anonymousSlots = new Map<string, number[]>();
+  const liveOccurrences = new Map<string, number>();
+  const canonical = (value: any): any => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
+      : value;
   const add = (item: any, preferLive: boolean) => {
     const id = String(item?.id || "");
     if (!id) {
-      anonymous.push(item);
+      const key = Number.isFinite(item?.from) && Number.isFinite(item?.to)
+        ? JSON.stringify(["position", item.from, item.to, item.name || item.type || ""])
+        : JSON.stringify(["content", canonical(item)]);
+      const slots = anonymousSlots.get(key) || [];
+      const occurrence = preferLive ? liveOccurrences.get(key) || 0 : slots.length;
+      if (preferLive) liveOccurrences.set(key, occurrence + 1);
+      if (slots[occurrence] !== undefined) {
+        anonymous[slots[occurrence]] = mergeAnnotationItem(anonymous[slots[occurrence]], item);
+      } else {
+        slots.push(anonymous.length);
+        anonymous.push(item);
+        anonymousSlots.set(key, slots);
+      }
       return;
     }
     const prev = byId.get(id);
@@ -162,8 +206,9 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
   const getMetaAnnotations = (sessionId: string | null | undefined): SessionAnnotations | null => {
     if (!sessionId) return null;
     try {
-      const meta = opts.getSessionMeta?.(sessionId);
-      const ann = meta?.annotations;
+      const ann = opts.peekSessionAnnotations
+        ? opts.peekSessionAnnotations(sessionId)
+        : opts.getSessionMeta?.(sessionId)?.annotations;
       return ann && typeof ann === "object" ? ann : null;
     } catch {
       return null;
@@ -336,7 +381,14 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       : liveAnnotations;
     const tools = Array.isArray(annotations.tools) ? annotations.tools : [];
     const thinking = Array.isArray(annotations.thinking) ? annotations.thinking : [];
-    setSessionAnnotations(sessionId, annotations);
+    const restoringKey = `sessions.annotationsRestoring.${sessionId}`;
+    const previousRestoring = opts.state.get(restoringKey);
+    try {
+      opts.state.set(restoringKey, true);
+      setSessionAnnotations(sessionId, annotations);
+    } finally {
+      opts.state.set(restoringKey, previousRestoring);
+    }
     debugLog("restoreSession", {
       sessionId,
       panelId,
@@ -344,8 +396,8 @@ export function createChatAnnotationsApi(opts: CreateChatAnnotationsApiOptions) 
       tools: tools.length,
       thinking: thinking.length
     });
-    cardRuntime.restoreSession({ ...restoreOpts, sessionId, panelId, annotations });
-    return { annotations, tools, thinking };
+    const restoration = cardRuntime.restoreSession({ ...restoreOpts, sessionId, panelId, annotations });
+    return { annotations, tools, thinking, completion: restoration.completion };
   };
 
   const auditPanels = (reason = "manual") => {

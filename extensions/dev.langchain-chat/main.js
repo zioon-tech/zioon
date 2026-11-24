@@ -1,4 +1,5 @@
 import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
+import { hydrateRemoteAnnotations } from "../dev.session-manager/storage/remote.js";
 import { createElement } from "react";
 import { runStream } from "./chat-service.js";
 import { accountCan } from "../../packages/account-ui/src/client";
@@ -21,6 +22,8 @@ import { claudeProvider } from "./claude-provider.js";
 import { geminiProvider } from "./gemini-provider.js";
 import { userModelsProvider } from "./user-models-provider.js";
 import { installModelSwitcher } from "./model-switcher.js";
+import { installWorkbenchModelSelection, normalizeWorkbenchModel } from "./workbench-model-selection.js";
+import { createHttpRuntimeClient } from "../../src/runtime/http-runtime-client.ts";
 import { registerModelsTools } from "./models-tools.js";
 import {
   findRuntimeModelProfile,
@@ -660,7 +663,13 @@ export async function activate(ctx) {
     void refreshCatalog({ forceRuntime: true });
   }));
   function getResolvedModelSnapshot(source) {
-    const active = source || window.zion?.state?.get?.("chat.activeModel") || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
+    const active = normalizeWorkbenchModel(
+      source || window.zion?.state?.get?.("chat.activeModel"),
+      window.zion?.state?.get?.("models.catalog") || []
+    ) || { providerId: "deepseek", modelId: "deepseek-v4-flash" };
+    if (active.profileId && (!active.providerId || !active.modelId)) {
+      throw new Error("当前会话的模型已不可用，请重新选择模型");
+    }
     const providerId = String(active?.providerId || "deepseek");
     const modelId = String(active?.modelId || "deepseek-v4-flash");
     const catalog = window.zion?.state?.get?.("models.catalog") || [];
@@ -711,6 +720,7 @@ export async function activate(ctx) {
   }
   await refreshCatalog();
   ensureActiveModel();
+  window.zion.state.set("chat.defaultModel", getResolvedModelSnapshot());
   const modelHealthMonitor = startModelHealthMonitor();
   ctx.subscriptions.push(modelHealthMonitor);
 
@@ -872,7 +882,7 @@ export async function activate(ctx) {
     return runtimeModelSyncPromise;
   };
 
-  let applyingRuntimeActiveModel = false;
+  let modelSelection = null;
   let runtimeActiveModelSyncPromise = null;
   const syncActiveModelFromRuntimeProfile = () => {
     if (runtimeActiveModelSyncPromise) return runtimeActiveModelSyncPromise;
@@ -883,26 +893,23 @@ export async function activate(ctx) {
         baseUrl: config.baseUrl
       });
       if (!model) return null;
-      applyingRuntimeActiveModel = true;
-      try {
-        window.zion?.state?.set?.("chat.activeModel", {
+      const selected = {
           profileId: model.profileId,
           providerId: model.providerId,
           modelId: model.modelId,
           label: model.label
-        });
+      };
+      await modelSelection.initializeDefault(selected);
         try {
           localStorage.setItem(
             "zion.chat.defaultModel",
             JSON.stringify({
-              providerId: model.providerId,
+               profileId: model.profileId,
+               providerId: model.providerId,
               modelId: model.modelId
             })
           );
         } catch {}
-      } finally {
-        applyingRuntimeActiveModel = false;
-      }
       window.zion?.state?.set?.("runtime.defaultModelSync", {
         status: "synced",
         profileId: model.profileId,
@@ -926,11 +933,11 @@ export async function activate(ctx) {
     return runtimeActiveModelSyncPromise;
   };
   const persistActiveModelToRuntimeProfile = (model) => {
-    if (!model?.providerId || !model?.modelId) return null;
+    if (!model?.providerId || !model?.modelId) throw new Error("模型配置尚未加载");
     const config = readInteractiveRuntimeConfig();
     if (config.mode === "browser") return null;
     return (async () => {
-      if (!await shouldUseInteractiveRuntime(config)) return null;
+       if (!await shouldUseInteractiveRuntime(config)) throw new Error("Runtime 未连接，默认模型尚未保存");
       const provider = window.zion?.models?.getProvider?.(model.providerId);
       const selectedModelConfig = await provider?.resolve?.(model.modelId);
       const result = await persistInteractiveRuntimeProfileModel({
@@ -954,12 +961,9 @@ export async function activate(ctx) {
         error: error?.message || String(error),
         syncedAt: Date.now()
       });
-      return null;
+      throw error;
     });
   };
-  void updateRuntimeStatus()
-    .then(() => syncRuntimeModelProfiles())
-    .then(() => syncActiveModelFromRuntimeProfile());
   const runtimeStatusTimer = window.setInterval(
     () => void updateRuntimeStatus(),
     5000
@@ -994,21 +998,6 @@ export async function activate(ctx) {
     return next;
   };
   initStoredBool(RUN_FINISHED_SOUND_STATE_KEY, RUN_FINISHED_SOUND_LS_KEY, true);
-
-  ctx.subscriptions.push(
-    window.zion.state.onDidChange("chat.activeModel", (nv) => {
-      try {
-        if (!nv?.providerId || !nv?.modelId) return;
-        localStorage.setItem(
-          "zion.chat.defaultModel",
-          JSON.stringify({ providerId: String(nv.providerId), modelId: String(nv.modelId) })
-        );
-        if (!applyingRuntimeActiveModel) {
-          void persistActiveModelToRuntimeProfile(nv);
-        }
-      } catch {}
-    })
-  );
 
   // 模型切换器装饰器（挂载面板）
   let modelSwitcher = null;
@@ -1082,6 +1071,35 @@ export async function activate(ctx) {
     } catch {}
     return null;
   };
+  modelSelection = installWorkbenchModelSelection({
+    zion: window.zion, getSessionId,
+    loadLegacyModel: async id => {
+      const config = readInteractiveRuntimeConfig();
+      if (config.mode === "browser") return null;
+      try {
+        return (await createHttpRuntimeClient({ baseUrl: config.baseUrl }).getSession(id))?.model || null;
+      } catch (error) {
+        if (error.status === 404) return null;
+        throw error;
+      }
+    },
+    persistDefault: async model => {
+      await defaultModelReady;
+      const result = await persistActiveModelToRuntimeProfile(model);
+      const saved = result?.runtimeModel || model;
+      try { localStorage.setItem("zion.chat.defaultModel", JSON.stringify(saved)); } catch {}
+      return saved;
+    },
+    onError: error => {
+      console.warn("[models] session selection could not be saved", error);
+      window.zion?.notification?.show?.(error.message || "会话模型保存失败", { type: "error" });
+    }
+  });
+  ctx.subscriptions.push(modelSelection);
+  const defaultModelReady = updateRuntimeStatus()
+    .then(() => syncRuntimeModelProfiles())
+    .then(() => syncActiveModelFromRuntimeProfile())
+    .then(model => model || modelSelection.initializeDefault(window.zion.state.get("chat.defaultModel")));
   const inferRequestSource = ({ sessionId, panelId } = {}) => {
     const pid = String(panelId || "");
     const sid = String(sessionId || "");
@@ -1170,10 +1188,11 @@ export async function activate(ctx) {
     const sid = getSessionId({ ...opts, panelId });
     if (!sid) throw new Error("No target session");
     const runThinkingEffort = normalizeThinkingEffort(opts?.thinkingEffort);
-    const resolveActiveRunModel = () => getResolvedModelSnapshot(
-      runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
+    await defaultModelReady;
+    const selected = await modelSelection.resolveModel(sid);
+    const runModel = getResolvedModelSnapshot(
+      runThinkingEffort === "auto" ? selected : { ...selected, thinkingEffort: runThinkingEffort }
     );
-    const runModel = resolveActiveRunModel();
     const cursor = ed.getCursor();
     const fullDoc = ed.getValue();
     const lines = fullDoc.split("\n");
@@ -1323,7 +1342,11 @@ export async function activate(ctx) {
 
   const executeProgrammatic = createProgrammaticExecutor({
     runStream,
-    getActiveModel: () => getResolvedModelSnapshot(window.zion.state.get("chat.activeModel")),
+    getActiveModel: async sessionId => {
+      await defaultModelReady;
+      return getResolvedModelSnapshot(sessionId
+        ? await modelSelection.resolveModel(sessionId) : window.zion.state.get("chat.defaultModel"));
+    },
     resolveModelConfig: async (model) => {
       const prov = window.zion?.models?.getProvider?.(model?.providerId);
       return await prov?.resolve?.(model?.modelId);
@@ -1384,7 +1407,8 @@ export async function activate(ctx) {
     setActiveModel: (m) => {
       window.zion.state.set("chat.activeModel", m);
     },
-    getActiveModel: () => window.zion.state.get("chat.activeModel") || null
+    getActiveModel: (sid = getSessionId()) => getResolvedModelSnapshot(modelSelection.getModel(sid)),
+    getDefaultModel: () => window.zion.state.get("chat.defaultModel") || null
   };
   ctx.subscriptions.push({
     dispose() {
@@ -1992,7 +2016,6 @@ export async function activate(ctx) {
 
     try {
       await window.zion.commands.executeCommand("zion.sessions.getDocAsync", sid);
-      await window.zion.commands.executeCommand("zion.sessions.getMetaAsync", sid);
       if (observer.signal.aborted || deferToSubmitter()) return null;
       const observed = await observeInteractiveRuntimeRun({
         runtimeRunId: runId,
@@ -2002,15 +2025,17 @@ export async function activate(ctx) {
         onRun: async (remoteRun) => {
           if (deferToSubmitter()) return;
           metadata.documentProjectionMode = remoteRun.metadata?.documentProjection?.mode || metadata.documentProjectionMode;
-          if (!["queued", "running", "waiting"].includes(remoteRun.status)) return;
+          const active = ["queued", "running", "waiting"].includes(remoteRun.status);
           window.zion?.runs?.start?.({
             ...runRecord,
-            status: "running",
-            completedAt: undefined,
-            terminalReason: undefined,
-            error: undefined,
+            status: remoteRun.status === "aborted" ? "stopped" : remoteRun.status,
+            completedAt: active ? undefined : remoteRun.completedAt,
+            terminalReason: active ? undefined : remoteRun.terminalReason,
+            error: active ? undefined : remoteRun.error,
+            usage: window.zion?.runs?.get?.(runId)?.usage || runRecord.usage,
             metadata
           });
+          if (!active) return;
           runtime.beginRun(sid, runId);
           setRunState(sid, {
             aborted: false,
@@ -2228,10 +2253,11 @@ export async function activate(ctx) {
     const skipSessionPersistence = !!opts?.skipSessionPersistence;
       const autoScrollAssistant = opts?.autoScrollAssistant !== false;
       const moveSelectionToAssistant = opts?.moveSelectionToAssistant !== false;
-    const resolveActiveRunModel = () => getResolvedModelSnapshot(
-      runThinkingEffort === "auto" ? null : { ...window.zion.state.get("chat.activeModel"), thinkingEffort: runThinkingEffort }
+    await defaultModelReady;
+    const selected = await modelSelection.resolveModel(sid);
+    const runModel = getResolvedModelSnapshot(
+      runThinkingEffort === "auto" ? selected : { ...selected, thinkingEffort: runThinkingEffort }
     );
-    const runModel = resolveActiveRunModel();
     const streaming = !!getRunState(sid)?.streaming;
     if (streaming && getRunState(sid)?.runId !== preparation?.id) {
       console.log("[langchain-chat] already streaming in current session, abort");
@@ -2454,7 +2480,7 @@ export async function activate(ctx) {
     }
     const latestUser = baseMessages.filter((message) => message.role === "user").at(-1);
     if (opts?.metadata?.goal || (typeof latestUser?.content === "string" && /^\s*\/goal(?:\s|$)/.test(latestUser.content))) {
-      throw new Error("持续目标需要可用的 Zion Runtime，请检查 Runtime 连接和模型配置。");
+        throw new Error("持续目标需要可用的 Zioon Runtime，请检查 Runtime 连接和模型配置。");
     }
 
     // 3. 插入 assistant 块（用于承载输出）
@@ -2781,7 +2807,7 @@ export async function activate(ctx) {
       let stepReasoning = "";
       const stepIndex = Number(window.zion?.state?.get?.(`chat.usageStep.${runId}`) || 0) + 1;
       try { window.zion?.state?.set?.(`chat.usageStep.${runId}`, stepIndex); } catch {}
-      const stepModel = resolveActiveRunModel();
+      const stepModel = runModel;
       setRunState(sid, { model: stepModel }, runId);
       recordRunEvent("turn.started", {
         turn: stepIndex,
@@ -3245,7 +3271,16 @@ export async function activate(ctx) {
       if (window.zion?.state?.get?.("workbench.accessChanged")) {
         throw new Error("账户或访问权限已变化，请重新进入工作台");
       }
-      return await performRun(opts, {
+      inputSnapshot = { ...inputSnapshot, annotations: await hydrateRemoteAnnotations(inputSnapshot.annotations) };
+      if (controller.signal.aborted) return { status: "aborted" };
+      // Keep the submission bound to its captured pane and document. Changing
+      // focus to another pane is safe; replacing this pane's document cancels.
+      if ((panelId ? getPanelSessionId(panelId) : getSessionId(opts)) !== sid) {
+        clearFeedback();
+        window.zion?.notification?.show?.("会话已切换，本次发送已取消，请返回原会话重试。", { type: "info" });
+        return { status: "cancelled", reason: "session-changed" };
+      }
+      return await performRun({ ...opts, editor: ed, sessionId: sid, panelId }, {
         id, signal: controller.signal, clearFeedback, release, timings, mark, expectedAccount,
         inputSnapshot, documentAnchor,
         accept(runId) {
@@ -3489,7 +3524,8 @@ export async function activate(ctx) {
         keep.add(cmdId);
 
         ensureModelCmd(cmdId, () => {
-          window.zion.state.set("chat.activeModel", { providerId: m.providerId, modelId: m.id, label });
+          window.zion.state.set("chat.activeModel", { providerId: m.providerId, modelId: m.id,
+            ...(m.runtimeProfileId ? { profileId: m.runtimeProfileId } : {}), label });
           if (mode === "chat.runDefaultWithModel") {
             window.zion.commands.executeCommand("chat.run");
           }

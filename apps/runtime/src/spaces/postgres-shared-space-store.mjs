@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { projectPublicCards } from "../../../../src/chat/public-document.mjs";
+import { hydrateSessionCardMetadata } from "../session-card-bodies.mjs";
 import { accountError } from "../accounts/account-policy.mjs";
 import {
   activeMember, isSpaceManager, spaceText, validateDocumentAudience,
@@ -52,6 +53,9 @@ export class PostgresSharedSpaceStore {
     const result = await this.accounts.transaction(async (client) => {
       for (const id of ids) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`shared-space:${id}`]);
       return action(client, afterCommit);
+    }).catch(error => {
+      for (const callback of afterCommit) callback.rollback?.();
+      throw error;
     });
     for (const callback of afterCommit) callback();
     return result;
@@ -286,7 +290,8 @@ export class PostgresSharedSpaceStore {
 
   async requireDocument(userId, spaceId, documentId, action = "view", client = this.pool) {
     const input = await this.accessInput(userId, spaceId, documentId, client);
-    if (this.sharing && input.space.kind === "personal" && input.space.createdBy !== userId) {
+    if (this.sharing && input.space.kind === "personal" && input.space.createdBy !== userId
+      && !(input.space.legacyAccountWorkspace && activeMember(input.membership))) {
       const direct = await this.sharing.documentAccess(userId, spaceId, documentId, action, client);
       if (input.document?.lifecycle !== "active") throw accountError(404, "document_not_found");
       return { ...input.document, access: { role: direct.role, inherited: direct.inherited, shareId: direct.shareId } };
@@ -295,9 +300,39 @@ export class PostgresSharedSpaceStore {
     return { ...input.document, access };
   }
 
+  async requireDocuments(userId, spaceId, documentIds, action = "view", client = this.pool) {
+    const ids = [...new Set(documentIds || [])];
+    if (!ids.length) return [];
+    const [space, membership, groups] = await Promise.all([
+      this.policy(spaceId, client), this.accounts.membership(userId, spaceId, client),
+      client.query("SELECT group_id FROM space_group_members WHERE space_id=$1 AND user_id=$2", [spaceId, userId])
+    ]);
+    if (this.sharing && space.kind === "personal" && space.createdBy !== userId
+      && !(space.legacyAccountWorkspace && activeMember(membership))) {
+      const documents = [];
+      for (const id of ids) documents.push(await this.requireDocument(userId, spaceId, id, action, client));
+      return documents;
+    }
+    const groupIds = groups.rows.map(row => row.group_id);
+    const rows = (await client.query(`SELECT d.*,COALESCE(g.grants,'[]'::jsonb) AS grants FROM space_documents d
+      LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('subjectType',subject_type,
+        'subjectId',subject_id,'role',role,'expiresAt',expires_at)) AS grants
+        FROM space_document_grants WHERE space_id=d.space_id AND document_id=d.id) g ON TRUE
+      WHERE d.space_id=$1 AND d.id=ANY($2::text[])`, [spaceId, ids])).rows;
+    const documents = new Map(rows.map(row => [row.id, row]));
+    return ids.map(id => {
+      const row = documents.get(id), document = doc(row);
+      const access = requireDocumentAccess({ userId, space, membership, document,
+        grants: (row?.grants || []).map(value => ({ ...value, expiresAt: num(value.expiresAt) })),
+        groupIds, now: this.now() }, action);
+      return { ...document, access };
+    });
+  }
+
   async documentAccess(userId, spaceId, documentId) {
     const input = await this.accessInput(userId, spaceId, documentId);
-    if (this.sharing && input.space.kind === "personal" && input.space.createdBy !== userId) {
+    if (this.sharing && input.space.kind === "personal" && input.space.createdBy !== userId
+      && !(input.space.legacyAccountWorkspace && activeMember(input.membership))) {
       const document = await this.requireDocument(userId, spaceId, documentId, "view");
       return { document, access: document.access };
     }
@@ -615,8 +650,9 @@ export class PostgresSharedSpaceStore {
       if (!session) throw accountError(404, "document_not_found");
       return { text: "", revision: 1, title: session.title || "Untitled" };
     }
-    return { text: r.text, revision: num(r.revision) || 1, title: r.meta_json?.title || "Untitled",
-      updatedAt: num(r.updated_at), cards: projectPublicCards(r.text, r.meta_json?.annotations) };
+    const meta = await hydrateSessionCardMetadata(client, spaceId, documentId, r.meta_json);
+    return { text: r.text, revision: num(r.revision) || 1, title: meta?.title || "Untitled",
+      updatedAt: num(r.updated_at), cards: projectPublicCards(r.text, meta?.annotations) };
   }
 
   async chooseKnowledge(userId, spaceId, documentId, input) {

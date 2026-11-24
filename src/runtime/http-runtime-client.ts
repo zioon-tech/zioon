@@ -103,6 +103,7 @@ export type RuntimeEventSubscription = {
 };
 
 export interface RuntimeClient {
+  getSession(sessionId: string): Promise<{ id: string; model?: ModelRef; metadata?: Record<string, unknown> }>;
   createRun(request: RunRequest): Promise<AcceptedRuntimeRun>;
   getInputReceipt(sessionId: string, clientRequestId: string, expectedAccount?: { userId: string; spaceId: string }): Promise<{ status: string; response?: AcceptedRuntimeRun }>;
   resumeRun(runId: string, request: ResumeRunRequest): Promise<AcceptedRuntimeRun>;
@@ -559,6 +560,12 @@ export function createHttpRuntimeClient(
     `${baseUrl}/v1/interaction-profiles/${encodeURIComponent(profileId)}`;
 
   return {
+    async getSession(sessionId) {
+      const response = await fetchRequest(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+        headers: { accept: "application/json" }
+      });
+      return (await readJson(response)).session as { id: string; model?: ModelRef; metadata?: Record<string, unknown> };
+    },
     async getModels(interactionProfileId) {
       const query = interactionProfileId && interactionProfileId !== "interactive.default"
         ? `?${new URLSearchParams({ interactionProfileId })}` : "";
@@ -585,8 +592,11 @@ export function createHttpRuntimeClient(
         body: JSON.stringify({ profileId, interactionProfileId })
       });
       const body = await readJson(response);
-      if (!body.selection?.modelProfileId) throw new RuntimeHttpError(response.status, "Runtime response is missing model selection");
-      return body.selection;
+      const selection = body.selection as {
+        interactionProfileId: string; modelProfileId: string; selectedProfileId: string | null;
+      } | undefined;
+      if (!selection?.modelProfileId) throw new RuntimeHttpError(response.status, "Runtime response is missing model selection");
+      return selection;
     },
 
     async getInputReceipt(sessionId, clientRequestId, expectedAccount) {

@@ -1,7 +1,7 @@
 import { readJson, json } from "../access-control.mjs";
 import { accountError } from "../accounts/account-policy.mjs";
 
-export function createSharingHttpHandler({ sharing, models, accessControl, publicBaseUrl, readDocumentPresence, readDocumentVisitors }) {
+export function createSharingHttpHandler({ sharing, models, accessControl, publicBaseUrl, readDocumentPresence, readDocumentVisitors, mutateFolder }) {
   const withLink = invitation => ({ ...invitation,
     url: `${publicBaseUrl.replace(/\/$/, "")}/#share=${encodeURIComponent(invitation.token)}` });
   return async (request, response, url) => {
@@ -23,6 +23,9 @@ export function createSharingHttpHandler({ sharing, models, accessControl, publi
         result = { recipient: await sharing.resolveRecipient(userId, (await readJson(request)).recipient) };
       }
       else if (parts[0] === "content" && parts.length === 1 && method === "GET") result = await sharing.contentIndex(userId);
+      else if (parts[0] && parts[1] === "folder-operations" && parts.length === 2 && method === "POST") {
+        result = await mutateFolder(userId, parts[0], await readJson(request));
+      }
       else if (parts[0] === "preview" && method === "POST") result = await sharing.preview((await readJson(request)).token);
       else if (parts[0] === "accept" && method === "POST") result = await sharing.accept(userId, (await readJson(request)).token);
       else if (parts[0] === "links" && parts[1] && parts.length === 2 && method === "GET") {

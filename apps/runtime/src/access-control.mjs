@@ -219,10 +219,11 @@ export class RuntimeAccessControl {
     );
     response.setHeader(
       "access-control-allow-headers",
-      "content-type, authorization, last-event-id, x-zion-client, "
-      + "x-zion-file-name, x-zion-workbench-protocol"
+      "content-type, authorization, last-event-id, if-none-match, x-zion-client, "
+      + "x-zion-file-name, x-zion-workbench-protocol, x-zion-navigation-id, x-zion-read-source"
     );
     response.setHeader("access-control-allow-credentials", "true");
+    response.setHeader("access-control-expose-headers", "etag, server-timing, x-zion-request-id");
     response.setHeader("vary", "Origin");
     return true;
   }
@@ -259,7 +260,9 @@ export class RuntimeAccessControl {
   authorizeRuntimeRequest(request) {
     return mapMaybePromise(this.authenticateRequest(request), (principal) => {
       const method = String(request?.method || "GET").toUpperCase();
-      const scope = ["GET", "HEAD"].includes(method)
+      const cardDetailsRead = method === "POST"
+        && /^\/v1\/workbench-state\/sessions\/[^/]+\/card-details$/.test(String(request?.url || "").split("?")[0]);
+      const scope = ["GET", "HEAD"].includes(method) || cardDetailsRead
         ? "runtime.read"
         : "runtime.write";
       this.requireScope(principal, scope);

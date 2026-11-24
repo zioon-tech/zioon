@@ -188,7 +188,18 @@ export function activateRuntimePlugin(context) {
           const retainedUser = latestUser && prefix.some((message) => contentHash(message) === contentHash(latestUser))
             ? latestUser : null;
           // Bounded chunks allow a summary model with a smaller window to merge incrementally.
-          const chunkBudget = Math.max(512, Math.min(16000, window - outputReserve - 4096));
+          const summaryOutputBudget = Math.min(4096, settings.outputTokens);
+          const summaryWindow = Math.min(window, Number(limits.maxInputTokens || window));
+          // The summary call requests a bounded output of its own, not the main
+          // Run's output reserve. Larger windows can summarize larger complete
+          // groups without turning ordinary long history into a permanent failure.
+          const mergeReserve = Math.max(1024, summaryOutputBudget * 2);
+          const envelopeTokens = estimateContextTokens([
+            { role: "system", content: SUMMARY_PROMPT },
+            { role: "user", content: JSON.stringify({ previousHandoff: null, history: [] }) }
+          ]);
+          const chunkBudget = Math.max(512, Math.min(64000,
+            summaryWindow - summaryOutputBudget - mergeReserve - envelopeTokens - 2048));
           const chunks = [];
           let chunk = [];
           for (const group of completeMessageGroups(prefix)) {
@@ -209,8 +220,7 @@ export function activateRuntimePlugin(context) {
               { role: "system", content: SUMMARY_PROMPT },
               { role: "user", content: JSON.stringify({ previousHandoff: summary, history: part }) }
             ];
-            const summaryOutputBudget = Math.min(4096, settings.outputTokens);
-            if (estimateContextTokens(summaryMessages) + summaryOutputBudget + 2048 > window) {
+            if (estimateContextTokens(summaryMessages) + summaryOutputBudget + 2048 > summaryWindow) {
               throw new Error("Summary request exceeds the model window; original context retained");
             }
             const generated = await modelService.generateText({

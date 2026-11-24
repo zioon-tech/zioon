@@ -24,7 +24,7 @@ export function contentRequestAction(request, scope) {
   if (session) {
     if (decodeURIComponent(session[1]) !== scope.documentId) throw accountError(403, "content_document_mismatch");
     const suffix = session[2];
-    if (read && ["", "/messages", "/transcript", "/events", "/events/stream", "/revisions", "/active-run"].includes(suffix)) return "view";
+    if (read && ["", "/metadata", "/messages", "/transcript", "/events", "/events/stream", "/revisions", "/active-run"].includes(suffix)) return "view";
     if (read && /^\/inputs\/[^/]+$/.test(suffix)) return "view";
     if (method === "PUT" && !suffix && path.startsWith("/v1/workbench-state/")) return "edit";
     if (method === "POST" && suffix === "/messages") return "edit";

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { overlaySkills } from "./marketplace/service.mjs";
 import {
   mergeSkillsSourceSnapshots,
@@ -11,6 +12,16 @@ import {
 } from "../../../extensions/dev.skills/skills-runtime-shared.js";
 
 const DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+const mutationTails = new WeakMap();
+function mutate(store, operation) {
+  const result = (mutationTails.get(store) || Promise.resolve()).then(() =>
+    store.withKVTransaction ? store.withKVTransaction(operation) : operation(store));
+  const tail = result.catch(() => {}).finally(() => {
+    if (mutationTails.get(store) === tail) mutationTails.delete(store);
+  });
+  mutationTails.set(store, tail);
+  return result;
+}
 
 function json(response, status, value) {
   const body = JSON.stringify(value);
@@ -221,8 +232,26 @@ function reconcileEnabledWithCatalog(previous, catalog) {
   return [...enabled];
 }
 
-export async function syncSkillsCatalog({ store, snapshot }) {
-  const incomingSources = sourceSnapshotsFromBody({ snapshot });
+export async function syncSkillsCatalog(options) {
+  const incomingSources = sourceSnapshotsFromBody({ snapshot: options.snapshot });
+  if (options.bundles && incomingSources.some((source) => source.catalog.some((skill) => skill.bundleRef))) {
+    const previous = await storedSources(options.store);
+    // Verify immutable objects before acquiring the Space write lock. Slow
+    // object storage must not block document saves or hold a PG connection.
+    for (const source of incomingSources) {
+      const current = previous.find((entry) => entry.nodeId === source.nodeId);
+      for (let index = 0; index < source.catalog.length; index++) {
+        const skill = source.catalog[index];
+        if (!skill.bundleRef) continue;
+        const old = current?.catalog.find((entry) => entry.id === skill.id && entry.sourcePath === skill.sourcePath);
+        source.catalog[index] = await options.bundles.resolve(skill, old);
+      }
+    }
+  }
+  return mutate(options.store, (store) => syncSkillsCatalogWhileLocked({ ...options, store, incomingSources }));
+}
+
+async function syncSkillsCatalogWhileLocked({ store, snapshot, bundles = null, incomingSources }) {
   const previousSourceSnapshots = await storedSources(store);
   if (!incomingSources.length) {
     const storedSnapshot = (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value;
@@ -242,7 +271,16 @@ export async function syncSkillsCatalog({ store, snapshot }) {
   for (const source of incomingSources) {
     const current = sourceMap.get(source.nodeId);
     if (!current || source.syncedAt >= current.syncedAt) {
-      sourceMap.set(source.nodeId, source);
+      const catalog = [];
+      for (const skill of source.catalog) {
+        const previous = current?.catalog.find((old) => old.id === skill.id && old.sourcePath === skill.sourcePath);
+        // References above are already verified. Legacy body-only clients can
+        // reuse the latest committed reference without object-storage I/O.
+        const resolved = bundles && !skill.bundleRef ? await bundles.resolve(skill, previous) : skill;
+        catalog.push(previous && resolved.contentHash && previous.contentHash === resolved.contentHash
+          ? { ...resolved, syncedAt: previous.syncedAt } : resolved);
+      }
+      sourceMap.set(source.nodeId, { ...source, catalog });
     }
   }
 
@@ -281,6 +319,7 @@ export async function syncSkillsCatalog({ store, snapshot }) {
 export function createSkillsCatalogHttpHandler({
   store,
   marketplace = null,
+  bundles = null,
   availableNodes = () => [],
   localSourceAvailable = false,
   maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES
@@ -295,23 +334,54 @@ export function createSkillsCatalogHttpHandler({
       const accountOverlay = async (snapshot) => marketplace
         ? overlaySkills(snapshot, await marketplace.skillsFor({ principal: request.zionPrincipal }))
         : snapshot;
+      if (request.method === "POST" && url.pathname === "/v1/skills/bundle") {
+        if (!bundles) throw Object.assign(new Error("Skill artifact storage is unavailable"), { statusCode: 503 });
+        const body = await readJson(request, Math.max(maxRequestBytes, 52 * 1024 * 1024));
+        const skill = normalizeSkillsSourceSnapshot({
+          nodeId: body.skill?.sourceNodeId,
+          catalog: [body.skill]
+        }).catalog[0];
+        if (!skill || skill.id.startsWith("marketplace:")
+          || [SKILLS_RUNTIME_PLUGIN_NODE_ID, "runtime:marketplace"].includes(skill.sourceNodeId)) {
+          throw Object.assign(new Error("Invalid Skill source"), { statusCode: 422 });
+        }
+        json(response, 200, { ok: true, skill: await bundles.publish(skill, body.files) });
+        return true;
+      }
+      if (request.method === "GET" && url.pathname === "/v1/skills/file") {
+        const snapshot = normalizeSkillsSnapshot((await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {});
+        const skill = snapshot.catalog.find((item) => item.id === url.searchParams.get("name"));
+        if (!skill) throw Object.assign(new Error("Skill not found"), { statusCode: 404 });
+        if (!bundles) throw Object.assign(new Error("Skill artifact storage is unavailable"), { statusCode: 503 });
+        json(response, 200, { ok: true, attachment: await bundles.file(
+          skill, url.searchParams.get("file"), url.searchParams.get("content_hash")
+        ) });
+        return true;
+      }
       if (request.method === "GET" && url.pathname === "/v1/skills/snapshot") {
         const snapshot = normalizeSkillsSnapshot(
           (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {}
         );
-        json(response, 200, {
+        const body = {
           snapshot: withSourceStatuses(
             await accountOverlay(snapshot),
             availableNodes,
             localSourceAvailable
           )
-        });
+        };
+        const etag = `"${createHash("sha256").update(JSON.stringify(body)).digest("hex")}"`;
+        response.setHeader("etag", etag);
+        if (request.headers["if-none-match"] === etag) {
+          response.writeHead(304, { "cache-control": "no-store" });
+          response.end();
+        } else json(response, 200, body);
         return true;
       }
       if (request.method === "POST" && url.pathname === "/v1/skills/sync") {
         const body = await readJson(request, maxRequestBytes);
         const snapshot = await syncSkillsCatalog({
           store,
+          bundles,
           snapshot: withoutRuntimePluginSource(body.snapshot || body)
         });
         json(response, 200, {
@@ -338,33 +408,36 @@ export function createSkillsCatalogHttpHandler({
           json(response, 400, { error: "Use updates: [{ id, enabled: boolean }] or enabled: [], not both" });
           return true;
         }
-        // Read and commit synchronously after parsing the body so concurrent
-        // clients merge desired values against the latest committed selection.
-        const current = normalizeSkillsSnapshot(
-          (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {}
-        );
-        const enabled = new Set(current.enabled);
-        const knownIds = new Set(current.catalog.map((skill) => skill.id));
+        // Marketplace operations use their own transactions on the same pool.
+        // Finish them before holding the Workbench row lock or its client.
         if (marketplace && request.zionPrincipal?.kind === "account") {
           const overlay = await marketplace.skillsFor({ principal: request.zionPrincipal });
           const selection = hasUpdates ? body.updates : Array.isArray(body.enabled)
-            ? overlay.catalog.map((skill) => ({ id: skill.id, enabled: body.enabled.includes(skill.id) }))
-            : [];
+            ? overlay.catalog.map(skill => ({ id: skill.id, enabled: body.enabled.includes(skill.id) })) : [];
           await marketplace.selectSkills(request.zionPrincipal.user.id, selection);
         }
-        for (const update of hasUpdates ? body.updates : []) {
-          const id = update.id.trim();
-          if (!update.enabled) enabled.delete(id);
-          else if (knownIds.has(id)) enabled.add(id);
-        }
-        const next = normalizeSkillsSnapshot({
-          ...current,
-          enabled: hasUpdates ? [...enabled] : Array.isArray(body?.enabled)
-            ? body.enabled.filter((id) => !String(id).startsWith("marketplace:"))
-            : current.enabled,
-          savedAt: Date.now()
+        // Serialize source/selection writes, including asynchronous PG commits.
+        const next = await mutate(store, async (store) => {
+          const current = normalizeSkillsSnapshot(
+            (await store.readKV(SKILLS_RUNTIME_KV_KEY))?.value || {}
+          );
+          const enabled = new Set(current.enabled);
+          const knownIds = new Set(current.catalog.map((skill) => skill.id));
+          for (const update of hasUpdates ? body.updates : []) {
+            const id = update.id.trim();
+            if (!update.enabled) enabled.delete(id);
+            else if (knownIds.has(id)) enabled.add(id);
+          }
+          const next = normalizeSkillsSnapshot({
+            ...current,
+            enabled: hasUpdates ? [...enabled] : Array.isArray(body?.enabled)
+              ? body.enabled.filter((id) => !String(id).startsWith("marketplace:"))
+              : current.enabled,
+            savedAt: Date.now()
+          });
+          await store.writeKV(SKILLS_RUNTIME_KV_KEY, next);
+          return next;
         });
-        await store.writeKV(SKILLS_RUNTIME_KV_KEY, next);
         json(response, 200, {
           ok: true,
           snapshot: withSourceStatuses(
@@ -378,7 +451,8 @@ export function createSkillsCatalogHttpHandler({
       json(response, 404, { error: "Skills catalog endpoint not found" });
     } catch (error) {
       json(response, Number(error?.statusCode) || 500, {
-        error: error?.message || String(error)
+        error: error?.message || String(error),
+        ...(error?.code ? { code: error.code } : {})
       });
     }
     return true;

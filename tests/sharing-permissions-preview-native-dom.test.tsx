@@ -16,7 +16,7 @@ describe.skipIf(!enabled)("direct collaborators in the persistent native preview
     const doc = `native-permissions-${randomUUID()}`;
     const commands = new Map<string, any>(), listeners = new Map<string, Set<any>>();
     const headers = { authorization: `Bearer ${owner.token}`, "x-zioon-space-id": owner.personalSpaceId,
-      "content-type": "application/json", "x-zion-workbench-protocol": "5" };
+      "content-type": "application/json", "x-zion-workbench-protocol": "6" };
     const call = async (account: any, path: string, body?: any, method = body === undefined ? "GET" : "POST", scoped = false) => {
       const response = await native(config.runtimeUrl + path, { method, headers: { ...headers,
         authorization: `Bearer ${account.token}`, "x-zioon-space-id": account.personalSpaceId,

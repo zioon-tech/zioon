@@ -8,7 +8,7 @@ export const SKILLS_RUNTIME_SOURCES_KV_KEY =
   `runtime.plugins.${SKILLS_RUNTIME_PLUGIN_ID}.${SKILLS_RUNTIME_STATE_NAMESPACE}.${SKILLS_RUNTIME_SOURCES_KEY}`;
 export const SKILLS_LOCAL_RUNTIME_NODE_ID = "runtime:local";
 export const SKILLS_RUNTIME_PLUGIN_NODE_ID = "runtime:plugins";
-const MAX_SKILL_BODY_CHARS = 512 * 1024;
+const MAX_SKILL_BODY_CHARS = 4 * 1024 * 1024;
 const SYNCABLE_SKILL_TEXT_FILE_RE =
   /\.(md|mdx|txt|json|ya?ml|js|mjs|cjs|ts|tsx|jsx|py|sh|bash|zsh|xml|html|css|csv)$/i;
 const PRIVATE_KEY_FILE_RE = /\.(?:key|pem|p12|pfx)$/i;
@@ -92,6 +92,13 @@ function normalizeSkill(skill, defaults = {}) {
     runtimePath: String(entry.runtimePath || entry.runtime_path || ""),
     runtimeFile: String(entry.runtimeFile || entry.runtime_file || ""),
     runtimeCached: entry.runtimeCached === true || entry.runtime_cached === true,
+    ...(entry.bundleRef && typeof entry.bundleRef === "object" ? {
+      bundleRef: {
+        schemaVersion: entry.bundleRef.schemaVersion,
+        digest: entry.bundleRef.digest,
+        bytes: entry.bundleRef.bytes
+      }
+    } : {}),
     files: uniqueStrings(entry.files),
     ...(body ? { body } : {}),
     ...(entry.transient === true ? { transient: true } : {}),
@@ -192,19 +199,26 @@ export function reconcileSkillsSourceSnapshots({
       );
     });
     const catalog = [...preserved, ...(scanned?.catalog || [])];
-    const pluginCatalogChanged = pluginCatalogReady && (
-      (previous?.catalog || []).some((skill) => skill.source === "plugin")
-      || (scanned?.catalog || []).some((skill) => skill.source === "plugin")
+    // A successful scan proves availability/deletions, not a new content version.
+    const fingerprint = (items) => JSON.stringify(items.map((skill) => ({
+      ...skill, syncedAt: 0, sourceVariants: undefined
+    })).sort((a, b) => a.id.localeCompare(b.id)));
+    const unchanged = fingerprint(catalog) === fingerprint(previous?.catalog || []);
+    const changed = !unchanged || (
+      JSON.stringify(uniqueStrings(configuredForNode.map((entry) => entry.path)).sort())
+      !== JSON.stringify([...(previous?.paths || [])].sort())
     );
-    const changed = !!scanned
-      || pluginCatalogChanged
-      || catalog.length !== (previous?.catalog.length || 0);
+    const stableCatalog = catalog.map((skill) => {
+      const old = previous?.catalog.find((item) => item.id === skill.id && item.sourcePath === skill.sourcePath);
+      return old && skill.contentHash && old.contentHash === skill.contentHash
+        ? { ...skill, syncedAt: old.syncedAt } : skill;
+    });
     result.push(normalizeSkillsSourceSnapshot({
       nodeId,
       nodeLabel: scanned?.nodeLabel || previous?.nodeLabel || nodeId,
       syncedAt: changed ? now : previous?.syncedAt,
-      paths: configuredForNode.map((entry) => entry.path),
-      catalog
+      paths: uniqueStrings(configuredForNode.map((entry) => entry.path)),
+      catalog: stableCatalog
     }));
   }
 
@@ -347,10 +361,9 @@ export function buildAvailableSkillsContextXml(snapshot, {
         ? `<description>${escapeXML(skill.description)}</description>`
         : "";
       const cached = skill.runtimeCached || skill.body;
-      const location = skill.runtimeFile
-        || (!cached
-          ? skill.file || (skill.path ? `${skill.path}/SKILL.md` : "")
-          : "");
+      const location = !cached
+        ? skill.file || (skill.path ? `${skill.path}/SKILL.md` : "")
+        : "";
       const locationNodeId = skill.runtimeFile
         ? skill.runtimeNodeId
         : skill.sourceNodeId;
@@ -382,6 +395,9 @@ export function buildAvailableSkillsContextXml(snapshot, {
       ? `For Runtime-cached skills, call ${detailTool} with name and include_body=true. Do not use Read or node_id for their source metadata.`
       : "",
     "Use the Read tool only for a non-cached skill that shows a location and node_id.",
+    hasCached
+      ? `Read cached references/scripts with ${detailTool}(name, file, content_hash). Before executing cached directory/plugin scripts, call skillsPrepare with the Skill id, content_hash and an explicit authorized node_id; installed marketplace Skills use extensionsCall workspace-prepare. Legacy body-only Skills need a successful source rescan to cache attachments. Source metadata does not select the execution host; source-specific credentials and state still require the original Node.`
+      : "",
     hasOfflineSource
       ? "A source Node is offline. Cached instructions remain usable for reasoning, but do not assume that source-local files, commands, credentials, login state, or environment variables are available."
       : ""

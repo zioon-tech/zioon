@@ -73,6 +73,7 @@ export class CardTypeRegistry {
 export class ChatCardRuntime {
   readonly registry = new CardTypeRegistry();
   private readonly deferredRestoreVersions = new Map<string, number>();
+  private readonly restoring = new Map<string, (success: boolean) => void>();
 
   constructor(private readonly opts: ChatCardRuntimeOptions) {}
 
@@ -108,9 +109,18 @@ export class ChatCardRuntime {
 
   restoreSession(restoreOpts: RestoreChatCardsOptions) {
     const sessionId = restoreOpts?.sessionId;
-    if (!sessionId) return { annotations: null, restored: {} as Record<string, any[]> };
+    if (!sessionId) return { annotations: null, restored: {} as Record<string, any[]>, completion: Promise.resolve(false) };
     const panelId = restoreOpts?.panelId ?? null;
     const deferKey = String(panelId || "global");
+    this.restoring.get(deferKey)?.(false);
+    let complete!: (success: boolean) => void;
+    const completion = new Promise<boolean>(resolve => { complete = resolve; });
+    this.restoring.set(deferKey, complete);
+    const finish = () => {
+      if (this.restoring.get(deferKey) !== complete) return;
+      this.restoring.delete(deferKey);
+      complete(true);
+    };
     const deferVersion = (this.deferredRestoreVersions.get(deferKey) || 0) + 1;
     this.deferredRestoreVersions.set(deferKey, deferVersion);
     const annotations = restoreOpts?.annotations || this.opts.getAnnotations(sessionId) || {};
@@ -151,27 +161,26 @@ export class ChatCardRuntime {
       requestAnimationFrame(() => {
         setTimeout(() => {
           const restoreNext = (index: number) => {
-            if (index >= types.length || this.deferredRestoreVersions.get(deferKey) !== deferVersion) return;
+            if (this.deferredRestoreVersions.get(deferKey) !== deferVersion) return;
+            if (index >= types.length) { finish(); return; }
             const run = () => {
               if (this.deferredRestoreVersions.get(deferKey) !== deferVersion) return;
               emitRestore(types[index]);
               restoreNext(index + 1);
             };
-            const requestIdle = (globalThis as any).requestIdleCallback;
-            if (typeof requestIdle === "function") {
-              requestIdle(run, { timeout: 1200 });
-            } else {
-              setTimeout(run, 0);
-            }
+            // Restore visible history after the text's first paint. Separate
+            // card types into tasks so input can run between their updates.
+            setTimeout(run, 0);
           };
           restoreNext(0);
-        }, 500);
+        }, 0);
       });
     } else {
       for (const type of types) emitRestore(type);
+      finish();
     }
 
-    return { annotations, restored };
+    return { annotations, restored, completion };
   }
 
   snapshotSession(snapshotOpts: SnapshotChatCardsOptions) {

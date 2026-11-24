@@ -8,13 +8,14 @@ export function applyAnnotationsForSessionImpl(args) {
     const meta = loadMeta(id);
     const ann = meta?.annotations;
     if (!ann) return;
-    zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
+    const result = zion?.commands?.executeCommand?.("zion.chatCards.restoreSession", {
       sessionId: id,
       panelId: targetPanelId || zion?.panelManager?.getActivePanelId?.() || null,
       annotations: ann,
       clearFirst: false,
       defer: true
     });
+    return result?.completion;
   } catch (e) {
     console.error("[sessions] apply annotations error:", e);
   }

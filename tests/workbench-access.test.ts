@@ -23,6 +23,75 @@ beforeEach(async () => {
 });
 
 describe("Workbench remote access bootstrap", () => {
+  it.each([
+    { role: "owner", requested: false, expected: "space:legacy" },
+    { role: "member", requested: false, expected: "space:personal" },
+    { role: "member", requested: true, expected: "space:legacy" }
+  ])("selects the correct home after profile return: %j", async ({ role, requested, expected }) => {
+    if (requested) history.replaceState({}, "", "/?space=space%3Alegacy");
+    const identity = {
+      user: { id: "user:one", name: "子航", email: "one@example.test" },
+      space: { id: "space:legacy", kind: "team" },
+      membership: { role, status: "active" },
+      spaces: [{ id: "space:personal", kind: "personal", membership: { role: "owner", status: "active" } }],
+      scopes: ["runtime.read", "runtime.write"]
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), location.origin).pathname;
+      if (path === "/health") return Response.json({
+        service: "zion-runtime", authRequired: true, authMode: "accounts-v1"
+      });
+      if (path === "/v1/account/me") return Response.json(
+        new Headers(init?.headers).get("x-zioon-space-id") === "space:personal"
+          ? { ...identity, space: { id: "space:personal", kind: "personal" }, membership: { role: "owner", status: "active" } }
+          : identity
+      );
+      if (path === "/v1/sessions") return Response.json({ sessions: [{ id: "existing-session" }] });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "setInterval").mockReturnValue(0);
+    await ensureWorkbenchRuntimeAccess(document.getElementById("app")!);
+    expect(new URL(location.href).searchParams.get("space")).toBe(expected);
+    await fetch(location.origin + "/v1/sessions");
+    const call = fetchMock.mock.calls.at(-1)!;
+    expect(new Headers(call[1]?.headers).get("x-zioon-space-id")).toBe(expected);
+  });
+
+  it("waits for retry without mounting an unscoped Workbench when discovery is unavailable", async () => {
+    history.replaceState({}, "", "/?space=space%3Aone");
+    let available = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), location.origin).pathname;
+      if (!available) return Response.json({ error: "Unavailable" }, { status: 503 });
+      if (path === "/health") return Response.json({
+        service: "zion-runtime", authRequired: true, authMode: "accounts-v1"
+      });
+      if (path === "/v1/account/me") return Response.json({
+        user: { id: "user:one" }, space: { id: "space:one", kind: "personal" },
+        membership: { role: "owner", status: "active" },
+        scopes: ["runtime.read", "runtime.write"]
+      });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "setInterval").mockReturnValue(0);
+    const host = document.getElementById("app")!;
+    let entered = false;
+    const access = ensureWorkbenchRuntimeAccess(host).then(() => { entered = true; });
+    await vi.waitFor(() => expect(host.textContent).toContain("暂时无法连接工作台"));
+    expect(entered).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/account/me"))).toBe(false);
+    available = true;
+    host.querySelector("button")!.click();
+    await access;
+    expect(entered).toBe(true);
+    const response = await fetch(`${location.origin}/v1/account/me`);
+    expect(response.ok).toBe(true);
+    const call = fetchMock.mock.calls.at(-1) as unknown as [unknown, RequestInit];
+    expect(new Headers(call[1].headers).get("x-zioon-space-id")).toBe("space:one");
+  });
+
   it("registers an Owner-facing device management page", () => {
     const registerPage = vi.fn(() => ({ dispose() {} }));
     (window as any).zion = {

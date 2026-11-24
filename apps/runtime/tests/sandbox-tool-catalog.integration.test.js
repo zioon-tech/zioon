@@ -70,6 +70,9 @@ it("serves native search and actual sandbox capabilities before any Device regis
     expect(tools.find((tool) => tool.name === "webSearch")).toMatchObject({
       hostKinds: ["runtime"], execution: { effect: "read", idempotency: "safe" }
     });
+    const bash = tools.find((tool) => tool.name === "Bash");
+    expect(bash.inputSchema.properties.timeout).toMatchObject({ default: 120000, maximum: 600000 });
+    expect(bash.execution.timeoutMs).toBeGreaterThan(bash.inputSchema.properties.timeout.maximum);
   } finally {
     if (child && child.exitCode === null) {
       const exit = new Promise((resolveExit) => child.once("exit", resolveExit));

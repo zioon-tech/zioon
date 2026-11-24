@@ -25,11 +25,11 @@ afterEach(() => {
 });
 
 describe("sidebar concurrent persistence", () => {
-  async function saveTree(body) {
+  async function saveTree(body, protocol = "5") {
     const store = { readSnapshot: vi.fn(), updateSession: vi.fn(), writeTree: vi.fn(async () => ({ ok: true })) };
     const request = Readable.from([Buffer.from(JSON.stringify(body))]);
     request.method = "PUT";
-    request.headers = { "x-zion-workbench-protocol": "5" };
+    request.headers = { "x-zion-workbench-protocol": protocol };
     const response = { writeHead: vi.fn(), end: vi.fn() };
     await createWorkbenchStateHttpHandler({ store })(
       request, response, new URL("http://test/v1/workbench-state/tree")
@@ -46,9 +46,9 @@ describe("sidebar concurrent persistence", () => {
   it("passes the base snapshot to the transactional tree merge", async () => {
     const tree = root([folder("new")]);
     const base = root([]);
-    const { store, response } = await saveTree({ tree, base_tree: base });
+    const { store, response } = await saveTree({ tree, base_tree: base }, "6");
     expect(response.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-    expect(store.writeTree).toHaveBeenCalledWith(tree, undefined, null, "", base);
+    expect(store.writeTree).toHaveBeenCalledWith(tree, undefined, null, "", base, null);
   });
 
   it("preserves another tab's empty folder when a stale tab creates a session", () => {

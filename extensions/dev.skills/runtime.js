@@ -112,6 +112,8 @@ export function activateRuntimePlugin(context) {
   const localSourceAvailable = context.config?.localSourceAvailable === true;
   const marketplaceSkills = context.config?.marketplaceSkills;
   const marketplaceSkillFile = context.config?.marketplaceSkillFile;
+  const skillFile = context.config?.skillFile;
+  const prepareSkill = context.config?.prepareSkill;
   const provider = new RuntimeSkillsContextProvider({
     state,
     availableNodes,
@@ -140,7 +142,7 @@ export function activateRuntimePlugin(context) {
         },
         file: {
           type: "string",
-          description: "Read one packaged reference or script from an installed marketplace Skill."
+          description: "Read one cached reference or script without starting a Sandbox or source Node."
         },
         content_hash: {
           type: "string",
@@ -168,12 +170,16 @@ export function activateRuntimePlugin(context) {
           };
         }
         const sourceStatus = statuses[skill.sourceNodeId] || "offline";
+        if (args.content_hash && args.content_hash !== skill.contentHash) return {
+          ok: false, content: JSON.stringify({ error: "Skill content changed; retrieve the current version.", code: "skill_content_changed" })
+        };
         let attachment;
         if (args.file) {
-          if (!marketplaceSkillFile || !skill.id.startsWith("marketplace:")) return {
+          const read = skill.id.startsWith("marketplace:") ? marketplaceSkillFile : skillFile;
+          if (!read) return {
             ok: false, content: JSON.stringify({ error: "Packaged Skill file unavailable" })
           };
-          attachment = await marketplaceSkillFile(runContext, skill.id, args.file, args.content_hash || skill.contentHash);
+          attachment = await read(runContext, skill.id, args.file, args.content_hash || skill.contentHash);
         }
         return {
           ok: true,
@@ -195,7 +201,7 @@ export function activateRuntimePlugin(context) {
               executionNotice: skill.runtimeCached || skill.body
                 ? skill.id.startsWith("marketplace:")
                   ? "Use this cached body as the Skill instructions. Read packaged files with skillsList(name, file, content_hash). Use extensionsCall workspace-prepare to materialize files on the authorized account workspace before running scripts."
-                  : "Use this Runtime-cached body as the Skill instructions. Do not read sourceFile or use sourceNodeId."
+                  : "Use this Runtime-cached body as the Skill instructions. Do not read sourceFile or use sourceNodeId for instruction retrieval. Read references/scripts with skillsList(name, file, content_hash). Before running bundled scripts, call skillsPrepare with id, content_hash and an explicit authorized node_id. Source-specific commands and credentials still require the source Node."
                 : sourceStatus === "online"
                   ? "The source Node is online, but commands, credentials, and dependencies must still be verified before execution."
                 : "The source Node is offline. Cached instructions are available for reasoning, but source-local commands, files, credentials, login state, and environment variables are not available."
@@ -212,7 +218,7 @@ export function activateRuntimePlugin(context) {
             name: skill.name,
             description: skill.description,
             enabled: enabled.has(skill.id),
-            ...(!cached || skill.runtimeFile ? {
+            ...(!cached ? {
               file: skill.runtimeFile || skill.file || (skill.path ? `${skill.path}/SKILL.md` : ""),
               node_id: skill.runtimeNodeId || skill.sourceNodeId
             } : {}),
@@ -233,10 +239,32 @@ export function activateRuntimePlugin(context) {
       };
     }
   });
+  const prepareRegistration = prepareSkill ? context.tools.registerTool({
+    name: "skillsPrepare",
+    description: "Prepare an immutable cached Skill bundle on an explicitly selected authorized Node or account Sandbox before executing scripts. Does not execute scripts or transfer credentials.",
+    execution: { effect: "process", timeoutMs: 600000, maxTimeoutMs: 600000 },
+    policy: { minimumPreset: "trusted-automation" },
+    inputSchema: { type: "object", properties: {
+      name: { type: "string", description: "Exact Skill id from skillsList." },
+      content_hash: { type: "string", description: "The contentHash returned by skillsList." },
+      node_id: { type: "string", description: "Chosen authorized Node; managed:account selects this account's Sandbox." },
+      workspace_root: { type: "string", description: "Absolute writable directory on a physical Node. Account Sandbox defaults to its plugin data directory." }
+    }, required: ["name", "content_hash", "node_id"], additionalProperties: false },
+    async invoke(args, runContext = {}) {
+      const snapshot = await readSkillsSnapshot(state, marketplaceSkills, runContext);
+      const skill = snapshot.catalog.find((entry) => entry.id === args.name);
+      if (!skill) return { ok: false, content: JSON.stringify({ error: "Skill not found" }) };
+      if (skill.id.startsWith("marketplace:")) return { ok: false, content: JSON.stringify({
+        error: "Use extensionsCall workspace-prepare for installed marketplace Skills."
+      }) };
+      return prepareSkill(runContext, skill, args);
+    }
+  }) : null;
   return {
     dispose() {
       providerRegistration.dispose();
       toolRegistration.dispose();
+      prepareRegistration?.dispose();
     }
   };
 }

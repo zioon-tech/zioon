@@ -103,6 +103,7 @@ export type RunRecord = {
   deniedToolCalls: number;
   tools: RunToolSummary[];
   lastEventAt: number;
+  lastEventSequence?: number;
   outputPreview?: string;
   outputLength?: number;
   outcome?: RunOutcome;
@@ -160,6 +161,8 @@ type RunLedgerOptions = {
   maxRuns?: number;
   maxEvents?: number;
   maxOutcomes?: number;
+  persistDelayMs?: number;
+  lifecycleTarget?: EventTarget | null;
 };
 
 const DEFAULT_STORAGE_KEY = "zion.core.runLedger.v1";
@@ -383,6 +386,7 @@ function normalizeRun(input: any, now = Date.now()): RunRecord | null {
     deniedToolCalls: positiveInteger(input?.deniedToolCalls),
     tools: Array.isArray(input?.tools) ? input.tools.map(normalizeToolSummary).filter(Boolean) as RunToolSummary[] : [],
     lastEventAt: positiveInteger(input?.lastEventAt) || now,
+    lastEventSequence: positiveInteger(input?.lastEventSequence) || undefined,
     outputPreview: cleanString(input?.outputPreview || "", 500) || undefined,
     outputLength: positiveInteger(input?.outputLength) || undefined,
     outcome: normalizeOutcome(input?.outcome)
@@ -619,15 +623,60 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
     sourceKinds.set(item.kind, { ...item, token: 0 });
   }
   let document = loadDocument(storage, storageKey, now());
+  const eventKey = (event: RunLedgerEvent) => JSON.stringify([event.runId, event.id]);
+  const eventIds = new Set(document.events.map(eventKey));
+  const receivedSequences = new Map<string, number>();
+  for (const run of document.runs) {
+    if (run.lastEventSequence) receivedSequences.set(run.id, run.lastEventSequence);
+  }
+  for (const event of document.events) {
+    if (event.sequence) receivedSequences.set(
+      event.runId, Math.max(receivedSequences.get(event.runId) || 0, event.sequence)
+    );
+  }
+  // Legacy ledgers already contain ordered Runtime events but no receive cursor.
+  document.runs = document.runs.map((run) => ({
+    ...run, lastEventSequence: receivedSequences.get(run.id) || undefined
+  }));
+  const persistDelayMs = Math.max(0, options.persistDelayMs ?? 250);
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let dirty = false;
+  const cancelPersist = () => {
+    if (persistTimer !== null) clearTimeout(persistTimer);
+    persistTimer = null;
+  };
+  const flush = () => {
+    cancelPersist();
+    if (!dirty || !storage) return;
+    try {
+      storage.setItem(storageKey, JSON.stringify(document));
+      dirty = false;
+    } catch {}
+  };
+  const lifecycleTarget = options.lifecycleTarget !== undefined
+    ? options.lifecycleTarget
+    : typeof window !== "undefined" && (storage === localStorage || storage === window.localStorage) ? window : null;
+  lifecycleTarget?.addEventListener("pagehide", flush);
 
   const persist = () => {
+    for (const event of document.events.slice(0, Math.max(0, document.events.length - maxEvents))) {
+      eventIds.delete(eventKey(event));
+    }
     document = {
       ...document,
       runs: document.runs.slice(-maxRuns),
       events: document.events.slice(-maxEvents),
       outcomes: document.outcomes.slice(-maxOutcomes)
     };
-    try { storage?.setItem(storageKey, JSON.stringify(document)); } catch {}
+    if (!storage) return;
+    dirty = true;
+    if (persistDelayMs === 0) flush();
+    else if (persistTimer === null) {
+      // Serialize only the latest document once per burst. Queuing a full
+      // multi-MB localStorage value for every replayed event exhausts the
+      // renderer's native storage allocations even with a small JS heap.
+      persistTimer = setTimeout(flush, persistDelayMs);
+    }
   };
 
   const emitChanged = (reason: string, payload: any = {}) => {
@@ -667,13 +716,17 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
 
   const appendEvent = (event: RunLedgerEvent) => {
     document = { ...document, events: [...document.events, event] };
+    eventIds.add(eventKey(event));
   };
 
   const applyEventToRun = (event: RunLedgerEvent) => {
     const at = event.ts || now();
     ensureRun(event.runId, { startedAt: at, createdAt: at });
     updateRun(event.runId, (run) => {
-      let next: RunRecord = { ...run, updatedAt: at, lastEventAt: at };
+      let next: RunRecord = {
+        ...run, updatedAt: at, lastEventAt: at,
+        lastEventSequence: Math.max(run.lastEventSequence || 0, event.sequence || 0) || undefined
+      };
       const data = event.data || {};
       if (event.type === "run.started") {
         next = {
@@ -808,6 +861,7 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
         lastEventAt: at
       }, at);
       if (!run) throw new Error("run id is required");
+      run.lastEventSequence = Math.max(run.lastEventSequence || 0, receivedSequences.get(run.id) || 0) || undefined;
       document = {
         ...document,
         runs: [...document.runs.filter((item) => item.id !== run.id), run]
@@ -817,11 +871,23 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
       return run;
     },
     recordEvent(input: any): RunLedgerEvent | null {
+      const runId = cleanString(input?.runId || "", 180);
+      const type = cleanString(input?.type || "", 120);
+      const id = cleanString(input?.id || input?.eventId || "", 180);
+      const sequence = positiveInteger(input?.sequence);
+      if (!runId || !type || TRANSIENT_STREAM_EVENT_TYPES.has(type)) return null;
+      if (id && eventIds.has(eventKey({ runId, id } as RunLedgerEvent))) return null;
+      if (sequence && sequence <= (receivedSequences.get(runId) || 0)) return null;
       const event = normalizeEvent(input, now());
       if (!event) return null;
       if (TRANSIENT_STREAM_EVENT_TYPES.has(event.type)) return null;
+      // The UI still replays these events to restore cards. Its projection
+      // cursor is independent of the ledger's ordered receive cursor.
+      if (eventIds.has(eventKey(event))) return null;
+      if (event.sequence && event.sequence <= (receivedSequences.get(event.runId) || 0)) return null;
       appendEvent(event);
       applyEventToRun(event);
+      if (event.sequence) receivedSequences.set(event.runId, event.sequence);
       persist();
       emitChanged("event", { event });
       return event;
@@ -959,6 +1025,12 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
         .sort((a, b) => Number(a.order ?? 100) - Number(b.order ?? 100) || a.label.localeCompare(b.label));
     },
     getSnapshot,
+    flush,
+    dispose() {
+      flush();
+      lifecycleTarget?.removeEventListener("pagehide", flush);
+      listeners.clear();
+    },
     subscribe(filterOrHandler: RunListFilter | ((snapshot: RunLedgerSnapshot) => void), maybeHandler?: (snapshot: RunLedgerSnapshot) => void) {
       const filter = typeof filterOrHandler === "function" ? {} : filterOrHandler || {};
       const handler = typeof filterOrHandler === "function" ? filterOrHandler : maybeHandler;
@@ -978,7 +1050,11 @@ export function createRunLedger(options: RunLedgerOptions = {}) {
       return { dispose: () => listeners.delete(listener) };
     },
     clear() {
+      cancelPersist();
+      dirty = false;
       document = normalizeDocument({}, now());
+      eventIds.clear();
+      receivedSequences.clear();
       try { storage?.removeItem?.(storageKey); } catch {}
       emitChanged("clear");
     }

@@ -448,6 +448,7 @@ export class EditorCore {
   private readonly untrustedContent: boolean;
   private readonly imageUrl?: (source: string) => string | null;
   private readonly readerContentUpdate = Annotation.define<boolean>();
+  private disposeListeners = new Set<() => void>();
   private _panelId: string;
   private _editorId: string;
   private _sessionId: string | null = null;
@@ -636,10 +637,23 @@ export class EditorCore {
           Transaction.addToHistory.of(false)
         ]
       : undefined;
+    const isHydration = opts?.source === "collaboration-hydration";
+    let from = 0, to = state.doc.length, end = v.length;
+    if (isHydration) {
+      const before = state.doc.toString();
+      while (from < to && from < end && before[from] === v[from]) from++;
+      while (to > from && end > from && before[to - 1] === v[end - 1]) { to--; end--; }
+    }
+    const changes = state.changes({ from, to, insert: v.slice(from, end) });
+    const effects: StateEffect<unknown>[] = isSessionReplace ? [this.historyComp.reconfigure([])] : [];
+    if (isHydration) {
+      const snapshot = this.view.scrollSnapshot().map(changes);
+      if (snapshot) effects.push(snapshot);
+    }
     const tr = state.update({
-      changes: { from: 0, to: state.doc.length, insert: v },
+      changes,
       annotations,
-      effects: isSessionReplace ? this.historyComp.reconfigure([]) : undefined
+      effects
     });
     this.view.dispatch(tr);
     if (isSessionReplace) {
@@ -1118,9 +1132,28 @@ export class EditorCore {
     }
   }
 
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
+
+  onDispose(listener: () => void): { dispose(): void } {
+    if (this.disposed) {
+      listener();
+      return { dispose() {} };
+    }
+    this.disposeListeners.add(listener);
+    return { dispose: () => { this.disposeListeners.delete(listener); } };
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    // Release registry proxies and decorators while the view can still flush
+    // its recovery copy and remove collaboration extensions.
+    for (const listener of Array.from(this.disposeListeners)) {
+      try { listener(); } catch {}
+    }
+    this.disposeListeners.clear();
     this.externalExtensions = [];
     for (const dispose of this.windowDisposers.splice(0)) {
       try { dispose(); } catch {}

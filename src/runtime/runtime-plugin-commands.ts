@@ -10,7 +10,7 @@ export async function runtimePluginCommand(pluginId: string, args: Record<string
   installation?: { digest: string; epoch: string }) {
   const zion = (globalThis as any).window?.zion;
   const config = readWorkbenchRuntimeConfig({ state: zion?.state, storage: globalThis.localStorage });
-  if (config.mode === "browser") throw new Error("此功能需要连接 Zion Runtime");
+  if (config.mode === "browser") throw new Error("此功能需要连接 Zioon Runtime");
   const sessionId = String(args.sessionId || activeWorkflowSessionId(zion));
   if (!sessionId && !installation) throw new Error("请先打开一个会话");
   const response = await fetch(`${config.baseUrl}/v1/plugins/${encodeURIComponent(pluginId)}/commands`, {

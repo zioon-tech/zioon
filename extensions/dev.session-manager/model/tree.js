@@ -4,6 +4,7 @@ export function createSessionTreeModel(opts) {
   const onPersist = opts?.onPersist;
   const onDelete = opts?.onDelete;
   const loadMeta = opts?.loadMeta;
+  const peekMeta = opts?.peekMeta || loadMeta;
   const genId = opts?.genId;
   const getLastActiveId = opts?.getLastActiveId;
   const setLastActiveId = opts?.setLastActiveId;
@@ -66,7 +67,7 @@ export function createSessionTreeModel(opts) {
     const walk = (node) => {
       if (!node) return;
       if (node.type === "session") {
-        const meta = loadMeta(node.id);
+        const meta = peekMeta(node.id);
         const title = String(meta?.title || node.title || node.id || "").trim() || node.id;
         out.push({
           id: node.id,
@@ -217,17 +218,18 @@ export function createSessionTreeModel(opts) {
     }
   }
 
-  function removeNode(nodeId) {
+  function removeNode(nodeId, { persist = true } = {}) {
     const tree = loadTree();
     if (!tree) return false;
     const { node, parent } = findNodeAndParent(tree, nodeId);
     if (!node || !parent || !Array.isArray(parent.children)) return false;
     parent.children = parent.children.filter(c => c.id !== nodeId);
-    saveTree(tree);
+    if (persist) saveTree(tree);
+    else getZion()?.state?.set("sessions.treeMem", tree);
     return true;
   }
 
-  function removeNodeRecursive(nodeId) {
+  async function removeNodeRecursive(nodeId) {
     const tree = loadTree();
     if (!tree) return false;
     const { node, parent } = findNodeAndParent(tree, nodeId);
@@ -241,8 +243,12 @@ export function createSessionTreeModel(opts) {
       return [];
     };
     const ids = collectSessions(node);
+    if (opts?.onDeleteFolder) {
+      await opts.onDeleteFolder(nodeId, cloneValue(tree), ids);
+      return true;
+    }
     for (const sid of ids) {
-      try { void onDelete?.(sid); } catch {}
+      await onDelete?.(sid);
       try { if (docKey) localStorage.removeItem(docKey(sid)); } catch {}
       try { if (metaKey) localStorage.removeItem(metaKey(sid)); } catch {}
       try { getZion()?.state?.set(`sessions.doc.${sid}`, undefined); } catch {}

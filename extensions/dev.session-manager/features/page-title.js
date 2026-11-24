@@ -2,7 +2,7 @@ import { getSessionRunIndicatorStatus } from "./run-state.js";
 
 export function createPageTitleManager(opts) {
   const zion = opts?.zion || window.zion;
-  const defaultTitle = opts?.defaultTitle || "Zion Next (CM6) Playground";
+  const defaultTitle = opts?.defaultTitle || "Zioon";
   const loadMeta = opts?.loadMeta;
   const isDefaultTitle = opts?.isDefaultTitle;
 
@@ -13,7 +13,9 @@ export function createPageTitleManager(opts) {
     if (__favSnapshot) return __favSnapshot;
     try {
       const links = Array.from(document.querySelectorAll('link[rel~="icon"]'));
-      __favSnapshot = links.map((el) => ({ el, href: el.getAttribute("href") || "" }));
+      __favSnapshot = links.map((el) => ({
+        el, href: el.getAttribute("href") || "", type: el.getAttribute("type")
+      }));
     } catch {
       __favSnapshot = [];
     }
@@ -27,6 +29,8 @@ export function createPageTitleManager(opts) {
         try {
           if (!it?.el) continue;
           if (it.href) it.el.setAttribute("href", it.href);
+          if (it.type) it.el.setAttribute("type", it.type);
+          else it.el.removeAttribute("type");
         } catch {}
       }
     } catch {}
@@ -48,30 +52,27 @@ export function createPageTitleManager(opts) {
       if (links.length === 0) {
         const el = document.createElement("link");
         el.setAttribute("rel", "icon");
+        el.setAttribute("href", "/favicon.svg?v=4");
+        el.setAttribute("type", "image/svg+xml");
         document.head.appendChild(el);
-        __favSnapshot = [{ el, href: "" }];
+        __favSnapshot = [{ el, href: "/favicon.svg?v=4", type: "image/svg+xml" }];
         links = [el];
       }
 
-      const d = 64;
-      const canvas = document.createElement("canvas");
-      canvas.width = d;
-      canvas.height = d;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      ctx.clearRect(0, 0, d, d);
-      ctx.beginPath();
-      ctx.arc(d / 2, d / 2, d * 0.22, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.lineWidth = Math.max(2, Math.round(d * 0.05));
-      ctx.strokeStyle = "rgba(0,0,0,0.25)";
-      ctx.stroke();
-
-      const url = canvas.toDataURL("image/png");
+      const dotColor = String(color).replace(/[&"<>]/g, char => ({
+        "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;"
+      })[char]);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+        <rect x="74" y="74" width="876" height="876" rx="197" fill="#2b2f32"/>
+        <path d="M300 352H689L335 676H678" stroke="#f9f9f9" stroke-width="82" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="779" cy="675" r="44" fill="${dotColor}"/>
+      </svg>`;
+      const url = "data:image/svg+xml," + encodeURIComponent(svg);
       for (const el of links) {
-        try { el.setAttribute("href", url); } catch {}
+        try {
+          el.setAttribute("type", "image/svg+xml");
+          el.setAttribute("href", url);
+        } catch {}
       }
     } catch {}
   }

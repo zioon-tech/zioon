@@ -1,20 +1,25 @@
 import { workbenchStorage as localStorage, spaceScopedName, isSharedWorkbenchDocument, sharedDocumentEditable } from "../../src/runtime/workbench-space";
 import { currentAccountSession } from "../../packages/account-ui/src/client";
 import { registerSessionTools } from "./session-tools.js";
+import { deriveSessionTitleFromContent } from "../../packages/runtime-client/src/session-title.mjs";
+import { localSessionAnnotationCopy } from "../../packages/runtime-client/src/session-annotations.mjs";
 import {
   clearMigratedBrowserSessions,
   readBrowserSessionCandidate
 } from "./storage/browser-migration.js";
 import { createSessionDocRepo } from "./storage/docs.js";
-import { hydrateSessionCatalog } from "./storage/catalog.js";
+import { catalogResponseIsCurrent, hydrateSessionCatalog } from "./storage/catalog.js";
 import {
   deleteRemoteSession,
+  hydrateRemoteAnnotations,
+  deleteRemoteFolder,
   forkRemoteChatSession,
   migrateBrowserSessionStorage,
   readRemoteActiveRun,
   readRemoteRunEvent,
   readRemoteTree,
   readRemoteSession,
+  readRemoteSessionMetadata,
   readRemoteSessionKV,
   readRemoteCatalog,
   searchRemoteSessions,
@@ -26,10 +31,17 @@ import {
   writeRemoteTree
 } from "./storage/remote.js";
 import { createSessionRealtimeSync } from "./storage/realtime.js";
+import { createSessionMutationQueue } from "./storage/mutation-queue.js";
+import { createSessionConflictNotifications } from "./storage/conflict-notifications.js";
+import {
+  classifySessionStorageError,
+  sessionStorageFailureMessage
+} from "./storage/errors.js";
 import {
   createSessionTagIndex,
   getIndexedSessionTags,
   removeSessionTagIndexEntry,
+  sessionTagIndexContentsEqual,
   updateSessionTagIndex,
   validateSessionTagIndex
 } from "./model/session-tag-index.js";
@@ -37,17 +49,24 @@ import { normalizeTagPath, validateCatalog } from "./model/tag-catalog.js";
 import { createSessionUrlModel } from "./model/url.js";
 import { createSessionTreeModel } from "./model/tree.js";
 import { createSharedSessionView, isReceivedNode } from "./model/shared-view.js";
+import { createSharedSessionMover } from "./model/shared-move.js";
 import { createSessionUIStateModel } from "./model/ui-state.js";
 import { createAnnotationsLifecycle } from "./features/annotations-lifecycle.js";
 import { applyAnnotationsForSessionImpl } from "./features/annotations-apply.js";
+import { beginSessionPresentation } from "../../src/session/presentation.ts";
 import {
   createChatCardWriterLeases,
   shouldPersistChatCardInBackground
 } from "./features/chat-card-writer.js";
 import { createPageTitleManager } from "./features/page-title.js";
+import { createChatAutoRenameTrigger } from "./features/chat-auto-rename.js";
+import { removeDeletedSessions } from "./features/deleted-sessions.js";
+import { createSessionDeletionController } from "./features/deletion-controller.js";
+import { deleteSelectedSessions } from "./commands/delete-selected.js";
 import { registerSessionAutoRenameCommand } from "./commands/auto-rename.js";
 import { registerSessionSidebarCommands } from "./commands/sidebar.js";
 import { registerSessionFlushCommand } from "./commands/flush.js";
+import { createSessionReloadPreparation } from "./commands/prepare-reload.js";
 import { registerSessionDocCommands } from "./commands/doc-apis.js";
 import { registerSessionTagExclusionCommands } from "./commands/tag-exclusions.js";
 import { registerSessionTreeCommands } from "./commands/tree-apis.js";
@@ -122,6 +141,9 @@ const I18N_MESSAGES = {
     "ui.noMatchingSessions": "没有匹配的会话",
     "ui.cancel": "取消",
     "ui.delete": "删除",
+    "ui.deleting": "删除中",
+    "ui.deleteWaitingNetwork": "等待网络恢复",
+    "ui.deleteSelectedConfirm": "确认删除选中的 {count} 项？删除后无法撤销。",
     "ui.deleteConfirm": "确认删除？",
     "ui.openNewTab": "在新标签页打开",
     "ui.rename": "重命名",
@@ -257,6 +279,9 @@ const I18N_MESSAGES = {
     "ui.noMatchingSessions": "No matching sessions.",
     "ui.cancel": "Cancel",
     "ui.delete": "Delete",
+    "ui.deleting": "Deleting",
+    "ui.deleteWaitingNetwork": "Waiting for connection",
+    "ui.deleteSelectedConfirm": "Delete {count} selected item(s)? This cannot be undone.",
     "ui.deleteConfirm": "Delete?",
     "ui.openNewTab": "Open in New Tab",
     "ui.rename": "Rename",
@@ -388,6 +413,8 @@ function safeJSONParse(text, fallback) {
 let storageWarningNotification = null;
 let storageWarningLastShownAt = 0;
 let storageWarningCount = 0;
+let storageWarningKey = "";
+const reportedStorageErrors = new WeakSet();
 
 function findStorageWarningNotification() {
   try {
@@ -413,23 +440,39 @@ function clearStorageWarning() {
   storageWarningNotification = null;
   storageWarningLastShownAt = 0;
   storageWarningCount = 0;
+  storageWarningKey = "";
   try { window.zion?.state?.set("sessions.storageError", null); } catch {}
+  try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
 }
 
-/** Surface one persistent-storage warning while retaining every error in diagnostics. */
-function warnStorageIssue(where, error) {
+const loggedStorageFailures = new WeakSet();
+/** One queue failure can reject many document/tree/meta waiters. Log it once. */
+function warnStorageIssue(where, error, options = {}) {
   try {
-    console.error("[sessions] storage write failed at", where, error);
+    if (error && typeof error === "object") {
+      // Queue failures also reach saveMeta/saveDoc callers. Report once.
+      if (reportedStorageErrors.has(error)) return;
+      reportedStorageErrors.add(error);
+    }
+    const issue = classifySessionStorageError(error);
+    const operation = String(where).startsWith("load") ? "read" : "write";
+    console.error(`[sessions] storage ${operation} failed at`, where, issue);
     storageWarningCount += 1;
     try {
       window.zion?.state?.set("sessions.storageError", {
         where,
-        error: String(error),
+        error: issue.kind,
+        ...issue,
+        retrying: options.retrying === true && issue.retryable,
         count: storageWarningCount,
         at: now()
       });
     } catch {}
-    try { window.zion?.state?.set("sessions.storageUnavailable", true); } catch {}
+    try {
+      window.zion?.state?.set("sessions.storageUnavailable",
+        !["conflict", "too-large", "rejected"].includes(issue.kind));
+    } catch {}
+    if (options.notify === false) return;
     try {
       if (
         window.zion?.state?.get(RELOAD_PREPARING_KEY) === true
@@ -441,10 +484,14 @@ function warnStorageIssue(where, error) {
       : findStorageWarningNotification();
     const hasVisibleWarning = storageWarningNotification?.isConnected === true;
     const recentlyShown = now() - storageWarningLastShownAt < 30000;
-    if (hasVisibleWarning || recentlyShown) return;
+    const warningKey = `${issue.kind}:${operation}:${options.mutationType || "session"}:${options.background === true}:${options.retrying === true}`;
+    if (storageWarningKey === warningKey && (hasVisibleWarning || recentlyShown)) return;
+    if (hasVisibleWarning) storageWarningNotification.remove();
     try {
+      storageWarningKey = warningKey;
       storageWarningLastShownAt = now();
-      storageWarningNotification = window.zion?.notification?.show?.("会话暂未写入本地存储服务，正在自动重试。", {
+      storageWarningNotification = window.zion?.notification?.show?.(
+        sessionStorageFailureMessage(error, { ...options, operation }), {
         type: "warning",
         duration: 12000,
         dismissible: true
@@ -459,22 +506,45 @@ const DB_NAME = spaceScopedName("zion.sessions.db");
 let remoteSnapshotQueue = Promise.resolve();
 let remoteStorageOnline = false;
 let remoteSyncTimer = 0;
-let remoteRevision = null;
+// Only a fully applied catalog confirms the account-wide storage revision.
+// A session receipt or an event may include changes this client has not read.
+let remoteCatalogRevision = null;
 let remoteEventCursor = 0;
 let remoteRealtimeSync = null;
 const durableSessionIds = new Set();
 const remoteSessionRevisions = new Map();
 const remoteSessionKV = new Map();
-const pendingRemoteMutations = [];
 let remoteTreeBase = null;
-let remoteMutationFlushActive = false;
-let remoteMutationFlushScheduled = false;
+const remoteMutationQueue = createSessionMutationQueue({
+  execute: executeRemoteMutation,
+  onCommit: commitRemoteMutation,
+  onFailure: handleRemoteMutationFailure,
+  onState: publishRemoteQueueState,
+  operationId: mutation => createRemoteOperationId(mutation.type, mutation.id),
+  prepare: mutation => ({
+    ...mutation,
+    expectedSessionRevision: remoteSessionRevisions.get(mutation.id)
+  })
+});
+const pendingRemoteMutations = remoteMutationQueue.pending;
+const sessionConflictNotifications = createSessionConflictNotifications({
+  getQueue: () => remoteMutationQueue,
+  show: (message, options) => window.zion?.notification?.show?.(message, options),
+  resolve: async mutation => {
+    try {
+      if (mutation.type === "session") {
+        invalidateSession(mutation.id);
+        await applyRemoteSessionRecord({ sessionId: mutation.id });
+      }
+      await syncRemoteStorage({ force: true });
+    } catch (error) { setRemoteStorageState(false, error); }
+  }
+});
 let sessionTagIndex = createSessionTagIndex();
 let sessionTagIndexReady = false;
 let sessionTagIndexTimer = 0;
 let sessionTagIndexBackfillHandle = 0;
 let sessionPreviewBackfillHandle = 0;
-let sessionTagIndexPersistQueue = Promise.resolve();
 const pendingSessionTagDocs = new Map();
 
 function workbenchClientId() {
@@ -556,24 +626,27 @@ function publishSessionTagIndex(next) {
   return sessionTagIndex;
 }
 
-function persistCurrentSessionTagIndex() {
-  const snapshot = sessionTagIndex;
-  sessionTagIndexPersistQueue = sessionTagIndexPersistQueue
-    .catch(() => {})
-    .then(() => enqueueRemoteMutation({
-      type: "kv",
-      id: "sessions.tagIndex",
-      value: snapshot
-    }))
-    .catch((error) => {
-      try { console.warn("[sessions] tag index persist failed", error); } catch {}
-    });
+function persistCurrentSessionTagIndex({ background = false } = {}) {
+  // Enqueue immediately so the durable queue can retain one latest waiting
+  // snapshot, rather than replaying a Promise chain of obsolete whole indexes.
+  void enqueueRemoteMutation({
+    type: "kv",
+    id: "sessions.tagIndex",
+    value: sessionTagIndex,
+    coalesceLatest: true,
+    background
+  }).catch((error) => {
+    warnStorageIssue("saveTagIndex", error, { mutationType: "kv" });
+  });
 }
 
-function commitSessionTagIndex(next) {
+function commitSessionTagIndex(next, options = {}) {
+  const changed = !sessionTagIndexContentsEqual(sessionTagIndex, next);
   publishSessionTagIndex(next);
-  persistCurrentSessionTagIndex();
-  try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  if (changed) {
+    persistCurrentSessionTagIndex(options);
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  }
   return sessionTagIndex;
 }
 
@@ -585,7 +658,7 @@ function flushPendingSessionTagDocs() {
     next = updateSessionTagIndex(next, id, text, hashString(text));
   }
   pendingSessionTagDocs.clear();
-  commitSessionTagIndex(next);
+  commitSessionTagIndex(next, { background: true });
 }
 
 function scheduleSessionTagIndexUpdate(id, text) {
@@ -609,7 +682,8 @@ function setRemoteStorageState(online, error = null) {
   remoteStorageOnline = !!online;
   try {
     window.zion?.state?.set("sessions.remoteStorageOnline", remoteStorageOnline);
-    window.zion?.state?.set("sessions.remoteStorageError", error ? String(error) : null);
+    window.zion?.state?.set("sessions.remoteStorageError", error ? classifySessionStorageError(error).kind : null);
+    window.zion?.state?.set("sessions.remoteStorageErrorDetails", error ? classifySessionStorageError(error) : null);
   } catch {}
 }
 
@@ -619,198 +693,176 @@ function createRemoteOperationId(kind, id) {
   return `${kind}:${String(id || "global")}:${random}`;
 }
 
-function publishRemotePersistenceState(status, error = null) {
+function publishRemoteQueueState({ status, error, pending, conflicts, active, timings }) {
   try {
+    sessionConflictNotifications.reconcile();
     window.zion?.state?.set("sessions.persistence", {
       status,
-      pending: pendingRemoteMutations.length,
+      pending,
+      conflicts,
       lastCommittedAt: status === "saved" ? now() : null,
-      error: error ? String(error) : null
+      error: error ? classifySessionStorageError(error).kind : null,
+      issue: error ? classifySessionStorageError(error) : null
     });
+    window.zion?.state?.set("sessions.operationTimings", timings || []);
+    window.zion?.state?.set("sessions.activeMutation", active || null);
+    window.zion?.state?.set("sessions.persistenceConflicts", remoteMutationQueue.conflicts.map(item => ({
+      type: item.type, id: item.id, operationId: item.operationId,
+      tree: item.tree, baseTree: item.baseTree, payload: item.payload,
+      error: classifySessionStorageError(item.error).kind,
+      issue: classifySessionStorageError(item.error)
+    })));
+    if (status === "saved") clearStorageWarning();
   } catch {}
 }
 
-function rejectPendingRemoteWaiters(error) {
-  for (const mutation of pendingRemoteMutations) {
-    for (const waiter of mutation.waiters || []) waiter.reject(error);
-    mutation.waiters = [];
+async function executeRemoteMutation(mutation) {
+  if (window.zion?.state?.get("workbench.accessChanged")) {
+    throw Object.assign(new Error("账户或访问权限已变化，请重新进入工作台"), {
+      status: 403, code: "WORKBENCH_ACCESS_CHANGED"
+    });
   }
-}
-
-async function flushRemoteMutations() {
-  if (remoteMutationFlushActive) {
-    const activeResult = await remoteSnapshotQueue;
-    if (activeResult === false) return false;
-    if (pendingRemoteMutations.length) return flushRemoteMutations();
-    return true;
-  }
-  remoteMutationFlushScheduled = false;
-  remoteMutationFlushActive = true;
-  publishRemotePersistenceState("saving");
-  remoteSnapshotQueue = (async () => {
-    while (pendingRemoteMutations.length) {
-      const mutation = pendingRemoteMutations[0];
-      mutation.attempted = true;
-      try {
-        if (mutation.type === "session"
-          && window.zion?.state?.get(`sessions.deleted.${mutation.id}`)) {
-          pendingRemoteMutations.shift();
-          for (const waiter of mutation.waiters || []) waiter.resolve({ ok: true, skipped: true });
-          continue;
-        }
-        let result = null;
-        if (mutation.type === "session") {
-          const collaborative = collaborationSynced(mutation.id);
-          const payload = collaborative
-            ? Object.fromEntries(
-                Object.entries(mutation.payload || {})
-                  .filter(([key]) => key !== "text")
-              )
-            : mutation.payload;
-          if (!Object.keys(payload || {}).length) {
-            pendingRemoteMutations.shift();
-            for (const waiter of mutation.waiters || []) waiter.resolve({
-              ok: true,
-              skipped: true,
-              reason: "collaboration-document-owned"
-            });
-            continue;
-          }
-          result = await writeRemoteSession(mutation.id, payload, {
-            operationId: mutation.operationId,
-            expectedSessionRevision: collaborative
-              ? undefined
-              : remoteSessionRevisions.get(mutation.id),
-            sourceClientId: WORKBENCH_CLIENT_ID
-          });
-        } else if (mutation.type === "delete") {
-          result = await deleteRemoteSession(mutation.id, {
-            operationId: mutation.operationId,
-            expectedSessionRevision: remoteSessionRevisions.get(mutation.id),
-            sourceClientId: WORKBENCH_CLIENT_ID
-          });
-        } else if (mutation.type === "tree") {
-          result = await writeRemoteTree(
-            mutation.tree,
-            mutation.index,
-            null,
-            { sourceClientId: WORKBENCH_CLIENT_ID, baseTree: mutation.baseTree }
-          );
-        } else if (mutation.type === "kv") {
-          result = await writeRemoteSessionKV(mutation.id, mutation.value, {
-            sourceClientId: WORKBENCH_CLIENT_ID
-          });
-        }
-        if (result?.conflict) {
-          const error = new Error(`Durable session conflict for ${mutation.id || "tree"}`);
-          error.result = result;
-          throw error;
-        }
-        remoteRevision = result?.revision || remoteRevision;
-        if (mutation.id && Number.isFinite(Number(result?.session_revision))) {
-          remoteSessionRevisions.set(
-            String(mutation.id),
-            Number(result.session_revision)
-          );
-        }
-        if (mutation.type === "kv") remoteSessionKV.set(mutation.id, mutation.value);
-        pendingRemoteMutations.shift();
-        if (mutation.type === "tree" && result?.tree) {
-          remoteTreeBase = structuredClone(result.tree);
-          const nextTree = pendingRemoteMutations.find(item => item.type === "tree");
-          if (nextTree && !nextTree.attempted) {
-            // Its snapshot includes this edit. Only the edits after our
-            // acknowledged snapshot should be replayed on the next save.
-            nextTree.baseTree = structuredClone(mutation.tree);
-          }
-          if (!pendingRemoteMutations.some(item => item.type === "tree")) {
-            window.zion?.state?.set("sessions.treeMem", result.tree);
-            window.zion?.state?.set("sessions.indexMem", result.index);
-            window.zion?.state?.set("sessions.catalog", result.index);
-          }
-        }
-        for (const waiter of mutation.waiters || []) waiter.resolve(result);
-        setRemoteStorageState(true);
-        try { window.zion?.state?.set("sessions.storageUnavailable", false); } catch {}
-      } catch (error) {
-        if (Number(error?.status) === 410 && mutation.type === "session") {
-          window.zion?.state?.set(`sessions.deleted.${mutation.id}`, true);
-          pendingRemoteMutations.shift();
-          for (const waiter of mutation.waiters || []) waiter.resolve({ ok: true, skipped: true });
-          continue;
-        }
-        setRemoteStorageState(false, error);
-        for (const waiter of mutation.waiters || []) waiter.reject(error);
-        mutation.waiters = [];
-        rejectPendingRemoteWaiters(error);
-        publishRemotePersistenceState("pending", error);
-        return false;
-      }
+  if (mutation.type === "session") {
+    if (window.zion?.state?.get(`sessions.deleted.${mutation.id}`)) return { ok: true, skipped: true };
+    const payload = collaborationSynced(mutation.id)
+      ? Object.fromEntries(Object.entries(mutation.payload || {}).filter(([key]) => key !== "text"))
+      : mutation.payload;
+    if (!Object.keys(payload || {}).length) return { ok: true, skipped: true };
+    try {
+      return await writeRemoteSession(mutation.id, payload, {
+        operationId: mutation.operationId,
+        expectedSessionRevision: mutation.expectedSessionRevision,
+        retryOnConflict: false,
+        sourceClientId: WORKBENCH_CLIENT_ID
+      });
+    } catch (error) {
+      if (Number(error?.status) !== 410) throw error;
+      window.zion?.state?.set(`sessions.deleted.${mutation.id}`, true);
+      return { ok: true, skipped: true, deleted: true };
     }
-    publishRemotePersistenceState("saved");
-    clearStorageWarning();
-    return true;
-  })().finally(() => {
-    remoteMutationFlushActive = false;
+  }
+  if (mutation.type === "delete") return deleteRemoteSession(mutation.id, {
+    signal: mutation.controller?.signal,
+    operationId: mutation.operationId,
+    expectedSessionRevision: remoteSessionRevisions.get(mutation.id),
+    sourceClientId: WORKBENCH_CLIENT_ID
   });
-  const result = await remoteSnapshotQueue;
-  if (result === false) return false;
-  if (pendingRemoteMutations.length) return flushRemoteMutations();
-  return true;
+  if (mutation.type === "folder-delete") {
+    const result = await deleteRemoteFolder(mutation.id, mutation.baseTree, {
+      operationId: mutation.operationId, sourceClientId: WORKBENCH_CLIENT_ID, signal: mutation.controller?.signal
+    });
+    return result?.duplicate ? { ...result, ...await readRemoteTree() } : result;
+  }
+  if (mutation.type === "tree") {
+    const result = await writeRemoteTree(mutation.tree, mutation.index, null, {
+      operationId: mutation.operationId,
+      sourceClientId: WORKBENCH_CLIENT_ID,
+      baseTree: mutation.baseTree
+    });
+    // A receipt confirms the old save, but its tree may predate other edits.
+    return result?.duplicate ? { ...result, ...await readRemoteTree() } : result;
+  }
+  if (mutation.type === "kv") return writeRemoteSessionKV(mutation.id, mutation.value, {
+    sourceClientId: WORKBENCH_CLIENT_ID
+  });
+  throw Object.assign(new Error("Unknown session mutation"), { status: 400 });
 }
 
-async function flushSessionRemoteMutations(id) {
-  if (!id) return flushRemoteMutations();
-  const relevant = pendingRemoteMutations.filter(mutation =>
-    mutation.id === id || mutation.type === "tree"
+async function commitRemoteMutation(mutation, result, pending) {
+  if (mutation.type === "session" && window.zion?.state?.get(`sessions.localDraft.${mutation.id}`)) {
+    window.zion.state.set(`sessions.durableReady.${mutation.id}`, true);
+  }
+  if (mutation.id && result?.session_revision != null) remoteSessionRevisions.set(
+    String(mutation.id),
+    Math.max(remoteSessionRevisions.get(mutation.id) || 0, Number(result.session_revision) || 0)
   );
-  if (!relevant.length) return true;
-  // Keep queue ordering (including new-session tree dependencies), but return
-  // once this session's existing writes are confirmed.
-  const barriers = relevant.map(mutation => new Promise((resolve, reject) => {
-    mutation.waiters.push({ resolve, reject });
-  }));
-  void flushRemoteMutations();
-  try { await Promise.all(barriers); return true; } catch { return false; }
+  for (const next of pending) {
+    if (next.type === "session" && next.id === mutation.id && !next.attempted
+      && next.expectedSessionRevision === mutation.expectedSessionRevision
+      && result?.session_revision != null) next.expectedSessionRevision = Number(result.session_revision);
+  }
+  if (mutation.type === "kv") remoteSessionKV.set(mutation.id, mutation.value);
+  if ((mutation.type === "tree" || mutation.type === "folder-delete") && result?.tree) {
+    remoteTreeBase = structuredClone(result.tree);
+    const nextTree = pending.find(item => item.type === "tree");
+    if (mutation.type === "tree" && nextTree && !nextTree.attempted) {
+      nextTree.baseTree = structuredClone(mutation.tree);
+    }
+    if (!pending.some(item => item.type === "tree")
+      && !remoteMutationQueue.conflicts.some(item => item.type === "tree")) {
+      window.zion?.state?.set("sessions.treeMem", result.tree);
+      window.zion?.state?.set("sessions.indexMem", result.index);
+      window.zion?.state?.set("sessions.catalog", result.index);
+    }
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  }
+  if (mutation.type === "folder-delete") {
+    const deletedIds = result?.deleted_session_ids || [];
+    for (const id of deletedIds) {
+      window.zion?.state?.set(`sessions.deleted.${id}`, true);
+      window.zion?.events?.emit?.("session/deleting", { sessionId: id });
+      invalidateSession(id);
+      durableSessionIds.delete(id);
+      remoteSessionRevisions.delete(id);
+      window.zion?.state?.set(`sessions.summary.${id}`, undefined);
+      removeIndexedSessionTags(id);
+    }
+    // Opening a replacement editor may itself flush the persistence queue.
+    // Never hold this queue's committed receipt behind that UI work.
+    void Promise.resolve(removeSessionsFromPanels(deletedIds)).catch(error =>
+      handleRemoteMutationFailure(mutation, error, { committed: true }));
+  }
+  setRemoteStorageState(true);
+  if (mutation.type === "session" && mutation.payload?.meta_changes
+    && !result?.skipped && (!result?.unchanged || mutation.payload?.automatic_title)
+    && !pending.some(item => item.id === mutation.id)) {
+    // The accepted patch may have preserved another window's title/annotations.
+    void Promise.resolve(applyRemoteSessionRecord({ sessionId: mutation.id })).catch(error =>
+      handleRemoteMutationFailure(mutation, error, { committed: true }));
+  }
 }
 
-function enqueueRemoteMutation(mutation) {
-  let operation = null;
-  for (let index = pendingRemoteMutations.length - 1; index >= 0; index -= 1) {
-    const candidate = pendingRemoteMutations[index];
-    if (candidate.attempted) continue;
-    if (candidate.type !== mutation.type || candidate.id !== mutation.id) continue;
-    operation = candidate;
-    break;
+function handleRemoteMutationFailure(mutation, error, { retrying, committed }) {
+  if (["DELETE_OUTCOME_UNKNOWN", "DELETE_NOT_SENT"].includes(error?.code)) {
+    window.zion?.notification?.show?.(error.message, {
+      type: "warning", duration: 0,
+      actions: [{ label: "核对删除结果", handler: () =>
+        remoteMutationQueue.retryDeletion(mutation.operationId).catch(() => {}) }]
+    });
+    return;
   }
-  if (!operation) {
-    operation = {
-      ...mutation,
-      operationId: mutation.operationId || createRemoteOperationId(mutation.type, mutation.id),
-      waiters: [],
-      attempted: false
-    };
-    pendingRemoteMutations.push(operation);
-  } else if (mutation.type === "session") {
-    operation.payload = { ...(operation.payload || {}), ...(mutation.payload || {}) };
-  } else if (mutation.type === "tree") {
-    operation.tree = mutation.tree;
-    operation.index = mutation.index;
-  } else if (mutation.type === "kv") {
-    operation.value = mutation.value;
+  if (committed) {
+    setRemoteStorageState(false, error);
+    void syncRemoteStorage({ force: true });
+    return;
   }
-  const promise = new Promise((resolve, reject) => {
-    operation.waiters.push({ resolve, reject });
+  const where = mutation.type === "kv" ? "saveTagIndex"
+    : mutation.type === "session" ? (mutation.payload?.meta_changes ? "saveMeta" : "saveDoc")
+      : mutation.type === "tree" ? "saveTree" : "delete";
+  const issue = classifySessionStorageError(error);
+  const needsConflictAction = ["conflict", "too-large", "rejected"].includes(issue.kind);
+  const background = mutation.type === "kv" && mutation.id === "sessions.tagIndex"
+    && mutation.background === true;
+  warnStorageIssue(where, error, {
+    retrying, retained: !background, mutationType: mutation.type, background,
+    // A single background retry is diagnostic state, not a draft-loss alert.
+    // Repeated failures and explicit exclusion edits still need attention.
+    notify: retrying ? (!background || mutation.attempts >= 2) : !needsConflictAction
   });
-  publishRemotePersistenceState("pending");
-  if (!remoteMutationFlushScheduled && !remoteMutationFlushActive) {
-    remoteMutationFlushScheduled = true;
-    globalThis.queueMicrotask(() => { void flushRemoteMutations(); });
+  if (retrying) {
+    setRemoteStorageState(false, error);
+    return;
   }
-  return promise;
+  setRemoteStorageState(!["unauthenticated", "forbidden", "access-changed", "upgrade-required"].includes(issue.kind), error);
+  if (!needsConflictAction) return;
+  sessionConflictNotifications.notify(mutation, error);
 }
 
-function scheduleRemoteSnapshot(kind, id, value) {
+const flushRemoteMutations = () => remoteMutationQueue.flush();
+const flushSessionRemoteMutations = id => id ? remoteMutationQueue.flushSession(id) : flushRemoteMutations();
+const enqueueRemoteMutation = mutation => remoteMutationQueue.enqueue(mutation);
+
+function scheduleRemoteSnapshot(kind, id, value, options = {}) {
   if (isSharedWorkbenchDocument(id)) {
     if (kind === "meta" || !sharedDocumentEditable(id)) return Promise.resolve(true);
   }
@@ -818,10 +870,16 @@ function scheduleRemoteSnapshot(kind, id, value) {
     return enqueueRemoteMutation({
       type: "session",
       id: String(id || ""),
-      payload: kind === "doc" ? { text: String(value || "") } : { meta: value || {} }
+      payload: kind === "doc" ? { text: String(value || "") } : {
+        meta_changes: options.changes || [],
+        ...(options.automaticTitle ? { automatic_title: true } : {})
+      }
     });
   }
-  if (kind === "tree" || kind === "index") {
+  // The Runtime derives its index from documents and the tree. Updating a
+  // local size/hash/preview must not resend the entire shared tree.
+  if (kind === "index") return Promise.resolve(true);
+  if (kind === "tree") {
     return enqueueRemoteMutation({
       type: "tree",
       id: "tree",
@@ -845,14 +903,9 @@ async function purgeSessionData(id) {
   if (window.zion?.state?.get?.("debug.sessionStreamUrl")) void fetch(window.zion.state.get("debug.sessionStreamUrl"), { method: "POST", body: JSON.stringify({ sessionId: "session-stream-consistency", hypothesisId: "A", location: "purgeSessionData", ts: Date.now(), data: { id, queued: pendingRemoteMutations.filter(item => item.id === id).map(item => item.type) } }) }).catch(() => {});
   // #endregion
   const key = `sessions.deleted.${id}`;
+  await scheduleRemoteDelete(id);
   window.zion?.state?.set(key, true);
   window.zion?.events?.emit?.("session/deleting", { sessionId: id });
-  try {
-    await scheduleRemoteDelete(id);
-  } catch (error) {
-    window.zion?.state?.set(key, false);
-    throw error;
-  }
   try { localStorage.removeItem(docKey(id)); } catch {}
   try { localStorage.removeItem(metaKey(id)); } catch {}
   invalidateSession(id);
@@ -871,17 +924,27 @@ async function hydrateRemoteCatalogResponse(response) {
     durableIds: durableSessionIds,
     revisions: remoteSessionRevisions,
     invalidate: invalidateSession,
-    hasPending: (id) => pendingRemoteMutations.some((mutation) => mutation.id === id),
+    hasPending: (id) => id === "tree"
+      ? pendingRemoteMutations.some(mutation => ["tree", "session", "delete", "folder-delete"].includes(mutation.type))
+        || remoteMutationQueue.conflicts.some(mutation => mutation.type === "tree")
+      : [...pendingRemoteMutations, ...remoteMutationQueue.conflicts].some(mutation => mutation.id === id),
     isOpen: (id) => openSessionEditors(id).length > 0
   });
-  if (!pendingRemoteMutations.some(item => item.type === "tree") && response.catalog.tree) {
+  if (![...pendingRemoteMutations, ...remoteMutationQueue.conflicts].some(item => item.type === "tree") && response.catalog.tree) {
     remoteTreeBase = structuredClone(response.catalog.tree);
   }
   remoteSessionKV.clear();
   for (const [key, value] of Object.entries(response.catalog.kv || {})) {
     remoteSessionKV.set(key, value);
   }
+  if (sessionTagIndexReady && !pendingSessionTagDocs.size
+    && ![...pendingRemoteMutations, ...remoteMutationQueue.conflicts]
+      .some(item => item.type === "kv" && item.id === "sessions.tagIndex")) {
+    publishSessionTagIndex(remoteSessionKV.get("sessions.tagIndex"));
+  }
   for (const sessionId of refreshIds) await applyRemoteSessionRecord({ sessionId });
+  try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  try { refreshSessionsOverlayIfOpen(); } catch {}
 }
 
 function hydrateFromDurableSnapshot(snapshot) {
@@ -932,22 +995,27 @@ function hydrateFromDurableSnapshot(snapshot) {
 
 async function syncRemoteStorage({ force = false } = {}) {
   try {
-    const flushed = await flushRemoteMutations();
-    if (flushed === false && pendingRemoteMutations.length) return false;
+    await flushRemoteMutations();
+    const generation = remoteMutationQueue.generation;
     const status = await readRemoteStatus();
-    if (!force && remoteRevision && status?.revision === remoteRevision) {
+    if (!force && remoteCatalogRevision && status?.revision === remoteCatalogRevision
+      && !remoteMutationQueue.hasUnpersistedChanges) {
       setRemoteStorageState(true);
       return true;
     }
     const response = await readRemoteCatalog();
-    if (Number(response?.event_cursor) < remoteEventCursor) return true;
+    if (!catalogResponseIsCurrent(response, generation, remoteMutationQueue.generation, remoteEventCursor)) return true;
     await hydrateRemoteCatalogResponse(response);
-    remoteRevision = response?.revision || status?.revision || null;
-    remoteEventCursor = Math.max(
-      remoteEventCursor,
-      Number(response?.event_cursor || status?.event_cursor) || 0
-    );
-    remoteRealtimeSync?.setCursor(remoteEventCursor);
+    // Hydration preserves pending edits. Those skipped fields still need
+    // reconciliation after the edit commits or its conflict is resolved.
+    if (!remoteMutationQueue.hasUnpersistedChanges) {
+      remoteCatalogRevision = response?.revision || status?.revision || null;
+      remoteEventCursor = Math.max(
+        remoteEventCursor,
+        Number(response?.event_cursor) || 0
+      );
+      remoteRealtimeSync?.setCursor(remoteEventCursor);
+    }
     setRemoteStorageState(true);
     return true;
   } catch (error) {
@@ -982,18 +1050,33 @@ function collaborationSynced(sessionId) {
 
 async function refreshRemoteTree() {
   const beforeTree = window.zion?.state?.get("sessions.treeMem");
+  const beforeIndex = window.zion?.state?.get("sessions.indexMem") || [];
   const remote = await readRemoteTree();
-  if (pendingRemoteMutations.some(item => item.type === "tree")
+  if ([...pendingRemoteMutations, ...remoteMutationQueue.conflicts].some(item => item.type === "tree")
     || window.zion?.state?.get("sessions.treeMem") !== beforeTree) return remote;
   if (remote?.tree?.type === "folder") {
     remoteTreeBase = structuredClone(remote.tree);
     window.zion?.state?.set("sessions.treeMem", remote.tree);
   }
   if (Array.isArray(remote?.index)) {
+    const available = new Set(remote.index.map(entry => entry.id));
+    const retired = [];
+    for (const entry of beforeIndex) {
+      if (available.has(entry.id) || !durableSessionIds.has(entry.id)
+        || pendingRemoteMutations.some(item => item.type === "delete" && item.id === entry.id)) continue;
+      // A catalog refresh can represent deletion or withdrawn access. Stop
+      // open editors from queuing saves against a document that is now gone.
+      window.zion?.state?.set(`sessions.deleted.${entry.id}`, true);
+      window.zion?.events?.emit?.("session/deleting", { sessionId: entry.id });
+      durableSessionIds.delete(entry.id);
+      remoteSessionRevisions.delete(entry.id);
+      invalidateSession(entry.id);
+      retired.push(entry.id);
+    }
     window.zion?.state?.set("sessions.indexMem", remote.index);
     window.zion?.state?.set("sessions.catalog", remote.index);
+    if (retired.length) await removeSessionsFromPanels(retired);
   }
-  remoteRevision = remote?.revision || remoteRevision;
   try { refreshSessionsSidebarViewIfOpen(); } catch {}
   try { refreshSessionsOverlayIfOpen(); } catch {}
   return remote;
@@ -1006,14 +1089,32 @@ async function applyRemoteSessionRecord(event) {
   const beforeMeta = window.zion?.state?.get(`sessions.meta.${sessionId}`);
   if (beforeText === undefined && !openSessionEditors(sessionId).length && event?.data?.indexEntry) {
     const entry = event.data.indexEntry;
+    if (Number(event.sessionRevision) < (remoteSessionRevisions.get(sessionId) || 0)) return;
     durableSessionIds.add(sessionId);
+    if (Number.isFinite(Number(event.sessionRevision))) {
+      remoteSessionRevisions.set(sessionId, Number(event.sessionRevision));
+    }
     window.zion?.state?.set(`sessions.summary.${sessionId}`, {
       ...window.zion?.state?.get(`sessions.summary.${sessionId}`), ...entry
     });
-    upsertIndexEntry(entry);
+    if (!pendingRemoteMutations.some(mutation => mutation.id === sessionId)) {
+      // A closed session may now have metadata without a body. An index event
+      // only refreshes its summary; the old complete metadata becomes unknown.
+      window.zion?.state?.set(`sessions.meta.${sessionId}`, undefined);
+      window.zion?.state?.set(`sessions.metaLoaded.${sessionId}`, false);
+    }
+    // Remote facts update the cache; setIndex/upsertIndexEntry would enqueue
+    // another shared tree write from this receiving device.
+    const index = (window.zion?.state?.get("sessions.indexMem") || [])
+      .filter(item => item.id !== sessionId);
+    index.push(entry);
+    window.zion?.state?.set("sessions.indexMem", index);
+    window.zion?.state?.set("sessions.catalog", index);
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    try { refreshSessionsOverlayIfOpen(); } catch {}
     return;
   }
-  const record = await readRemoteSession(sessionId);
+  const record = await readRemoteSession(sessionId, { source: "realtime", minRevision: Number(event.sessionRevision) || 0 });
   if (!record || record.deleted) return;
   if (
     window.zion?.state?.get(`sessions.doc.${sessionId}`) !== beforeText
@@ -1082,18 +1183,38 @@ async function applyRemoteSessionRecord(event) {
   try { refreshSessionsOverlayIfOpen(); } catch {}
 }
 
-async function applyRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
+async function applyRemoteWorkbenchEvent(event, options = {}) {
   if (!event || typeof event !== "object") return;
+  await processRemoteWorkbenchEvent(event, options);
+  // Failed reads must remain replayable; observing an event is not applying it.
   remoteEventCursor = Math.max(
     remoteEventCursor,
     Number(event.sequence) || 0
   );
-  remoteRevision = event.revision || remoteRevision;
-  const sessionId = String(event.sessionId || "");
-  if (sessionId && Number.isFinite(Number(event.sessionRevision))) {
-    remoteSessionRevisions.set(sessionId, Number(event.sessionRevision));
-  }
   window.zion?.state?.set("sessions.realtimeCursor", remoteEventCursor);
+}
+
+async function refreshRemoteSessionKV(key) {
+  if (!key) return;
+  let record;
+  try { record = await readRemoteSessionKV(key); }
+  catch (error) {
+    if (Number(error?.status) !== 404) throw error;
+    record = null;
+  }
+  if ([...pendingRemoteMutations, ...remoteMutationQueue.conflicts]
+    .some(item => item.type === "kv" && item.id === key)) return;
+  if (record) remoteSessionKV.set(key, record.value);
+  else remoteSessionKV.delete(key);
+  if (key === "sessions.tagIndex" && sessionTagIndexReady && !pendingSessionTagDocs.size) {
+    publishSessionTagIndex(record?.value);
+  }
+  try { refreshSessionsSidebarViewIfOpen(); } catch {}
+  try { refreshSessionsOverlayIfOpen(); } catch {}
+}
+
+async function processRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
+  const sessionId = String(event.sessionId || "");
 
   if (event.type === "llm.request") {
     // The inspector payload is optional detail. It must not hold run.started,
@@ -1127,7 +1248,22 @@ async function applyRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
     });
     return;
   }
-  if (ownEvent) return;
+  if (event.type === "session.deleted") {
+    remoteMutationQueue.confirmDeletion?.(sessionId, {
+      ok: true, session_revision: event.sessionRevision, event_sequence: event.sequence
+    });
+  }
+  if (event.type === "tree.updated" && event.data?.reason === "folder-delete") {
+    const tree = await readRemoteTree();
+    remoteMutationQueue.confirmDeletion?.(event.data.folderId, {
+      ...tree, ok: true, deleted_session_ids: event.data.sessionIds || []
+    }, "folder-delete");
+  }
+  if (ownEvent && event.type !== "session.deleted") return;
+  if (event.type === "kv.updated") {
+    await refreshRemoteSessionKV(String(event.data?.key || ""));
+    return;
+  }
   if (event.type === "document.checkpointed") {
     if (!collaborationSynced(sessionId)) {
       await applyRemoteSessionRecord(event);
@@ -1151,9 +1287,11 @@ async function applyRemoteWorkbenchEvent(event, { ownEvent = false } = {}) {
     invalidateSession(sessionId);
     window.zion?.state?.set(`sessions.summary.${sessionId}`, undefined);
     await refreshRemoteTree();
+    removeIndexedSessionTags(sessionId);
+    await removeSessionsFromPanels([sessionId]);
     return;
   }
-  if (event.type === "tree.updated") {
+  if (event.type === "tree.updated" || event.type === "catalog.changed") {
     await refreshRemoteTree();
     return;
   }
@@ -1222,6 +1360,7 @@ const {
   loadDoc,
   saveDoc: persistSessionDoc,
   loadDocAsync,
+  peekMeta,
   loadMeta,
   loadMetaAsync,
   invalidate: invalidateSession,
@@ -1231,6 +1370,8 @@ const {
   now,
   onPersist: scheduleRemoteSnapshot,
   onLoad: readRemoteSession,
+  onLoadMeta: readRemoteSessionMetadata,
+  getKnownRevision: (id) => remoteSessionRevisions.get(id) || 0,
   onLoaded: (id, record) => {
     remoteSessionRevisions.set(id, Math.max(
       remoteSessionRevisions.get(id) || 0, Number(record.session_revision) || 0
@@ -1242,7 +1383,8 @@ const {
 });
 
 function saveDoc(id, text) {
-  if (window.zion?.state?.get(`sessions.deleted.${id}`)) return Promise.resolve(false);
+  if (!id || window.zion?.state?.get(`sessions.deleted.${id}`)
+    || window.zion?.state?.get(`sessions.deleting.${id}`)) return Promise.resolve(false);
   durableSessionIds.add(String(id || ""));
   const value = String(text || "");
   const result = persistSessionDoc(id, value);
@@ -1250,10 +1392,31 @@ function saveDoc(id, text) {
   return result;
 }
 
-function saveMeta(id, meta) {
-  if (window.zion?.state?.get(`sessions.deleted.${id}`)) return Promise.resolve(false);
+function saveMeta(id, meta, options) {
+  if (!id || window.zion?.state?.get(`sessions.deleted.${id}`)
+    || window.zion?.state?.get(`sessions.deleting.${id}`)) return Promise.resolve(false);
   durableSessionIds.add(String(id || ""));
-  return persistSessionMeta(id, meta);
+  return persistSessionMeta(id, meta, options);
+}
+
+const sessionCreationSaves = new Map();
+
+function saveNewSession(id, text, meta) {
+  const defaultModel = window.zion?.state?.get("chat.defaultModel");
+  if (!meta.model && defaultModel) meta = { ...meta, model: { ...defaultModel } };
+  // Track only this session's initial writes; opening its editor stays immediate.
+  const write = (annotations = meta.annotations) => {
+    if (annotations) meta = { ...meta, annotations: localSessionAnnotationCopy(annotations) };
+    return Promise.all([saveDoc(id, text), saveMeta(id, meta)]);
+  };
+  const needsDetails = ["tools", "thinking"].some(kind => meta.annotations?.[kind]?.some(item => item.detailRef || item.bodyRef));
+  const creation = (needsDetails ? hydrateRemoteAnnotations(meta.annotations).then(write) : write())
+    .then(results => results.every(saved => saved === true), () => false);
+  sessionCreationSaves.set(id, creation);
+  void creation.then(() => {
+    if (sessionCreationSaves.get(id) === creation) sessionCreationSaves.delete(id);
+  });
+  return creation;
 }
 
 function hasBrowserSessionCandidate(candidate) {
@@ -1267,6 +1430,7 @@ function hasBrowserSessionCandidate(candidate) {
 /** Recover browser-era data once, then use Runtime as the only session source. */
 async function initSessionsStorage() {
   try {
+    await remoteMutationQueue.restart();
     const candidate = currentAccountSession() ? null : await readBrowserSessionCandidate(DB_NAME);
     if (hasBrowserSessionCandidate(candidate)) {
       const report = await migrateBrowserSessionStorage(
@@ -1303,7 +1467,7 @@ async function initSessionsStorage() {
       throw new Error("durable session snapshot unavailable");
     }
     await hydrateRemoteCatalogResponse(response);
-    remoteRevision = response?.revision || null;
+    remoteCatalogRevision = response?.revision || null;
     remoteEventCursor = Math.max(
       0,
       Number(response?.event_cursor) || 0
@@ -1386,6 +1550,7 @@ const {
 } = createSessionTreeModel({
   warnStorageIssue,
   loadMeta,
+  peekMeta,
   saveDoc,
   saveMeta,
   deriveTitleFromText,
@@ -1400,7 +1565,10 @@ const {
   lsFolderOpenKey: LS_FOLDER_OPEN,
   getZion: () => window.zion,
   onPersist: scheduleRemoteSnapshot,
-  onDelete: purgeSessionData
+  onDelete: purgeSessionData,
+  onDeleteFolder: (id, baseTree) => enqueueRemoteMutation({
+    type: "folder-delete", id, baseTree
+  })
 });
 
 const {
@@ -1423,6 +1591,7 @@ const {
   attachLifecycleRestore,
   attachAnnotationsAutoPersistence
 } = createAnnotationsLifecycle({
+  peekMeta,
   loadMeta,
   loadMetaAsync,
   saveMeta,
@@ -1439,7 +1608,7 @@ const {
  */
 function applyAnnotationsForSession(id, panelId) {
   try {
-    const meta = loadMeta(id);
+    const meta = peekMeta(id);
     debugSessions("annotations.apply", {
       sessionId: id,
       panelId: panelId || null,
@@ -1448,7 +1617,7 @@ function applyAnnotationsForSession(id, panelId) {
       toolIds: Array.isArray(meta?.annotations?.tools) ? meta.annotations.tools.map((it) => it?.id).filter(Boolean).map(String) : []
     });
   } catch {}
-  applyAnnotationsForSessionImpl({ id, panelId, loadMeta, zion: window.zion });
+  return applyAnnotationsForSessionImpl({ id, panelId, loadMeta: peekMeta, zion: window.zion });
 }
 
 /** 简易 FNV-1a 哈希（32-bit） */
@@ -1473,7 +1642,7 @@ async function backfillSessionTagIndex() {
   for (const id of activeIds) {
     if (typeof window.zion?.state?.get(`sessions.doc.${id}`) !== "string") continue;
     const indexed = sessionTagIndex.sessions?.[id];
-    const metaHash = String(loadMeta(id)?.hash || "");
+    const metaHash = String(peekMeta(id)?.hash || "");
     if (!indexed || (metaHash && indexed.hash !== metaHash)) staleIds.push(id);
   }
   const hasOrphans = Object.keys(sessionTagIndex.sessions || {})
@@ -1481,24 +1650,18 @@ async function backfillSessionTagIndex() {
   if (!staleIds.length && !hasOrphans) return false;
 
   let next = sessionTagIndex;
-  if (staleIds.length) {
-    const stale = new Set(staleIds);
-    for (const id of staleIds) {
-      if (!stale.has(id)) continue;
-      const text = String(await loadDocAsync(id) || "");
-      const metaHash = String(loadMeta(id)?.hash || "");
-      next = updateSessionTagIndex(next, id, text, metaHash || hashString(text));
-      stale.delete(id);
-    }
-    for (const id of stale) {
-      next = updateSessionTagIndex(next, id, "", String(loadMeta(id)?.hash || ""));
-    }
+  for (const id of staleIds) {
+    // Only already-loaded documents participate. Keep extraction synchronous
+    // so a suspended backfill cannot overwrite a newer user exclusion edit.
+    const text = window.zion?.state?.get(`sessions.doc.${id}`);
+    if (typeof text !== "string") continue;
+    const metaHash = String(peekMeta(id)?.hash || "");
+    next = updateSessionTagIndex(next, id, text, metaHash || hashString(text));
   }
   for (const id of Object.keys(next.sessions || {})) {
     if (!activeIds.has(id)) next = removeSessionTagIndexEntry(next, id);
   }
-  publishSessionTagIndex(next);
-  persistCurrentSessionTagIndex();
+  commitSessionTagIndex(next, { background: true });
   return true;
 }
 
@@ -1524,14 +1687,16 @@ async function backfillSessionDocumentPreviews() {
   const missing = new Set();
   for (const id of activeIds) {
     if (typeof window.zion?.state?.get(`sessions.doc.${id}`) !== "string") continue;
-    if (Number(loadMeta(id)?.documentPreviewVersion || 0) < 1) missing.add(id);
+    if (Number(peekMeta(id)?.documentPreviewVersion || 0) < 1) missing.add(id);
   }
   if (!missing.size) return false;
 
   for (const id of missing) {
-    const meta = loadMeta(id);
+    const meta = peekMeta(id) || { id };
     const text = await loadDocAsync(id);
-    saveMeta(id, {
+    // A display fallback is local derived data, not a user edit. Persisting
+    // every loaded legacy preview floods the write queue and changes ordering.
+    window.zion?.state?.set(`sessions.meta.${id}`, {
       ...meta,
       id,
       documentPreview: extractDocumentLeadPreview(text || ""),
@@ -1588,20 +1753,9 @@ function splitSentences(s) {
   return parts.map(p => p.trim()).filter(Boolean);
 }
 
-/** 从文本派生标题：优先首个非空行，其次首句；截断为 30 字符 */
+/** Use the same title projection as Runtime; derived titles are not manual edits. */
 function deriveTitleFromText(text) {
-  const src = String(text || "");
-  if (!src.trim()) return null;
-  const lines = src.split(/\r?\n/);
-  const firstNonEmpty = lines.find(l => String(l).trim().length > 0);
-  if (firstNonEmpty) {
-    return truncate(sanitizeCandidate(firstNonEmpty));
-  }
-  const sentences = splitSentences(src);
-  if (sentences.length > 0) {
-    return truncate(sanitizeCandidate(sentences[0]));
-  }
-  return null;
+  return deriveSessionTitleFromContent(text) || null;
 }
 
 /** 默认标题判定（用于旧数据或无 titleAuto 字段时的启发式） */
@@ -1614,7 +1768,8 @@ function getLatestSessionText(id) {
   try {
     const ed = window.zion.window.activeEditor;
     const editorPanelId = ed?.panelId || null;
-    const editorPanelSessionId = ed?.sessionId || (editorPanelId
+    const managed = ed?.getView?.()?.dom?.hasAttribute?.("data-editor-id");
+    const editorPanelSessionId = ed?.getSessionId?.() || ed?.sessionId || (!managed && editorPanelId
       ? (window.zion?.panelManager?.getPanel?.(editorPanelId)?.activeTabId || null)
       : null);
     if (ed && editorPanelSessionId === id) return ed.getValue() || "";
@@ -1633,21 +1788,17 @@ function isMeaningfulAutoRenameContent(text) {
 /** 未触发对话前，用首行/首句本地派生标题；仍保留 titleAuto=true，之后可被 AI 标题替换。 */
 function maybeUpdateLocalAutoTitle(id, opts = {}) {
   try {
+    if (!id || window.zion?.state?.get(`sessions.deleted.${id}`)
+      || window.zion?.state?.get(`sessions.deleting.${id}`)) return false;
     const meta = loadMeta(id);
     if (!meta || meta.titleAuto !== true) return false;
     const derived = deriveTitleFromText(getLatestSessionText(id));
     if (!derived || derived === meta.title) return false;
     meta.title = derived;
     meta.titleAuto = true;
-    saveMeta(id, meta);
-    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
-
-    const tree = loadTree() || ensureInitialTree();
-    const { node } = findNodeAndParent(tree, id);
-    if (node && node.type === "session") {
-      node.title = meta.title;
-      saveTree(tree);
-    }
+    saveMeta(id, meta, { automaticTitle: true });
+    // The metadata write owns the durable title. Updating the tree as a second
+    // write would replay another title snapshot and compete with the server.
     rebuildIndexFromTree();
     try { window.zion.state.set("sessions.catalog", getIndex()); } catch {}
     try { refreshStatusBar(); } catch {}
@@ -1661,29 +1812,9 @@ function maybeUpdateLocalAutoTitle(id, opts = {}) {
 }
 
 /** 对话首次触发时，再启动 AI 标题生成；手动改名会通过 titleAuto=false 自动阻止。 */
-function maybeTriggerChatAutoRename(id) {
-  try {
-    try { window.zion.commands.executeCommand("zion.sessions.flushPendingSave", id); } catch {}
-    const meta = loadMeta(id);
-    if (!meta || meta.titleAuto !== true || meta.autoRenameChatTriggeredAt) return false;
-    const text = getLatestSessionText(id);
-    if (!isMeaningfulAutoRenameContent(text)) return false;
-
-    meta.autoRenameChatTriggeredAt = now();
-    saveMeta(id, meta);
-    try { window.zion.state.set(`sessions.meta.${id}`, meta); } catch {}
-
-    const run = async () => {
-      try {
-        await window.zion.commands.executeCommand("zion.sessions.autoRename", { id, onlyIfAuto: true, silent: true, reason: "chat-run-finished" });
-      } catch {}
-    };
-    if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 1500 });
-    else setTimeout(run, 800);
-    return true;
-  } catch {}
-  return false;
-}
+const maybeTriggerChatAutoRename = createChatAutoRenameTrigger({
+  loadMeta, saveMeta, getLatestSessionText, isMeaningfulAutoRenameContent, now
+});
 
 /** 兼容旧逻辑：确保初始树/会话存在 */
 function ensureInitialSession() {
@@ -1715,13 +1846,9 @@ function upsertIndexEntry(entry) {
 /** 删除会话（树+索引+doc+meta） */
 async function deleteSession(id) {
   await purgeSessionData(id);
-  removeNode(id);
+  // DELETE already committed the tree removal on the Runtime.
+  removeNode(id, { persist: false });
   rebuildIndexFromTree();
-  const last = getLastActiveId();
-  if (last === id) {
-    const next = getIndex()[0]?.id || null;
-    if (next) setLastActiveId(next);
-  }
   return getIndex();
 }
 
@@ -1923,6 +2050,11 @@ const sharedSessionView = createSharedSessionView({
   loadTree, getIndex, loadMeta,
   onChange: () => { refreshSessionsSidebarViewIfOpen(); refreshSessionsOverlayIfOpen(); }
 });
+const moveSessionWithSharing = createSharedSessionMover({
+  zion: window.zion, view: sharedSessionView, moveOwn: moveNode,
+  isOwnSession: id => getIndex().some(entry => entry.id === id),
+  refreshOwn: refreshRemoteTree, getRevision: id => remoteSessionRevisions.get(id)
+});
 const createSessionsListRenderer = createSessionsListRendererFactory({
   loadTree: () => sharedSessionView.tree(),
   ensureInitialTree,
@@ -1942,7 +2074,7 @@ const createSessionsListRenderer = createSessionsListRendererFactory({
   setLastSelectedId,
   isFolderOpen,
   setFolderOpen,
-  moveNode: (id, parent) => !isReceivedNode(id) && !isReceivedNode(parent) && moveNode(id, parent)
+  moveNode: moveSessionWithSharing
 });
 
 const __panelManager = createSessionsPanelManager({
@@ -2006,8 +2138,8 @@ function mountSessionsSidebarViewInto(container) {
 
 const __pageTitleManager = createPageTitleManager({
   zion: window.zion,
-  defaultTitle: "Zion Next (CM6) Playground",
-  loadMeta,
+      defaultTitle: "Zioon",
+  loadMeta: peekMeta,
   isDefaultTitle
 });
 
@@ -2050,44 +2182,22 @@ async function openSessionForPanel(panelId, sessionId, opts = {}) {
   if (panelId && typeof window.zion?.panels?.openSession === "function") {
     return await window.zion.panels.openSession(panelId, sessionId, {
       focus: opts?.focus !== false,
-      forceReload: !!opts?.forceReload
+      forceReload: !!opts?.forceReload,
+      skipPersistPrevious: !!opts?.skipPersistPrevious
     });
   }
   window.zion.state.set("sessions.currentId", sessionId);
   const text = opts?.text != null ? String(opts.text) : await loadDocAsync(sessionId);
+  window.zion.window.activeEditor?.setSessionId?.(sessionId);
   window.zion.window.activeEditor?.setValue(text, { source: "session-load" });
   try { applyAnnotationsForSession(sessionId); } catch {}
   return true;
 }
 
-async function removeSessionFromPanels(sessionId) {
-  const panels = (() => {
-    try { return window.zion?.panelManager?.listPanels?.() || []; } catch { return []; }
-  })();
-  const changed = [];
-  for (const panel of panels) {
-    if (!Array.isArray(panel?.tabs)) continue;
-    const idx = panel.tabs.findIndex((tab) => tab?.id === sessionId);
-    if (idx < 0) continue;
-    const wasActive = panel.activeTabId === sessionId;
-    panel.tabs = panel.tabs.filter((tab) => tab?.id !== sessionId);
-    changed.push(panel.id);
-    if (!wasActive) continue;
-    const nextId = panel.tabs[Math.min(idx, panel.tabs.length - 1)]?.id || panel.tabs[panel.tabs.length - 1]?.id || null;
-    if (nextId) {
-      await openSessionForPanel(panel.id, nextId, {
-        focus: window.zion?.panels?.getActivePanelId?.() === panel.id,
-        forceReload: true
-      });
-    } else {
-      panel.activeTabId = null;
-    }
-  }
-  for (const panelId of changed) {
-    try { window.zion?.events?.emit?.("panel/tabsChanged", { panelId }); } catch {}
-  }
-  return changed.length > 0;
-}
+const removeSessionsFromPanels = ids => removeDeletedSessions({
+  zion: window.zion, ids, getIndex, getLastActiveId, setLastActiveId, openSessionForPanel
+});
+const removeSessionFromPanels = id => removeSessionsFromPanels([id]);
 
 /** ========== CM6 Plugin (auto-save) ========== */
 function sessionAutoSavePlugin(getCurrentId, onSaved) {
@@ -2159,8 +2269,7 @@ async function importSessionsFromFile() {
               hash: hashString(doc),
               titleAuto
             };
-            saveDoc(id, doc);
-            saveMeta(id, meta);
+            saveNewSession(id, doc, meta);
             // 插入到树中，确保树与索引一致
             insertSessionNode(id, parentId, meta.title);
           }
@@ -2210,6 +2319,8 @@ export async function activate(ctx) {
   const realtimeSync = startRemoteRealtimeSync();
   ctx.subscriptions.push({
     dispose() {
+      remoteMutationQueue.dispose();
+      sessionConflictNotifications.dispose();
       realtimeSync.dispose();
       remoteRealtimeSync = null;
       if (remoteSyncTimer) {
@@ -2220,14 +2331,16 @@ export async function activate(ctx) {
   });
   const collaborationManager = createSessionCollaborationManager({
     zion: window.zion,
-    clientId: WORKBENCH_CLIENT_ID
+    clientId: WORKBENCH_CLIENT_ID,
+    getSessionCreation: id => sessionCreationSaves.get(id)
   });
-  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.restoreCollaborationDraft", async (id) => {
+  ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.restoreCollaborationDraft", async (id, copyIndex = 0) => {
     const sessionId = String(id || window.zion.state.get("sessions.currentId") || "");
     const draft = window.zion.state.get(`sessions.collaborationDraft.${sessionId}`);
-    if (!draft?.text) return false;
+    const copy = [draft, ...(draft?.alternatives || [])][copyIndex];
+    if (typeof copy?.text !== "string") return false;
     return window.zion.commands.executeCommand("zion.sessions.new", {
-      content: draft.text, title: `${loadMeta(sessionId)?.title || "Session"} · 恢复草稿`
+      content: copy.text, title: `${loadMeta(sessionId)?.title || "Session"} · 恢复草稿`
     });
   }));
   ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.search", async (options = {}) => {
@@ -2255,6 +2368,12 @@ export async function activate(ctx) {
   ));
   ctx.subscriptions.push(window.zion.commands.registerCommand("zion.sessions.flushRunInput", async (id) => {
     const sessionId = String(id || "");
+    const creation = sessionCreationSaves.get(sessionId);
+    if (creation && !await creation) return false;
+    if (window.zion?.state?.get(`sessions.deleted.${sessionId}`)) return false;
+    if (collaborationManager.enabled && !collaborationManager.isSynced(sessionId)) {
+      if (!await collaborationManager.flush({ sessionId })) return false;
+    }
     if (window.zion?.state?.get(`sessions.deleted.${sessionId}`)) return false;
     if (!collaborationManager.isSynced(sessionId)) {
       return window.zion.commands.executeCommand("zion.sessions.flushPendingSave", sessionId);
@@ -2360,12 +2479,19 @@ export async function activate(ctx) {
   // 初始化树/索引/会话
   ensureInitialTree();
   rebuildIndexFromTree();
+  ctx.subscriptions.push(window.zion.commands.registerCommand(
+    "zion.sessions.peekAnnotations", id => id ? peekMeta(id)?.annotations ?? null : null
+  ));
   ctx.subscriptions.push(sharedSessionView.start(window.zion));
-  await sharedSessionView.refresh();
+  const sharingReady = sharedSessionView.refresh();
+  const shouldStartEmpty = window.zion?.state?.get?.("sessions.startEmpty") === true;
+  const lastId = shouldStartEmpty ? null : getLastActiveId();
+  // Received documents must be registered with their origin and access role
+  // before routing any document request. Private catalog entries already are.
+  if (lastId && !getIndex().some(entry => entry.id === lastId)) await sharingReady;
   // 注册会话相关工具（供大模型使用）
   try { registerSessionTools(); } catch {}
-  const shouldStartEmpty = window.zion?.state?.get?.("sessions.startEmpty") === true;
-  let currentId = shouldStartEmpty ? null : (getLastActiveId() || getIndex()[0]?.id || null);
+  let currentId = shouldStartEmpty ? null : (lastId || getIndex()[0]?.id || null);
   try {
     if (currentId && !findInIndex(currentId)) {
       currentId = getIndex()[0]?.id || null;
@@ -2382,7 +2508,8 @@ export async function activate(ctx) {
 
   // 将当前会话内容加载到编辑器
   const ed = window.zion.window.activeEditor;
-  if (ed && currentId) {
+  if (ed && currentId && window.zion?.state?.get("sessions.restoreWorkspace") !== true) {
+    const presentation = beginSessionPresentation(ed);
     try {
       const text = await loadDocAsync(currentId);
       const collaborationBound =
@@ -2390,8 +2517,10 @@ export async function activate(ctx) {
       if (!collaborationBound) {
         ed.setValue(text, { source: "session-load" });
       }
-      try { applyAnnotationsForSession(currentId); } catch {}
+      try { await applyAnnotationsForSession(currentId); } catch {}
+      await presentation.finish();
     } catch (e) {
+      presentation.fail(() => { void window.zion?.plugins?.retryFailedPlugins?.(); });
       console.error("[sessions] setValue error:", e);
       throw e;
     }
@@ -2663,6 +2792,9 @@ export async function activate(ctx) {
     (view) => {
       try {
         const editorSessionId = view?.dom?.getAttribute?.("data-session-id") || null;
+        // Managed editors retain their own identity while the active tab changes.
+        // A retired editor with no session must never inherit the replacement tab.
+        if (view?.dom?.hasAttribute?.("data-editor-id")) return editorSessionId;
         if (editorSessionId) return editorSessionId;
         const panelId = view?.dom?.closest?.("[data-panel-id]")?.getAttribute?.("data-panel-id") || null;
         if (panelId) {
@@ -2702,31 +2834,10 @@ export async function activate(ctx) {
   }));
   ctx.subscriptions.push(window.zion.commands.registerCommand(
     "zion.sessions.prepareForReload",
-    async () => {
-      try {
-        persistCurrentAnnotations();
-        const editorSnapshot = () => JSON.stringify(
-          (window.zion?.panels?.listEditors?.() || []).map(entry => [
-            entry.panelId, entry.sessionId,
-            window.zion?.panels?.getEditorBySession?.(entry.panelId, entry.sessionId)?.getValue?.()
-          ])
-        );
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const before = editorSnapshot();
-          if (!await collaborationManager.flush()) return false;
-          await plugin.flushDurably();
-          const durable = await flushRemoteMutations();
-          if (durable === false || pendingRemoteMutations.length) {
-            throw new Error("session persistence queue is not empty");
-          }
-          if (before === editorSnapshot() && !plugin.hasPendingDrafts()) return true;
-        }
-        return false;
-      } catch (error) {
-        console.error("[sessions] prepare for reload failed", error);
-        return false;
-      }
-    }
+    createSessionReloadPreparation({
+      zion: window.zion, plugin, collaborationManager,
+      queue: remoteMutationQueue, persistAnnotations: persistCurrentAnnotations
+    })
   ));
   try { window.zion?.state?.set(INTENTIONAL_RELOAD_KEY, false); } catch {}
   try { window.zion?.state?.set(RELOAD_PREPARING_KEY, false); } catch {}
@@ -2744,7 +2855,7 @@ export async function activate(ctx) {
     try {
       if (window.zion?.state?.get(INTENTIONAL_RELOAD_KEY) === true) return;
     } catch {}
-    if (!pendingRemoteMutations.length
+    if (!remoteMutationQueue.hasUnpersistedChanges
       && !plugin.hasPendingDrafts()) return;
     event.preventDefault();
     event.returnValue = "";
@@ -2767,8 +2878,8 @@ export async function activate(ctx) {
       try { if (prefetchTimer) clearTimeout(prefetchTimer); } catch {}
       const idle = typeof requestIdleCallback === "function";
       const fn = async () => {
-        const ids = window.zion.state.get("ui.editorTabs.openSessionIds");
-        const arr = Array.isArray(ids) ? ids : [];
+        const panels = window.zion?.panels?.list?.() || [];
+        const arr = panels.map(panel => panel?.activeTabId);
         const uniq = [];
         const seen = new Set();
         for (const it of arr) {
@@ -2780,12 +2891,9 @@ export async function activate(ctx) {
         }
         const cur = window.zion.state.get("sessions.currentId");
         if (cur && !seen.has(cur)) uniq.unshift(cur);
-        const max = 12;
-        const target = uniq.slice(0, max);
-        for (const id of target) {
+        for (const id of uniq) {
           if (remoteStorageOnline && !durableSessionIds.has(id)) continue;
           try {
-            loadMeta(id);
             await loadDocAsync(id);
           } catch {}
         }
@@ -2806,13 +2914,32 @@ export async function activate(ctx) {
 
   // New empty session
   const dNew = window.zion.commands.registerCommand("zion.sessions.new", async (opts = {}) => {
+    const targetPanelId = opts?.panelId || (() => {
+      try { return window.zion?.panels?.getActivePanelId?.() || null; } catch { return null; }
+    })();
+    const parentId = (() => {
+      if (opts?.parentId) return opts.parentId;
+      const curId = targetPanelId
+        ? (window.zion?.panels?.list?.().find((panel) => panel.id === targetPanelId)?.activeTabId || null)
+        : window.zion.state.get("sessions.currentId");
+      if (curId) {
+        const tree = isReceivedNode(curId) ? sharedSessionView.tree() : loadTree() || ensureInitialTree();
+        const { parent } = findNodeAndParent(tree, curId);
+        if (parent && parent.type === "folder") return parent.id;
+      }
+      return window.zion.state.get("sessions.selectedFolderId") || "root";
+    })();
+    if (isReceivedNode(parentId)) {
+      const id = await sharedSessionView.mutate(parentId, {
+        action: "createDocument", title: String(opts.title || "New Session"), text: String(opts.content || "")
+      });
+      if (opts.open !== false) await window.zion.commands.executeCommand("zion.sessions.switch", id, { panelId: opts.panelId });
+      return id;
+    }
     const suggested = `Session ${getIndex().length + 1}`;
     const id = genId();
     const text = String(opts?.content ?? "");
     const shouldOpen = opts?.open !== false;
-    const targetPanelId = opts?.panelId || (() => {
-      try { return window.zion?.panels?.getActivePanelId?.() || null; } catch { return null; }
-    })();
     // Keep new sessions on a stable placeholder; AI rename runs once after real content arrives.
     const explicitTitle = String(opts?.title || "").trim();
     const title = explicitTitle || suggested;
@@ -2827,20 +2954,8 @@ export async function activate(ctx) {
       hash: hashString(text),
       titleAuto: !explicitTitle
     };
-    saveDoc(id, text);
-    saveMeta(id, meta);
-    const parentId = (() => {
-      if (opts?.parentId) return opts.parentId;
-      const curId = targetPanelId
-        ? (window.zion?.panels?.list?.().find((panel) => panel.id === targetPanelId)?.activeTabId || null)
-        : window.zion.state.get("sessions.currentId");
-      if (curId) {
-        const tree = loadTree() || ensureInitialTree();
-        const { parent } = findNodeAndParent(tree, curId);
-        if (parent && parent.type === "folder") return parent.id;
-      }
-      return window.zion.state.get("sessions.selectedFolderId") || "root";
-    })();
+    window.zion.state.set(`sessions.localDraft.${id}`, true);
+    saveNewSession(id, text, meta);
     console.info("[sessions] new: creating", { id, parentId, title: meta.title });
     insertSessionNode(id, parentId, meta.title);
     rebuildIndexFromTree();
@@ -2928,8 +3043,7 @@ export async function activate(ctx) {
       const prevAnn = window.zion?.commands?.executeCommand?.("zion.chatCards.getSessionAnnotations", prevId) || loadMeta(prevId)?.annotations;
       if (prevAnn) meta.annotations = prevAnn;
     } catch {}
-    saveDoc(id, text);
-    saveMeta(id, meta);
+    saveNewSession(id, text, meta);
     // place in same folder as previous session (default root)
     const tree = loadTree() || ensureInitialTree();
     const { parent } = findNodeAndParent(tree, prevId);
@@ -2964,6 +3078,15 @@ export async function activate(ctx) {
       return window.zion.state.get("sessions.currentId");
     })();
     if (!id) return false;
+    if (isReceivedNode(id)) {
+      const entry = sharedSessionView.entry(id);
+      const title = opts?.title || await openModalInput({ title: t("dialog.rename", "Rename session"),
+        value: entry?.title || "", okText: "Rename", cancelText: "Cancel" });
+      if (!String(title || "").trim()) return false;
+      await sharedSessionView.mutate(id, { action: "rename", title: String(title).trim() });
+      window.zion.events?.emit?.("session/renamed", { id, title });
+      return true;
+    }
     const entry = findInIndex(id);
     const nv = String(opts?.title || "");
     const raw = nv
@@ -2977,7 +3100,9 @@ export async function activate(ctx) {
       });
     const title = String((raw == null ? (entry?.title || "") : raw) || "").trim();
     if (!title) return false;
-    const meta = { ...(loadMeta(id) || {}), id };
+    if (window.zion.state.get(`sessions.deleted.${id}`) === true
+      || window.zion.state.get(`sessions.deleting.${id}`) === true) return false;
+    const meta = loadMeta(id) || { id };
     meta.title = title;
     meta.titleAuto = false;
     saveMeta(id, meta);
@@ -3016,33 +3141,45 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dAutoRename);
 
   // Delete
-  const dDelete = window.zion.commands.registerCommand("zion.sessions.delete", async (id) => {
-    const cur = window.zion.state.get("sessions.currentId");
-    await deleteSession(id);
-    const nextId = getLastActiveId() || getIndex()[0]?.id || null;
-    window.zion.state.set("sessions.catalog", getIndex());
-    await removeSessionFromPanels(id);
-    if (id === cur) {
-      window.zion.state.set("sessions.currentId", nextId);
-      if (nextId) {
-        setLastActiveId(nextId);
-        if (!window.zion?.panels?.getActivePanelId?.()) {
-          try {
-            const text = await loadDocAsync(nextId);
-            window.zion.window.activeEditor?.setValue(text, { source: "session-load" });
-            try { applyAnnotationsForSession(nextId); } catch {}
-          } catch {}
-        }
-      } else {
-        setLastActiveId(null);
-        try { window.zion.window.activeEditor?.setValue("", { source: "session-load" }); } catch {}
-      }
+  const deletionController = createSessionDeletionController(window.zion);
+  const deletionSessionIds = targets => {
+    const tree = loadTree();
+    const ids = [];
+    const collect = node => {
+      if (node?.type === "session") ids.push(node.id);
+      else for (const child of node?.children || []) collect(child);
+    };
+    for (const item of targets) {
+      if (item.type === "session") ids.push(item.id);
+      else collect(tree && findNodeAndParent(tree, item.id).node);
     }
+    return ids;
+  };
+  const refreshAfterDelete = () => {
+    window.zion.state.set("sessions.catalog", getIndex());
     refreshStatusBar();
-    try { refreshSessionsSidebarViewIfOpen(); } catch {}
-    // 更新页面标题（如果当前会话被删除，会切换到新会话）
     updatePageTitle();
-    return true;
+    try { refreshSessionsSidebarViewIfOpen(); } catch {}
+    try { refreshSessionsOverlayIfOpen(); } catch {}
+  };
+  const dDelete = window.zion.commands.registerCommand("zion.sessions.delete", async (id) => {
+    if (!id) return false;
+    if (isReceivedNode(id)) {
+      await sharedSessionView.mutate(id, { action: "delete" });
+      await removeSessionFromPanels(id);
+      return true;
+    }
+    return deletionController.run({
+      targets: [{ type: "session", id }], sessionIds: [id],
+      execute: async progress => {
+        await deleteSession(id);
+        progress(1);
+        void Promise.resolve(removeSessionFromPanels(id)).catch(error =>
+          warnStorageIssue("switchAfterDelete", error, { operation: "read" }));
+        refreshAfterDelete();
+        return true;
+      }
+    });
   });
   ctx.subscriptions.push(dDelete);
 
@@ -3152,6 +3289,7 @@ export async function activate(ctx) {
   const documentRuntime = new SessionDocumentRuntime({
     getGlobalSessionId: () => window.zion.state.get("sessions.currentId") || null,
     getPanelSessionId: (panelId) => window.zion?.sessions?.getPanelSessionId?.(panelId) || null,
+    getActivePanelId: () => window.zion?.panels?.getActivePanelId?.() || null,
     setGlobalSessionId: (id) => window.zion.state.set("sessions.currentId", id),
     getTargetEditor,
     persistPreviousSession: persistSessionPresentation,
@@ -3164,10 +3302,16 @@ export async function activate(ctx) {
       return loadDocAsync(id);
     },
     applyAnnotations: applyAnnotationsForSession,
-    restoreUiState: restoreSessionViewState,
-    afterSwitch: (id) => {
+    restoreUiState: async (id, panelId) => {
+      if (window.zion.state.get("sessions.restoreWorkspace") === true && panelId) {
+        return window.zion.commands.executeCommand("zion.panels.restoreInitialView", panelId);
+      }
+      restoreSessionViewState(id, panelId);
+    },
+    afterSwitch: (id, panelId) => {
       try { maybeUpdateLocalAutoTitle(id); } catch {}
       markSessionViewed(id);
+      if (panelId && window.zion?.panels?.getActivePanelId?.() !== panelId) return;
       const rs = window.zion.state.get(`chat.runs.${id}`);
       window.zion.state.set("chat.streaming", !!rs?.streaming);
       refreshStatusBar();
@@ -3190,7 +3334,10 @@ export async function activate(ctx) {
     if (id && opts?.panelId && !opts?.__fromPanelRuntime) {
       try {
         if (typeof window.zion.panels?.openSession === "function") {
-          const result = await window.zion.panels.openSession(opts.panelId, id, { focus: opts?.focus !== false, forceReload: opts?.forceReload });
+          const result = await window.zion.panels.openSession(opts.panelId, id, {
+            focus: opts?.focus !== false, forceReload: opts?.forceReload,
+            skipPersistPrevious: opts?.skipPersistPrevious
+          });
           debugSessions("switch.command.delegatedPanel", { id, panelId: opts.panelId, result });
           return result;
         }
@@ -3569,8 +3716,7 @@ export async function activate(ctx) {
     if (srcMeta?.annotations) {
       meta.annotations = srcMeta.annotations;
     }
-    saveDoc(newId, text);
-    saveMeta(newId, meta);
+    if (!await saveNewSession(newId, text, meta)) throw new Error("复制会话失败，请重试。");
     upsertIndexEntry({ id: newId, title: meta.title, updatedAt: meta.updatedAt, size: meta.size, hash: meta.hash, createdAt: meta.createdAt });
     setLastActiveId(newId, { push: true });
     window.zion.state.set("sessions.catalog", getIndex());
@@ -3630,8 +3776,7 @@ export async function activate(ctx) {
       hash: hashString(srcText),
       titleAuto: false
     };
-    saveDoc(nextId, srcText);
-    saveMeta(nextId, meta);
+    if (!await saveNewSession(nextId, srcText, meta)) throw new Error("复制会话失败，请重试。");
     insertSessionNodeAfter(nextId, srcId, meta.title);
     rebuildIndexFromTree();
     window.zion.state.set("sessions.catalog", getIndex());
@@ -3733,52 +3878,56 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dImport);
 
   // Bulk selection commands
-  const dDeleteSelected = window.zion.commands.registerCommand("zion.sessions.deleteSelected", async () => {
-    const sel = getSelection();
-    if (!sel.length) return false;
-    const ok = await openModalConfirm({
-      title: t("dialog.deleteSelected", "Delete selected"),
-      message: `Delete ${sel.length} selected item(s)? This cannot be undone.`,
-      okText: "Delete",
-      cancelText: "Cancel"
+  const dDeleteSelected = window.zion.commands.registerCommand("zion.sessions.deleteSelected", () => {
+    const selection = getSelection();
+    const initialTree = loadTree();
+    const targets = selection.filter(item => !selection.some(parent =>
+      parent.type === "folder" && parent.id !== item.id && (() => {
+        let node = initialTree && findNodeAndParent(initialTree, item.id).parent;
+        while (node) {
+          if (node.id === parent.id) return true;
+          node = findNodeAndParent(initialTree, node.id).parent;
+        }
+        return false;
+      })()
+    ));
+    return deleteSelectedSessions({
+      selection,
+      isDescendant: (ancestorId, childId) => {
+        let parent = initialTree && findNodeAndParent(initialTree, childId).parent;
+        while (parent) {
+          if (parent.id === ancestorId) return true;
+          parent = findNodeAndParent(initialTree, parent.id).parent;
+        }
+        return false;
+      },
+      confirm: () => openModalConfirm({
+        title: t("dialog.deleteSelected", "Delete selected"),
+        message: t("ui.deleteSelectedConfirm", "Delete {count} selected item(s)? This cannot be undone.", { count: selection.length }),
+        okText: t("ui.delete", "Delete"), cancelText: t("ui.cancel", "Cancel")
+      }),
+      deleteFolder: removeNodeRecursive,
+      deleteSession,
+      isDeleted: id => !!window.zion.state.get(`sessions.deleted.${id}`),
+      onDeleted: removeSessionsFromPanels,
+      clearSelection,
+      afterDelete: refreshAfterDelete,
+      run: execute => deletionController.run({
+        targets, sessionIds: deletionSessionIds(targets), execute
+      }),
+      onProgress: (count, item) => {
+        setSelection(getSelection().filter(selected => selected.id !== item.id
+          && !(item.type === "folder" && targets.some(target => target.id === item.id)
+            && (() => {
+              let node = initialTree && findNodeAndParent(initialTree, selected.id).parent;
+              while (node) {
+                if (node.id === item.id) return true;
+                node = findNodeAndParent(initialTree, node.id).parent;
+              }
+              return false;
+            })())));
+      }
     });
-    if (!ok) return false;
-    let affectedCurrent = false;
-    const cur = window.zion.state.get("sessions.currentId");
-    for (const it of sel) {
-      if (it.type === "folder") {
-        // delete whole subtree
-        if (removeNodeRecursive(it.id)) {
-          const tree = loadTree() || ensureInitialTree();
-          const { node } = findNodeAndParent(tree, it.id);
-          // node removed; check current
-        }
-      } else {
-        if (cur === it.id) affectedCurrent = true;
-        await deleteSession(it.id);
-      }
-    }
-    clearSelection();
-    if (affectedCurrent) {
-      const nextId = getLastActiveId() || getIndex()[0]?.id || null;
-      await Promise.all(sel.filter((it) => it.type !== "folder").map((it) => removeSessionFromPanels(it.id)));
-      window.zion.state.set("sessions.currentId", nextId);
-      if (nextId) {
-        setLastActiveId(nextId);
-        if (!window.zion?.panels?.getActivePanelId?.()) {
-          window.zion.window.activeEditor?.setValue(await loadDocAsync(nextId), { source: "session-load" });
-        }
-      } else {
-        setLastActiveId(null);
-        try { window.zion.window.activeEditor?.setValue("", { source: "session-load" }); } catch {}
-      }
-    } else {
-      await Promise.all(sel.filter((it) => it.type !== "folder").map((it) => removeSessionFromPanels(it.id)));
-    }
-    window.zion.state.set("sessions.catalog", getIndex());
-    refreshStatusBar();
-    try { refreshSessionsSidebarViewIfOpen(); } catch {}
-    return true;
   });
   const dExportSelected = window.zion.commands.registerCommand("zion.sessions.exportSelected", async () => {
     const sel = getSelection();
@@ -3800,13 +3949,18 @@ export async function activate(ctx) {
   ctx.subscriptions.push(dDeleteSelected, dExportSelected);
 
   // Folder commands
-  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", (opts) => {
+  const dNewFolder = window.zion.commands.registerCommand("zion.sessions.newFolder", async (opts) => {
     const parentId = String(opts?.parentId || window.zion.state.get("sessions.selectedFolderId") || "root") || "root";
     const title = String(opts?.title || "").trim() || "New Folder";
     const shouldStartInlineRename = opts?.startInlineRename !== false;
     const targetView = String(opts?.targetView || "").trim() || null;
-    const id = insertFolder(parentId, title);
-    try { openAncestors(id); } catch {}
+    const id = isReceivedNode(parentId)
+      ? await sharedSessionView.mutate(parentId, { action: "createFolder", title })
+      : insertFolder(parentId, title);
+    try {
+      if (isReceivedNode(id)) sharedSessionView.openAncestors(id, setFolderOpen);
+      else openAncestors(id);
+    } catch {}
     try { setFolderOpen(parentId, true); } catch {}
     try { setSelection([{ id, type: "folder" }]); } catch {}
     try { setLastSelectedId(id); } catch {}
@@ -3825,7 +3979,11 @@ export async function activate(ctx) {
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return id;
   });
-  const dRenameFolder = window.zion.commands.registerCommand("zion.sessions.renameFolder", (opts) => {
+  const dRenameFolder = window.zion.commands.registerCommand("zion.sessions.renameFolder", async (opts) => {
+    if (isReceivedNode(opts?.id)) {
+      await sharedSessionView.mutate(opts.id, { action: "rename", title: String(opts.title || "") });
+      return true;
+    }
     const tree = loadTree() || ensureInitialTree();
     const { node } = findNodeAndParent(tree, opts?.id);
     if (!node || node.type !== "folder") return false;
@@ -3835,11 +3993,29 @@ export async function activate(ctx) {
     try { refreshSessionsSidebarViewIfOpen(); } catch {}
     return true;
   });
-  const dDeleteFolder = window.zion.commands.registerCommand("zion.sessions.deleteFolder", (id) => {
-    const ok = removeNodeRecursive(id);
-    window.zion.state.set("sessions.catalog", getIndex());
-    try { refreshSessionsSidebarViewIfOpen(); } catch {}
-    return ok;
+  const dDeleteFolder = window.zion.commands.registerCommand("zion.sessions.deleteFolder", async (id) => {
+    if (!id || id === "root") return false;
+    if (isReceivedNode(id)) {
+      const sessionIds = [];
+      const walk = node => {
+        if (node?.type === "session") sessionIds.push(node.id);
+        (node?.children || []).forEach(walk);
+      };
+      walk(sharedSessionView.entry(id));
+      await sharedSessionView.mutate(id, { action: "delete" });
+      await removeSessionsFromPanels(sessionIds);
+      return true;
+    }
+    const targets = [{ type: "folder", id }];
+    return deletionController.run({
+      targets, sessionIds: deletionSessionIds(targets),
+      execute: async progress => {
+        const ok = await removeNodeRecursive(id);
+        if (ok) progress(1);
+        refreshAfterDelete();
+        return ok;
+      }
+    });
   });
   ctx.subscriptions.push(dNewFolder, dRenameFolder, dDeleteFolder, dExportFolder);
 

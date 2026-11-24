@@ -2,6 +2,7 @@ import { workbenchStorage as localStorage } from "../../runtime/workbench-space"
 import { matchSorter, rankings } from "match-sorter";
 import { BUILT_IN_THEME_OPTIONS, getRegisteredThemeOptions } from "../../theme/themes";
 import { EXTERNALIZED_BUILTIN_PLUGIN_IDS } from "../../plugin/externalized";
+import { cachedSessionTags } from "../../session/cached-tags";
 
 type CommandMeta = {
   id: string;
@@ -328,18 +329,7 @@ function extractSessionTags(text: string): string[] {
 function getSessionTags(sessionId: string): string[] {
   const id = safeText(sessionId).trim();
   if (!id) return [];
-  let doc = "";
-  try {
-    doc = safeText((window as any).zion?.commands?.executeCommand?.("zion.sessions.getDoc", id));
-  } catch {
-    doc = "";
-  }
-  const signature = hashText(doc);
-  const cached = sessionTagCache.get(id);
-  if (cached?.signature === signature) return cached.tags;
-  const tags = extractSessionTags(doc);
-  sessionTagCache.set(id, { signature, tags });
-  return tags;
+  return cachedSessionTags((window as any).zion?.state, id);
 }
 
 function injectStyles() {

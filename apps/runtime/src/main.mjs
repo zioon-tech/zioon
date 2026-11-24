@@ -1,6 +1,6 @@
 import { shutdownTelemetry } from "./telemetry/bootstrap.mjs";
 import { homedir } from "node:os";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, statfs } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { AccountWorkspaceProvisioner } from "./sandbox/account-workspace-provisioner.mjs";
 import { AliyunAccountStorage } from "./sandbox/aliyun-account-storage.mjs";
@@ -27,6 +27,7 @@ import { PostgresSharedSpaceStore } from "./spaces/postgres-shared-space-store.m
 import { SpaceExecutionStore } from "./spaces/space-execution-store.mjs";
 import { createSharedCollaborationPersistence } from "./spaces/collaboration-persistence.mjs";
 import { createDocumentTransfer } from "./spaces/document-transfer.mjs";
+import { createSharedFolderTransfer } from "./sharing/shared-folder-transfer.mjs";
 import { createAuthorizedWorkbenchStore } from "./spaces/authorized-workbench-store.mjs";
 import { createSpaceHttpHandler } from "./spaces/space-http-handler.mjs";
 import { SpaceCapabilityBroker, SharedSpaceRuntime, sharedModelBinding } from "./spaces/space-runtime.mjs";
@@ -34,6 +35,7 @@ import { createProviderCapabilities } from "./spaces/provider-capabilities.mjs";
 import { PostgresSharingStore } from "./sharing/postgres-sharing-store.mjs";
 import { AccountModelSharing, borrowedModelShare } from "./sharing/model-sharing.mjs";
 import { createSharingHttpHandler } from "./sharing/sharing-http-handler.mjs";
+import { SharedFolderOperations } from "./sharing/shared-folder-operations.mjs";
 import { createDocumentLinkHttpHandler } from "./sharing/document-link-http-handler.mjs";
 import { createDocumentPresenceHttpHandler } from "./sharing/document-presence-http-handler.mjs";
 import { createPlatformNodePolicy } from "./accounts/platform-node-policy.mjs";
@@ -124,6 +126,9 @@ import { RuntimeSchedulerWorker } from "./scheduler-worker.mjs";
 import { createRuntimeHealthProvider } from "./runtime-health.mjs";
 import { createRuntimeServer } from "./server.mjs";
 import { createSkillsCatalogHttpHandler } from "./skills-catalog-http-handler.mjs";
+import { SkillBundleService } from "./skill-bundle-service.mjs";
+import { SkillExecutionService } from "./skill-execution-service.mjs";
+import { artifactStoreFromEnvironment } from "./marketplace/artifact-store.mjs";
 import { MarketplaceService } from "./marketplace/service.mjs";
 import { createMarketplaceHttpHandler } from "./marketplace/http-handler.mjs";
 import { ExtensionExecutionService, withExtensionTools } from "./marketplace/execution-service.mjs";
@@ -150,6 +155,7 @@ import {
   PostgresWorkbenchStateStore
 } from "./postgres-workbench-state-store.mjs";
 import { startStorageMaintenance } from "./storage-maintenance.mjs";
+import { PostgresReceiptMaintenanceStore } from "./receipt-bodies.mjs";
 import { createWorkbenchStaticHttpHandler } from "./workbench-static-http-handler.mjs";
 import { createWorkbenchStateHttpHandler } from "./workbench-state-http-handler.mjs";
 import { createPluginDevelopmentHttpHandler } from "./plugin-development-http-handler.mjs";
@@ -278,7 +284,7 @@ class EchoEngine {
   }
 }
 
-function createEngine(mode, credentials, models, preferredProfileId = "") {
+function createEngine(mode, credentials, models, usePlatformDefault = true) {
   if (mode === "echo") {
     const profile = {
       id: "echo",
@@ -315,16 +321,15 @@ function createEngine(mode, credentials, models, preferredProfileId = "") {
   const hasPreferredWorkbenchModel = models.list().some(
     (item) => item.id === DEFAULT_INTERACTION_MODEL_PROFILE_ID
   );
-  const profileId = readArg(
+  const profileId = usePlatformDefault ? readArg(
     "--model-profile",
     process.env.ZION_RUNTIME_MODEL_PROFILE
-      || preferredProfileId
       || (
         hasPreferredWorkbenchModel
           ? DEFAULT_INTERACTION_MODEL_PROFILE_ID
           : models.defaultProfileId
       )
-  );
+  ) : (hasPreferredWorkbenchModel ? DEFAULT_INTERACTION_MODEL_PROFILE_ID : models.defaultProfileId);
   if (profileId) {
     const profile = models.get(profileId);
     const engine = new ProfileRoutingEngine({
@@ -574,6 +579,14 @@ const modelRequestDetailRetentionMs = positiveInteger(
   process.env.ZION_RUNTIME_MODEL_REQUEST_DETAIL_RETENTION_DAYS || "30",
   "Runtime model request detail retention days"
 ) * 24 * 60 * 60_000;
+const modelRequestDetailGlobalMaxBytes = parseByteSize(
+  process.env.ZION_RUNTIME_MODEL_REQUEST_DETAIL_GLOBAL_MAX_BYTES || "512MiB",
+  { label: "Runtime global model request detail storage limit", max: 2 * 1024 * 1024 * 1024 }
+);
+const modelRequestDetailGlobalMaxRows = positiveInteger(
+  process.env.ZION_RUNTIME_MODEL_REQUEST_DETAIL_GLOBAL_MAX_ROWS || "20000",
+  "Runtime global model request detail row limit"
+);
 const schedulerWorkerEnabled = enabledFlag(readArg(
   "--scheduler-worker",
   process.env.ZION_RUNTIME_SCHEDULER_WORKER || "1"
@@ -637,9 +650,25 @@ const postgresPool = new Pool({
   ...(process.env.ZION_DATABASE_SSL === "disable" ? { ssl: false } : {}),
   application_name: "zion-runtime"
 });
+const receiptMaintenance = new PostgresReceiptMaintenanceStore(postgresPool, {
+  async storageHeadroom() {
+    const disk = await statfs("/");
+    return disk.bavail * disk.bsize;
+  }
+});
 const accountStore = accountsEnabled
-  ? await new PostgresAccountStore({ pool: postgresPool }).initialize()
+  ? await new PostgresAccountStore({
+      pool: postgresPool,
+      legacyAccountSpaceId: process.env.ZION_ACCOUNT_LEGACY_WORKSPACE_ID || ""
+    }).initialize()
   : null;
+if (accountStore?.legacyAccountSpaceId) {
+  const legacy = await accountStore.space(accountStore.legacyAccountSpaceId);
+  const owner = legacy && await accountStore.membership(legacy.createdBy, legacy.id);
+  if (legacy?.id !== runtimeSpaceId || owner?.status !== "active" || owner.role !== "owner") {
+    throw new Error("Legacy account workspace must identify this Runtime's existing owner workspace");
+  }
+}
 const marketplace = accountStore ? await new MarketplaceService({
   pool: postgresPool,
   defaultExecutionConfig: toolMode === "sandbox" ? async () => ({
@@ -789,7 +818,9 @@ const runs = new PostgresRunStore(postgresPool, {
   modelRequestDetailMaxBytes,
   modelRequestDetailMaxRows,
   modelRequestDetailMaxStoredBytes,
-  modelRequestDetailRetentionMs
+  modelRequestDetailRetentionMs,
+  modelRequestDetailGlobalMaxBytes,
+  modelRequestDetailGlobalMaxRows
 });
 startupCleanup.push(() => runs.close());
 const assetMetadata = new PostgresAssetStore(postgresPool, {
@@ -919,14 +950,19 @@ const collaboration = createRuntimeCollaborationService({
         context?.principal,
         context?.readOnly ? "runtime.read" : "collaboration.write"
       );
-      if (sharedSpaces) await sharedSpaces.requireDocument(context.principal.user.id,
+      if (sharedSpaces && (context.principal.documentId !== context.documentId
+        || context.principal.documentAction !== (context.readOnly ? "view" : "edit"))) {
+        await sharedSpaces.requireDocument(context.principal.user.id,
         contentSpaceId(context.principal), context.documentId, context.readOnly ? "view" : "edit");
+      }
     }
     : null,
   authorizeOutbound: accountStore
     ? async (context) => {
       await accessControl.reauthorize(context.principal, "runtime.read");
-      await sharedSpaces.requireDocument(context.principal.user.id, contentSpaceId(context.principal), context.documentId);
+      if (context.principal.documentId !== context.documentId) {
+        await sharedSpaces.requireDocument(context.principal.user.id, contentSpaceId(context.principal), context.documentId);
+      }
     }
     : null,
   allowOrigin: accessControl
@@ -944,14 +980,6 @@ const modelProfileStore = new FileModelProfileStore(modelProfilePath);
 const models = createBuiltinModelRegistry({
   additionalProfiles: modelProfileStore.list()
 });
-const platformModelRefs = new Map();
-if (platformContext && engineMode === "openai") {
-  for (const item of platformContext.listModelProfiles()) {
-    const ref = `platform.${item.id}`;
-    platformModelRefs.set(ref, item.credentialRef);
-    models.upsert({ ...item, credentialRef: ref, metadata: { ...item.metadata, platformManaged: true } });
-  }
-}
 const interactionProfileStore = new FileInteractionProfileStore(
   interactionProfilePath
 );
@@ -973,16 +1001,9 @@ const localCredentials = new EnvironmentCredentialProvider({
     "model.deepseek": "ZION_RUNTIME_DEEPSEEK_API_KEY"
   } })
 });
-const credentials = platformContext ? {
-  has: (ref) => platformModelRefs.has(ref)
-    ? platformContext.credentials.has(platformModelRefs.get(ref))
-    : localCredentials.has(ref),
-  acquire: (request) => platformModelRefs.has(request.ref)
-    ? platformContext.credentials.acquire({ ...request, ref: platformModelRefs.get(request.ref) })
-    : localCredentials.acquire(request),
-  set: (ref, value) => localCredentials.set(ref, value),
-  delete: (ref) => localCredentials.delete(ref)
-} : localCredentials;
+// Platform data belongs to the legacy owner. Other accounts obtain models
+// exclusively from their own store or an explicitly authorized share.
+const credentials = localCredentials;
 const authorizeScheduledTask = accountStore ? (actor, input) => accessControl.authorizeTask(
   actor, input,
   interactionProfileStore.get(input.interactionProfileId || DEFAULT_SCHEDULED_INTERACTION_PROFILE_ID),
@@ -1003,7 +1024,7 @@ const {
   profile,
   profiles: runtimeModelProfiles,
   resolveModel
-} = createEngine(engineMode, credentials, models, platformContext?.defaultModelProfileId);
+} = createEngine(engineMode, credentials, models, !platformContext);
 let accountModelEngine;
 const sharedRuntime = sharedSpaces ? new SharedSpaceRuntime({
   spaces: sharedSpaces, execution: spaceExecution, broker: spaceBroker, runs, runtimeSpaceId,
@@ -1050,11 +1071,6 @@ const engine = sharedRuntime ? sharedRuntime.wrapEngine(assetEngine) : assetEngi
 const importModelProfile = engineMode === "openai"
   ? ({ profile: input, credential }) => {
       const id = String(input?.id || "").trim();
-      if (platformContext && platformModelRefs.has(`platform.${id}`)) {
-        throw Object.assign(new Error("平台模型由平台管理，请添加自己的模型配置。"), {
-          code: "platform_model_readonly", statusCode: 403
-        });
-      }
       const credentialRef = `model.${id}`;
       const imported = models.upsert({
         ...input,
@@ -1082,11 +1098,6 @@ const importModelProfile = engineMode === "openai"
   : null;
 const deleteModelProfile = engineMode === "openai"
   ? (profileId) => {
-      if (platformContext && platformModelRefs.has(`platform.${profileId}`)) {
-        throw Object.assign(new Error("平台模型由平台管理。"), {
-          code: "platform_model_readonly", statusCode: 403
-        });
-      }
       const removed = modelProfileStore.delete(profileId);
       if (!removed) return null;
       const registryProfile = models.delete(profileId) || removed;
@@ -1480,6 +1491,29 @@ function createMailManagementPluginService({
 let executor = null;
 let tools = null;
 let capabilityTools = () => [];
+const skillBundles = new SkillBundleService({
+  artifactStore: marketplace?.artifactStore || (process.env.ZION_ARTIFACT_STORE ? artifactStoreFromEnvironment() : null),
+  scopeId: runtimeSpaceId
+});
+const skillExecution = new SkillExecutionService({
+  bundles: skillBundles,
+  tools: () => tools,
+  resolveTarget: async (args, context) => {
+    if (args.node_id === "managed:account") {
+      if (!extensionExecution) throw Object.assign(new Error("Account workspace is unavailable"), { statusCode: 503 });
+      const config = await extensionExecution.resolveConfig({ nodeId: "managed:account" }, context.principal);
+      return { nodeId: config.nodeId, root: args.workspace_root
+        || nodePluginDataLocations.forPlugin("dev.skills", context, { access: "write" }).data.root };
+    }
+    if (!args.workspace_root) throw Object.assign(new Error("Physical Node preparation requires workspace_root"),
+      { code: "skill_execution_root_required", statusCode: 422 });
+    return { nodeId: args.node_id, root: args.workspace_root };
+  },
+  authorizeHost: async (context, install) => {
+    if (!extensionExecution) throw Object.assign(new Error("Skill execution host is unavailable"), { statusCode: 503 });
+    await extensionExecution.authorizeHost(context, install);
+  }
+});
 const identityFileService = memoryServiceUrl ? createPluginFileService({
   toolHost: delegatedTools,
   authorizeRequest: null,
@@ -1605,7 +1639,14 @@ const runtimePlugins = new RuntimePluginService({
       availableNodes: () => nodeBroker?.snapshot().nodes || [],
       localSourceAvailable: toolMode === "local",
       marketplaceSkills: marketplace ? (context) => marketplace.skillsFor(context) : null,
-      marketplaceSkillFile: marketplace ? (context, id, path, hash) => marketplace.skillFileFor(context, id, path, hash) : null
+      marketplaceSkillFile: marketplace ? (context, id, path, hash) => marketplace.skillFileFor(context, id, path, hash) : null,
+      skillFile: async (_context, id, path, hash) => {
+        const snapshot = (await workbenchState.readKV(SKILLS_RUNTIME_KV_KEY))?.value;
+        const skill = snapshot?.catalog?.find((entry) => entry.id === id);
+        if (!skill) throw Object.assign(new Error("Skill not found"), { statusCode: 404 });
+        return skillBundles.file(skill, path, hash);
+      },
+      prepareSkill: marketplace ? (context, skill, args) => skillExecution.prepare(skill, args, context) : null
     },
     "dev.plugins": {
       pluginHostService
@@ -1691,6 +1732,7 @@ if (
 try {
   await syncRuntimePluginSkillsCatalog({
     store: workbenchState,
+    bundles: skillBundles,
     plugins: runtimePlugins.getActivePluginInfos()
   });
 } catch (error) {
@@ -1829,7 +1871,7 @@ const sharedMemoryToolNames = runtimeSpace?.kind === "team"
 let defaultInteractionProfile = interactionProfileStore.ensure(
   {
     ...createDefaultInteractionProfile({
-    modelProfileId: defaultInteractionModelProfileId || profile?.id,
+    modelProfileId: (!platformContext && defaultInteractionModelProfileId) || profile?.id,
     availableToolNames: defaultAvailableToolNames
     }),
     ...(platformContext ? {
@@ -1846,6 +1888,12 @@ let defaultInteractionProfile = interactionProfileStore.ensure(
     } : {})
   }
 );
+if (platformContext && engineMode === "openai"
+  && !models.list().some(item => item.id === defaultInteractionProfile.modelProfileId)) {
+  defaultInteractionProfile = interactionProfileStore.patch(DEFAULT_INTERACTION_PROFILE_ID, {
+    modelProfileId: profile.id
+  });
+}
 if (platformContext
   && defaultInteractionProfile.modelProfileId === models.defaultProfileId
   && Number(defaultInteractionProfile.metadata?.defaultToolSetVersion) > 0
@@ -1880,11 +1928,20 @@ if (runtimeSpace?.kind === "team") {
     metadata: { ...defaultInteractionProfile.metadata, includeTerminalContext: false }
   });
 }
+if (runtimeSpace?.legacyAccountWorkspace
+  && defaultInteractionProfile.policy?.fileRoots?.length === 1
+  && defaultInteractionProfile.policy.fileRoots[0] === "/memory/dev.identity") {
+  // Undo only the generated team-space ceiling; preserve the user's tools,
+  // preset and other interaction settings.
+  defaultInteractionProfile = interactionProfileStore.patch(DEFAULT_INTERACTION_PROFILE_ID, {
+    policy: { ...defaultInteractionProfile.policy, fileRoots: [] }
+  });
+}
 mergeDefaultProfileTools(
   interactionProfileStore,
   interactionProfileStore.ensure(
     createDefaultScheduledInteractionProfile({
-      modelProfileId: defaultInteractionModelProfileId || profile?.id,
+      modelProfileId: (!platformContext && defaultInteractionModelProfileId) || profile?.id,
       availableToolNames: defaultAvailableToolNames
     })
   ),
@@ -2072,6 +2129,7 @@ const serviceHttpHandlers = [
   })] : []),
   createSkillsCatalogHttpHandler({
     store: workbenchState,
+    bundles: skillBundles,
     marketplace,
     availableNodes: () => nodeBroker?.snapshot().nodes || [],
     localSourceAvailable: toolMode === "local",
@@ -2143,6 +2201,8 @@ const runtimeHealth = createRuntimeHealthProvider({
   modelRequestDetailMaxRows,
   modelRequestDetailMaxStoredBytes,
   nodeBroker,
+  runStore: runs,
+  receiptStore: receiptMaintenance,
   schedulerWorker,
   projectAutomationService
 });
@@ -2196,6 +2256,15 @@ const runtime = createRuntimeServer({
       }
     })] : []),
     ...(sharing ? [createSharingHttpHandler({ sharing, models: modelSharing, accessControl, publicBaseUrl,
+      mutateFolder: async (userId, shareId, input) => {
+        if (input?.action === "importDocument") return createSharedFolderTransfer({
+          sharing, spaces: sharedSpaces, acquireRuntime: id => spaceBroker.acquireRuntime(id)
+        })(userId, shareId, input);
+        const grant = await sharing.requireGrant(userId, shareId);
+        const lease = await spaceBroker.acquireRuntime(grant.originSpaceId);
+        try { return await lease.app.mutateSharedFolder(userId, shareId, input); }
+        finally { lease.release(); }
+      },
       readDocumentVisitors: async (originSpaceId, documentId, self) => {
         const lease = await spaceBroker.acquireRuntime(originSpaceId);
         try { return await lease.app.listDocumentVisitors(documentId, { self, accountIds: true }); }
@@ -2362,7 +2431,7 @@ extensionOutbox?.start();
 schedulerWorker?.start();
 const storageMaintenance = storageMaintenanceEnabled
   ? startStorageMaintenance({
-      stores: [runs, workbenchState],
+      stores: [runs, workbenchState, receiptMaintenance],
       batchRows: storageMaintenanceBatchRows,
       intervalMs: storageMaintenanceIntervalMs,
       logger(level, message) {
@@ -2501,6 +2570,9 @@ return {
     }
     return assets;
   },
+  mutateSharedFolder: (userId, shareId, input) => new SharedFolderOperations({
+    sharing, store: workbenchState, spaces: sharedSpaces
+  }).mutate(userId, shareId, input),
   defaultModelProfileId: defaultInteractionProfile.modelProfileId
     || models.resolveModelRef(defaultInteractionProfile.model).id,
   close: shutdown,

@@ -1,3 +1,7 @@
+import {
+  RECEIPT_CACHE_MAX_BYTES, encodeReceiptBody, hydrateReceiptRows, receiptReadSql, storeReceiptBody
+} from "./receipt-bodies.mjs";
+
 function jsonValue(value) {
   if (typeof value === "string") return JSON.parse(value);
   return JSON.parse(JSON.stringify(value));
@@ -7,7 +11,7 @@ function receiptFromRow(row) {
   return row && {
     invocationId: String(row.invocation_id),
     nodeId: String(row.node_id),
-    result: jsonValue(row.result_json),
+    result: JSON.parse(JSON.stringify(row.result_json)),
     completedAt: Number(row.completed_at)
   };
 }
@@ -39,10 +43,12 @@ export class PostgresNodeStateStore {
     }
   }
 
-  async loadState({ receiptLimit = 1_000 } = {}) {
+  async loadState({ receiptLimit = 1_000, receiptMaxBytes = RECEIPT_CACHE_MAX_BYTES } = {}) {
     const limit = Number.isSafeInteger(receiptLimit) && receiptLimit > 0
       ? receiptLimit
       : 1_000;
+    const byteLimit = Number.isSafeInteger(receiptMaxBytes) && receiptMaxBytes >= 0
+      ? receiptMaxBytes : RECEIPT_CACHE_MAX_BYTES;
     const [nodes, bindings, receipts] = await Promise.all([
       this.pool.query(
         `SELECT registration_json, last_seen_at
@@ -58,16 +64,17 @@ export class PostgresNodeStateStore {
         [this.spaceId]
       ),
       this.pool.query(
-        `SELECT invocation_id, node_id, result_json, completed_at
-         FROM (
-           SELECT invocation_id, node_id, result_json, completed_at
-           FROM runtime_invocation_receipts
-           WHERE space_id = $1
-           ORDER BY completed_at DESC, invocation_id DESC
-           LIMIT $2
-         ) recent
-         ORDER BY completed_at ASC, invocation_id ASC`,
-        [this.spaceId, limit]
+        receiptReadSql(`WITH recent AS MATERIALIZED (
+          SELECT r.*,CASE WHEN r.result_ref IS NULL THEN octet_length(r.result_json::text)
+            ELSE COALESCE(b.raw_bytes,0) END AS result_bytes
+          FROM (SELECT * FROM runtime_invocation_receipts WHERE space_id=$1
+            ORDER BY completed_at DESC,invocation_id DESC LIMIT $2) r
+          LEFT JOIN runtime_receipt_bodies b ON b.space_id=r.space_id AND b.ref=r.result_ref
+        ), sized AS (
+          SELECT *,sum(result_bytes) OVER (ORDER BY completed_at DESC,invocation_id DESC) AS total
+          FROM recent WHERE result_bytes<=$3
+        ) SELECT * FROM sized WHERE total<=$3`),
+        [this.spaceId, limit, byteLimit]
       )
     ]);
     return {
@@ -81,7 +88,10 @@ export class PostgresNodeStateStore {
         resourceId: String(row.resource_id),
         updatedAt: Number(row.updated_at)
       })),
-      receipts: receipts.rows.map(receiptFromRow)
+      receipts: (await hydrateReceiptRows(receipts.rows))
+        .sort((a, b) => Number(a.completed_at) - Number(b.completed_at)
+          || String(a.invocation_id).localeCompare(String(b.invocation_id)))
+        .map(receiptFromRow)
     };
   }
 
@@ -136,33 +146,45 @@ export class PostgresNodeStateStore {
 
   async getReceipt(invocationId) {
     const result = await this.pool.query(
-      `SELECT invocation_id, node_id, result_json, completed_at
-       FROM runtime_invocation_receipts
-       WHERE space_id = $1 AND invocation_id = $2`,
+      receiptReadSql(`SELECT * FROM runtime_invocation_receipts
+        WHERE space_id=$1 AND invocation_id=$2`),
       [this.spaceId, invocationId]
     );
-    return receiptFromRow(result.rows[0]);
+    return receiptFromRow((await hydrateReceiptRows(result.rows))[0]);
   }
 
   async saveReceipt({ invocationId, nodeId, result, completedAt }) {
-    const write = await this.pool.query(
+    const encoded = await encodeReceiptBody(result);
+    const write = await this.transaction(async client => {
+      const inserted = await client.query(
       `INSERT INTO runtime_invocation_receipts
-       (space_id, invocation_id, node_id, result_json, completed_at)
-       VALUES ($1, $2, $3, $4::jsonb, $5)
-       ON CONFLICT (space_id, invocation_id) DO NOTHING`,
+       (space_id, invocation_id, node_id, result_json, completed_at, result_skip_reason)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+       ON CONFLICT (space_id, invocation_id) DO NOTHING
+       RETURNING invocation_id, node_id, completed_at`,
       [
         this.spaceId,
         invocationId,
         nodeId,
-        JSON.stringify(result),
-        completedAt
+        JSON.stringify(encoded.body ? encoded.header : encoded.value),
+        completedAt,
+        encoded.skipReason || null
       ]
-    );
+      );
+      if (inserted.rowCount && encoded.body) await storeReceiptBody(client, "runtime_invocation_receipts",
+        this.spaceId, invocationId, result, encoded);
+      return inserted;
+    });
+    if (write.rowCount) {
+      // The caller already owns the result; avoid transferring it back from
+      // PostgreSQL. A competing write still uses the committed receipt.
+      return { invocationId, nodeId, result, completedAt, duplicate: false };
+    }
     const receipt = await this.getReceipt(invocationId);
     if (!receipt) {
       throw new Error(`Invocation receipt was not persisted: ${invocationId}`);
     }
-    return { ...receipt, duplicate: write.rowCount === 0 };
+    return { ...receipt, duplicate: true };
   }
 
   async countReceipts() {

@@ -2,6 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionDocumentRuntime } from "../src/session/document-runtime";
 
 describe("SessionDocumentRuntime", () => {
+  it("waits for the target pane's card restoration before restoring its viewport", async () => {
+    let ready!: () => void;
+    const order: string[] = [];
+    const cards = new Promise<void>(resolve => { ready = resolve; });
+    const runtime = new SessionDocumentRuntime({
+      getGlobalSessionId: () => "a", setGlobalSessionId() {},
+      getTargetEditor: () => ({ setValue() { order.push("document"); } }) as any,
+      persistPreviousSession() {}, setLastActiveId() {},
+      loadDocument: () => "full document",
+      applyAnnotations: () => { order.push("cards-start"); return cards; },
+      restoreUiState: () => { order.push("viewport"); }
+    });
+    const switching = runtime.switchSession({ id: "b" });
+    expect(order).toEqual(["document", "cards-start"]);
+    ready();
+    expect(await switching).toBe(true);
+    expect(order).toEqual(["document", "cards-start", "viewport"]);
+  });
   it("persists previous panel session, loads target document, and restores annotations", async () => {
     const calls: string[] = [];
     const editor = {

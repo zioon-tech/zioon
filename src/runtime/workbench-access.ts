@@ -74,20 +74,37 @@ function workbenchDevice() {
 }
 
 async function accessHealth(baseUrl: string): Promise<AccessHealth> {
+  let health: AccessHealth = { available: false, authRequired: false };
   try {
     const response = await fetch(`${baseUrl}/health`, {
       headers: { accept: "application/json" },
-      credentials: "include"
+      credentials: "include",
+      signal: AbortSignal.timeout(2500)
     });
     const body = await response.json().catch(() => null);
-    return {
+    health = {
       available: response.ok && body?.service === "zion-runtime",
       authRequired: body?.authRequired === true,
       authMode: body?.authMode || body?.accessControl
     };
   } catch {
-    return { available: false, authRequired: false };
+    // A cold account Runtime or a failed health probe does not identify the
+    // deployment as a legacy, unauthenticated Workbench.
   }
+  if (health.available && (!health.authRequired || health.authMode)) return health;
+  try {
+    // The account gateway serves config without starting a user Runtime.
+    const response = await fetch(`${baseUrl}/v1/account/config`, {
+      headers: { accept: "application/json" },
+      credentials: "include",
+      signal: AbortSignal.timeout(2500)
+    });
+    const body = await response.json().catch(() => null);
+    if (response.ok && body?.mode === "accounts-v1") {
+      return { available: true, authRequired: true, authMode: body.mode };
+    }
+  } catch { /* Keep the original health result for legacy/local hosts. */ }
+  return health;
 }
 
 async function hasAccessSession(baseUrl: string): Promise<boolean> {
@@ -237,6 +254,29 @@ function renderUnavailableSpace(host: HTMLElement): Promise<void> {
   return new Promise(() => {});
 }
 
+function renderUnavailableRuntime(host: HTMLElement): Promise<void> {
+  host.replaceChildren();
+  const shell = document.createElement("main");
+  shell.className = "zion-pairing-shell";
+  const panel = document.createElement("section");
+  panel.className = "zion-pairing-panel";
+  const title = document.createElement("h1");
+  title.textContent = "暂时无法连接工作台";
+  const message = document.createElement("p");
+  message.textContent = "连接恢复后可以继续。请稍后重试。";
+  const button = document.createElement("button");
+  button.textContent = "重试";
+  panel.append(title, message, button);
+  shell.append(panel);
+  host.append(shell);
+  return new Promise((resolve, reject) => {
+    button.addEventListener("click", () => {
+      button.disabled = true;
+      void ensureWorkbenchRuntimeAccess(host).then(resolve, reject);
+    });
+  });
+}
+
 export async function ensureWorkbenchRuntimeAccess(
   host: HTMLElement
 ): Promise<void> {
@@ -259,7 +299,11 @@ export async function ensureWorkbenchRuntimeAccess(
       health = sameOriginHealth;
     }
   }
-  if (!health.available || !health.authRequired) return;
+  if (!health.available) {
+    if (config.mode === "runtime" || requestedWorkbenchSpace()) return renderUnavailableRuntime(host);
+    return;
+  }
+  if (!health.authRequired) return;
   requireSameOrigin(config.baseUrl);
   persistRuntimeTarget(config.baseUrl);
   if (health.authMode === "accounts-v1") {
@@ -273,12 +317,14 @@ export async function ensureWorkbenchRuntimeAccess(
     });
     if (unavailable) return renderUnavailableSpace(host);
     if (account) setAccountSession(account);
+    const profileReturn = location.pathname === "/account";
     if (account?.membership?.status === "active"
       && !invitation
-      && location.pathname === "/account") {
+      && profileReturn) {
       history.replaceState(history.state, "", "/");
     }
-    if (account?.membership?.status !== "active" || invitation) {
+    const requiresGate = account?.membership?.status !== "active" || !!invitation;
+    if (requiresGate) {
       const [{ createRoot }, { createElement }, { AccountPanel }] = await Promise.all([
         import("react-dom/client"), import("react"), import("../../packages/account-ui/src/AccountPanel")
       ]);
@@ -300,11 +346,15 @@ export async function ensureWorkbenchRuntimeAccess(
     }
     // Re-enter the gate if membership or role changes. Backend checks remain
     // authoritative between polls, including existing collaboration streams.
-    let identity = await accountRequest<AccountSession>(config.baseUrl, "me");
-    // The ordinary Workbench starts in the user's own resources even if a
-    // legacy team page changed the cookie's selected scope.
+    let identity = !requiresGate && !profileReturn && account
+      ? account
+      : await accountRequest<AccountSession>(config.baseUrl, "me");
+    // Existing owners may still keep their work in a pre-personal-space
+    // Runtime. Preserve that authenticated selection on login/profile return.
+    // A non-owner team selection still returns to the user's own resources.
     const personal = identity.spaces?.find(space => space.kind === "personal");
-    if (!requestedWorkbenchSpace() && personal && personal.id !== identity.space.id) {
+    if (!requestedWorkbenchSpace() && identity.membership?.role !== "owner"
+      && personal && personal.id !== identity.space.id) {
       const response = await fetch(`${config.baseUrl}/v1/account/me`, {
         headers: { accept: "application/json", "x-zioon-space-id": personal.id }, credentials: "include"
       });

@@ -302,14 +302,17 @@ async function requestSnapshot(client, fetchImpl, path, payload, method = "GET")
   try {
     const response = await fetchImpl(`${client.baseUrl}${path}`, {
       method,
-      headers: { accept: "application/json", ...(payload ? { "content-type": "application/json" } : {}) },
+      headers: { accept: "application/json", ...(payload ? { "content-type": "application/json" } : {}),
+        ...(method === "GET" && client.etag && client.baseline ? { "if-none-match": client.etag } : {}) },
       ...(payload ? { body: JSON.stringify(payload) } : {}),
       signal: controller.signal
     });
+    if (response.status === 304 && method === "GET" && client.baseline) return client.baseline;
     const body = await response.json().catch(() => null);
     if (!response.ok || body?.ok === false || !body?.snapshot) {
       throw new Error(body?.error || `Runtime skills ${method} failed: ${response.status}`);
     }
+    client.etag = method === "GET" ? response.headers?.get?.("etag") || "" : "";
     return normalizeSkillsSnapshot(body.snapshot);
   } finally {
     clearTimeout(timeout);

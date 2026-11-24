@@ -509,7 +509,8 @@ export function createDeviceServiceHttpHandler({
       }
       const invokeBroker = async (target = runContext.target) => {
         const invocationId = `device-service:${randomUUID()}`;
-        const result = await broker.invoke({
+        const invoke = broker.invokeInteractiveRead || broker.invoke;
+        const result = await invoke.call(broker, {
           invocationId,
           runId: invocationId,
           attemptId: invocationId,

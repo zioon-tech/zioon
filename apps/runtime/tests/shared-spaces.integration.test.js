@@ -8,6 +8,9 @@ import { createAuthorizedWorkbenchStore } from "../src/spaces/authorized-workben
 import { AccountAccessControl } from "../src/accounts/account-access-control.mjs";
 import { PostgresAssetStore } from "../src/postgres-asset-store.mjs";
 import { PostgresRunStore } from "../src/postgres-run-store.mjs";
+import { createWorkbenchStateHttpHandler } from "../src/workbench-state-http-handler.mjs";
+import { contentRequestAction } from "../src/sharing/content-scope.mjs";
+import { Readable } from "node:stream";
 
 const cleanup = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
@@ -42,6 +45,99 @@ async function setup() {
 }
 
 describe("shared Spaces with real PostgreSQL transactions", () => {
+  it("serves versioned card details only through current document access and never exposes private shared metadata", async () => {
+    const h = await setup(), id = await h.document("lazy-card");
+    const fullResult = "private original output ".repeat(300);
+    await h.store.updateSession(id, { meta: { annotations: { tools: [{
+      id: "tool", kind: "tool", runId: "run", name: "Bash", ok: true, result: fullResult
+    }] } } });
+    const principal = { kind: "account", user: h.bob, space: h.team };
+    const call = async (principal, suffix, method = "GET", data) => {
+      const path = `/v1/workbench-state/sessions/${id}${suffix}`;
+      const request = Readable.from(data ? [Buffer.from(JSON.stringify(data))] : []);
+      Object.assign(request, { method, headers: { "content-type": "application/json" }, url: path, zionPrincipal: principal });
+      let status, body;
+      const response = { setHeader() {}, writeHead(value) { status = value; }, end(value) { body = JSON.parse(value); } };
+      await createWorkbenchStateHttpHandler({ store: h.store, spaces: h.spaces })(
+        request, response, new URL("http://test" + path));
+      return { status, body };
+    };
+    const render = await call(principal, "?view=render");
+    const card = render.body.meta.annotations.tools[0];
+    expect(card.result).toBeNull();
+    const query = { cards: [{ id: card.id, kind: "tools", ref: card.detailRef }] };
+    await h.store.updateSession(id, { title: "A later unrelated revision" });
+    expect((await call(principal, "/card-details", "POST", query)).body.details[0].body.result).toBe(fullResult);
+    const shared = { ...principal, space: await h.accounts.personalSpace(h.bob.id),
+      contentScope: { originSpaceId: h.team.id, documentId: id } };
+    await expect(call(shared, "/card-details", "POST", query)).rejects.toMatchObject({ statusCode: 409 });
+    await h.restrict(id);
+    await expect(call(principal, "/card-details", "POST", query)).rejects.toMatchObject({ statusCode: 404 });
+    await h.restrict(id, [{ subjectType: "user", subjectId: h.bob.id, role: "viewer" }]);
+    expect((await call(principal, "/card-details", "POST", query)).status).toBe(200);
+    await h.store.updateSession(id, { meta: { annotations: { tools: [{
+      id: "tool", kind: "tool", runId: "run", ok: true, result: "new content"
+    }] } } });
+    await expect(call(principal, "/card-details", "POST", query)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(h.store.updateSession(id, { meta: render.body.meta })).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("allows team owners to delete folders while denying members who cannot manage every child", async () => {
+    const h = await setup(), id = await h.document("folder-private");
+    await h.restrict(id);
+    await h.store.writeTree({ id: "root", type: "folder", children: [
+      { id: "folder", type: "folder", children: [{ id, type: "session", title: "private" }] }
+    ] });
+    const base = (await h.store.readTree()).tree;
+    const member = createAuthorizedWorkbenchStore({ store: h.store, spaces: h.spaces,
+      principal: { kind: "account", user: h.bob, space: h.team } });
+    await expect(member.deleteFolder("folder", { base_tree: base, operation_id: "unauthorized" }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    expect((await h.store.readTree()).tree.children[0].id).toBe("folder");
+    const owner = createAuthorizedWorkbenchStore({ store: h.store, spaces: h.spaces,
+      principal: { kind: "account", user: h.alice, space: h.team } });
+    const deleted = await owner.deleteFolder("folder", { base_tree: base, operation_id: "owner-delete" });
+    expect(deleted.ok).toBe(true);
+    expect(deleted.deleted_session_ids).toEqual([id]);
+    await h.store.writeTree({ id: "root", type: "folder", children: [
+      { id: "empty", type: "folder", children: [] }
+    ] });
+    const emptyBase = (await h.store.readTree()).tree;
+    expect((await owner.deleteFolder("empty", { base_tree: emptyBase, operation_id: "empty-delete" })).ok).toBe(true);
+    expect((await owner.readTree()).tree.children).toEqual([]);
+  });
+  it("checks metadata GET document access and projects shared metadata without private fields", async () => {
+    const h = await setup(), id = await h.document("metadata-private");
+    await h.store.updateSession(id, { meta: { title: "hidden title", privateConfiguration: "owner-only",
+      annotations: { tools: [{ id: "private-card", result: "owner-only output" }] } } });
+    await h.restrict(id);
+    const metadata = async (principal, documentId = id) => {
+      const path = `/v1/workbench-state/sessions/${documentId}/metadata`;
+      const request = Readable.from([]);
+      request.method = "GET"; request.headers = {}; request.url = path; request.zionPrincipal = principal;
+      let status, body;
+      const response = { setHeader() {}, writeHead(value) { status = value; },
+        end(value) { body = JSON.parse(value); } };
+      await createWorkbenchStateHttpHandler({ store: h.store, spaces: h.spaces })(
+        request, response, new URL("http://runtime.test" + path));
+      return { status, body };
+    };
+    const principal = { kind: "account", user: h.bob, space: h.team };
+    await expect(metadata(principal)).rejects.toMatchObject({ statusCode: 404 });
+    await h.restrict(id, [{ subjectType: "user", subjectId: h.bob.id, role: "viewer" }]);
+    const shared = { ...principal, space: await h.accounts.personalSpace(h.bob.id),
+      contentScope: { originSpaceId: h.team.id, documentId: id } };
+    expect(contentRequestAction({ method: "GET", url: `/v1/workbench-state/sessions/${id}/metadata` },
+      shared.contentScope)).toBe("view");
+    const record = await metadata(shared);
+    expect(record.status).toBe(200);
+    expect(record.body.meta.title).toBe("hidden title");
+    expect(record.body.meta).not.toHaveProperty("annotations");
+    expect(record.body.meta).not.toHaveProperty("privateConfiguration");
+    await expect(metadata(shared, "another-document")).rejects.toMatchObject({ statusCode: 403 });
+    await h.restrict(id);
+    await expect(metadata(shared)).rejects.toMatchObject({ statusCode: 404 });
+  });
   it("rejects forwarded invitations and consumes a recipient-bound token exactly once", async () => {
     const h = await setup();
     const invitation = await h.spaces.invite(h.alice.id, h.team.id, { userId: h.eve.id });
@@ -107,6 +203,56 @@ describe("shared Spaces with real PostgreSQL transactions", () => {
     expect(await h.spaces.contacts(h.eve.id)).toEqual([]);
   });
 
+  it("authorizes a thousand documents with bounded database reads and rejects unknown or deleted documents", async () => {
+    const h = await setup();
+    const ids = Array.from({ length: 1000 }, (_, index) => `batch-${index}`);
+    await h.db.pool.query(`INSERT INTO space_documents
+      (space_id,id,created_by,protection,audience_mode,created_at,updated_at)
+      SELECT $1,id,$3,'space','space',$4,$4 FROM unnest($2::text[]) AS id`,
+    [h.team.id, ids, h.alice.id, Date.now()]);
+    let queries = 0;
+    const client = { query(...args) { queries += 1; return h.db.pool.query(...args); } };
+    const documents = await h.spaces.requireDocuments(h.bob.id, h.team.id, [...ids, ids[0]], "edit", client);
+    expect(documents.map(document => document.id)).toEqual(ids);
+    expect(documents.every(document => document.access.role === "editor")).toBe(true);
+    expect(queries).toBeLessThanOrEqual(5);
+    await expect(h.spaces.requireDocuments(h.bob.id, h.team.id, [...ids, "unknown"], "edit"))
+      .rejects.toMatchObject({ code: "document_not_found" });
+    await h.db.pool.query("UPDATE space_documents SET lifecycle='deleted' WHERE space_id=$1 AND id=$2",
+      [h.team.id, ids[0]]);
+    await expect(h.spaces.requireDocuments(h.alice.id, h.team.id, ids, "manage"))
+      .rejects.toMatchObject({ code: "document_not_found" });
+    await h.accounts.setMember(h.alice.id, h.bob.id, { role: "member", status: "removed" }, h.team.id);
+    await expect(h.spaces.requireDocuments(h.bob.id, h.team.id, [ids[1]], "view"))
+      .rejects.toMatchObject({ code: "document_not_found" });
+  });
+
+  it("keeps batched grants equivalent to individual access and immediately applies group revocation and expiry", async () => {
+    const h = await setup(), id = await h.document();
+    const group = await h.spaces.saveGroup(h.alice.id, h.team.id, null, { name: "Editors", members: [h.bob.id] });
+    await h.spaces.updateDocumentAccess(h.alice.id, h.team.id, id, {
+      protection: "space", audienceMode: "specific", expectedRevision: 1,
+      grants: [{ subjectType: "user", subjectId: h.alice.id, role: "manager" },
+        { subjectType: "user", subjectId: h.bob.id, role: "viewer" },
+        { subjectType: "group", subjectId: group.id, role: "editor" }]
+    });
+    expect(await h.spaces.requireDocuments(h.bob.id, h.team.id, [id], "edit"))
+      .toEqual([await h.spaces.requireDocument(h.bob.id, h.team.id, id, "edit")]);
+    await h.spaces.saveGroup(h.alice.id, h.team.id, group.id,
+      { name: "Editors", members: [], expectedRevision: group.revision });
+    expect((await h.spaces.requireDocuments(h.bob.id, h.team.id, [id]))[0].access.role).toBe("viewer");
+    await expect(h.spaces.requireDocuments(h.bob.id, h.team.id, [id], "edit"))
+      .rejects.toMatchObject({ code: "document_not_found" });
+    await h.db.pool.query(`UPDATE space_document_grants SET expires_at=$3
+      WHERE space_id=$1 AND document_id=$2 AND user_id=$4`, [h.team.id, id, Date.now() - 1, h.bob.id]);
+    await expect(h.spaces.requireDocuments(h.bob.id, h.team.id, [id]))
+      .rejects.toMatchObject({ code: "document_not_found" });
+    await h.accounts.setMember(h.alice.id, h.bob.id, { role: "admin" }, h.team.id);
+    await h.restrict(id);
+    await expect(h.spaces.requireDocuments(h.bob.id, h.team.id, [id]))
+      .rejects.toMatchObject({ code: "document_not_found" });
+  });
+
   it("permits a guest to comment on one external document without browsing its Space", async () => {
     const h = await setup(), id = await h.document();
     await h.spaces.updatePolicy(h.alice.id, h.team.id, { expectedRevision: 1, allowExternal: true });
@@ -151,6 +297,28 @@ describe("shared Spaces with real PostgreSQL transactions", () => {
     await expect(scoped.writeTree({ ...base, children: [] }, [], null, "bob", base))
       .rejects.toMatchObject({ code: "folder_contains_unavailable_documents" });
     expect(JSON.stringify((await h.store.readTree()).tree)).toContain("hidden");
+  });
+
+  it("skips full permission projection for an empty event feed and filters new hidden events", async () => {
+    const h = await setup(), id = await h.document();
+    await h.restrict(id);
+    const cursor = (await h.store.readTree()).event_cursor;
+    let projections = 0;
+    const readableIds = h.spaces.readableIds.bind(h.spaces);
+    h.spaces.readableIds = (...args) => { projections += 1; return readableIds(...args); };
+    const scoped = createAuthorizedWorkbenchStore({ store: h.store, spaces: h.spaces,
+      principal: { kind: "account", user: h.bob, space: h.team } });
+    const empty = await scoped.listEvents(cursor);
+    expect(empty.events).toEqual([]);
+    expect(empty.cursor).toBe(cursor);
+    expect(projections).toBe(0);
+    await h.store.updateSession(id, { text: "hidden changed" });
+    const hidden = await scoped.listEvents(cursor);
+    expect(hidden.events).toEqual([]);
+    expect(hidden.cursor).toBeGreaterThan(cursor);
+    expect(projections).toBe(1);
+    await expect(scoped.listEvents(cursor, { sessionId: id }))
+      .rejects.toMatchObject({ code: "document_not_found" });
   });
 
   it("rejects a stale ACL edit rather than overwriting someone else's sharing change", async () => {

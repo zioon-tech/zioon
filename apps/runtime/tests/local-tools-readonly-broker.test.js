@@ -46,6 +46,19 @@ function invocation(overrides = {}) {
 }
 
 describe("LocalToolsReadOnlyBroker", () => {
+  it("reports confirmed process termination without claiming that partial effects never happened", async () => {
+    const broker = new LocalToolsBroker({ fetchImpl: async () => response({
+      ok: false, timeout: true, termination_confirmed: true, stdout: "partial", stderr: "[timeout]"
+    }) });
+    const result = await broker.invoke(invocation({
+      policy: { preset: "trusted-automation", allowedTools: ["Bash"], allowedTerminalSessionIds: ["terminal-1"] },
+      toolCall: { id: "call-bash", name: "Bash", arguments: { command: "echo ok", session_id: "terminal-1" } }
+    }), new CancellationController().signal);
+    expect(result).toMatchObject({ ok: false, failureCode: "execution_outcome_unknown", retryable: false });
+    expect(result.error).toContain("process group was terminated");
+    expect(result.error).toContain("Partial effects may remain");
+    expect(result.error).not.toContain("termination was not confirmed");
+  });
   it.each([
     [409, { ok: false, error: "Terminal session is busy", failureCode: "terminal_session_busy", retryable: true }, "terminal_session_busy", true],
     [500, "Internal Server Error", "http_5xx", undefined],

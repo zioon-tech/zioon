@@ -1,5 +1,6 @@
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { getObsidianReferences, getObsidianTags } from "./parser";
+import { cachedSessionTags } from "../../../session/cached-tags";
 
 const TAG_RE = /(^|[\s([{])#([\p{L}\p{N}_/-]+)(?=$|[\s)\]},.;:!?])/gu;
 
@@ -164,16 +165,7 @@ function getGlobalSessionTags(): string[] {
   for (const session of sessions) {
     const id = String(session?.id || "").trim();
     if (!id) continue;
-    let doc = "";
-    try {
-      doc = String(zion?.commands?.executeCommand?.("zion.sessions.getDoc", id) || "");
-    } catch {
-      doc = "";
-    }
-    const signature = hashText(doc);
-    const cached = sessionTagCache.get(id);
-    const tags = cached?.signature === signature ? cached.tags : extractTagsFromText(doc);
-    if (cached?.signature !== signature) sessionTagCache.set(id, { signature, tags });
+    const tags = cachedSessionTags(zion?.state, id);
     for (const tag of tags) {
       if (seen.has(tag)) continue;
       seen.add(tag);

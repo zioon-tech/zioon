@@ -1,3 +1,17 @@
+.zion-session-deletion-status {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 8px 10px;
+  color: var(--fg);
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.zion-session-row.is-deleting {
+  opacity: .55;
+}
+
 :root {
   --bg: #1e1e2e;
   --panel: #222233;

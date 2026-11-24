@@ -6,12 +6,16 @@ import { verifyMemoryDelegation } from "./memory-delegation.mjs";
 import { resolveMemoryScope } from "../spaces/memory-scope.mjs";
 import { authorizeContentScope, contentSpaceId, assertContentRun } from "../sharing/content-scope.mjs";
 import { SHARED_DOCUMENT_SAFE_TOOLS } from "../spaces/space-runtime.mjs";
+import { measureRequestStage } from "../request-performance.mjs";
 
 const writeMethod = (method) => !["GET", "HEAD", "OPTIONS"].includes(method);
 
 // Positive routing rules for non-admin writes. New service endpoints require an
 // explicit decision before ordinary members may mutate the control plane.
 export function accountRequestScope(method, pathname) {
+  if (method === "POST" && /^\/v1\/workbench-state\/sessions\/[^/]+\/card-details$/.test(pathname)) {
+    return "runtime.read";
+  }
   if (/^\/v1\/webhooks(?:\/|$)/.test(pathname)) return "runtime.manage";
   if (/^\/v1\/workbench-state\/plugin-development(?:\/|$)/.test(pathname)) {
     return writeMethod(method) ? "runtime.write" : "runtime.read";
@@ -66,11 +70,11 @@ export class AccountAccessControl extends RuntimeAccessControl {
     if (explicitSpace && (explicitSpace.length > 256 || /[\x00-\x20]/.test(explicitSpace))) {
       throw accountError(400, "invalid_space_scope");
     }
-    const account = await this.accounts.authenticate(credential, { spaceId: explicitSpace, allowGuest });
+    const account = await measureRequestStage("auth-session", () => this.accounts.authenticate(credential, { spaceId: explicitSpace, allowGuest }));
     if (account) {
-      try { await this.oidc.validateSession?.(account, {
+      try { await measureRequestStage("auth-identity", () => this.oidc.validateSession?.(account, {
         browser: !bearer, cookies: headerValue(headers, "cookie") || ""
-      }); }
+      })); }
       catch (error) {
         if (error.statusCode === 401) return null;
         throw accountError(503, "account_service_unavailable");
@@ -104,25 +108,29 @@ export class AccountAccessControl extends RuntimeAccessControl {
     try { return this.allowedOrigins.has(new URL(value).origin); } catch { return false; }
   }
 
-  async hasScope(principal, scope) {
+  async hasScope(principal, scope, client) {
     if (principal?.kind !== "account") {
       return scope === "node.connect" && principal?.device?.kind === "resource"
         && super.hasScope(principal, scope);
     }
-    if (this.servedSpaceId && contentSpaceId(principal) !== this.servedSpaceId) return false;
-    if (principal.contentScope) {
-      if (!["runtime.read", "runtime.write", "run.execute", "collaboration.write"].includes(scope)) return false;
-      await this.sharing.documentAccess(principal.user.id, principal.contentScope.originSpaceId,
-        principal.contentScope.documentId, scope === "runtime.read" ? "view" : "edit");
-    }
-    const member = await this.accounts.membership(principal.user.id, principal.space?.id);
-    return await this.accounts.activeSession(principal.sessionId, principal.user.id)
-      && member?.status === "active" && roleScopes(member.role).includes(scope);
+    return !!await this.accountScopeMembership(principal, scope, client);
   }
 
-  async requireScope(principal, scope) {
+  async accountScopeMembership(principal, scope, client) {
+    if (this.servedSpaceId && contentSpaceId(principal) !== this.servedSpaceId) return null;
+    if (principal.contentScope) {
+      if (!["runtime.read", "runtime.write", "run.execute", "collaboration.write"].includes(scope)) return null;
+      await this.sharing.documentAccess(principal.user.id, principal.contentScope.originSpaceId,
+        principal.contentScope.documentId, scope === "runtime.read" ? "view" : "edit", client);
+    }
+    const member = await this.accounts.membership(principal.user.id, principal.space?.id, client);
+    return await this.accounts.activeSession(principal.sessionId, principal.user.id, client)
+      && member?.status === "active" && roleScopes(member.role).includes(scope) ? member : null;
+  }
+
+  async requireScope(principal, scope, client) {
     if (!principal) throw accountError(401, "authentication_required");
-    if (!await this.hasScope(principal, scope)) {
+    if (!await this.hasScope(principal, scope, client)) {
       throw accountError(403, "permission_denied", `Permission required: ${scope}`);
     }
     return principal;
@@ -143,7 +151,7 @@ export class AccountAccessControl extends RuntimeAccessControl {
     return principal;
   }
 
-  async reauthorize(principal, scope) {
+  async reauthorize(principal, scope, client) {
     if (principal?.kind !== "account") {
       if (!principal) throw accountError(401, "authentication_required");
       if (!super.hasScope(principal, scope)) {
@@ -158,14 +166,15 @@ export class AccountAccessControl extends RuntimeAccessControl {
       return principal;
     }
     this.requireServedSpace(principal);
-    await this.requireScope(principal, scope);
+    const membership = await this.accountScopeMembership(principal, scope, client);
+    if (!membership) throw accountError(403, "permission_denied", `Permission required: ${scope}`);
     if (this.sharedSpaces && principal.documentId) {
       await this.sharedSpaces.requireDocument(principal.user.id, contentSpaceId(principal),
-        principal.documentId, principal.documentAction || "view");
+        principal.documentId, principal.documentAction || "view", client);
     }
     return {
       ...principal,
-      membership: await this.accounts.membership(principal.user.id, principal.space?.id)
+      membership
     };
   }
 
@@ -201,12 +210,13 @@ export class AccountAccessControl extends RuntimeAccessControl {
       principal.documentId = documentId;
       principal.documentAction = writeMethod(request.method) ? "edit" : "view";
     }
-    await this.requireScope(principal, memoryFiles
+    await measureRequestStage("auth-permissions", () => this.requireScope(principal, memoryFiles
       ? (writeMethod(request.method) ? "runtime.write" : "runtime.read")
-      : memoryLocation ? "runtime.read" : accountRequestScope(request.method, url.pathname));
+      : memoryLocation ? "runtime.read" : accountRequestScope(request.method, url.pathname)));
     if (this.sharedSpaces) {
       const sessionPath = url.pathname.match(/^\/v1\/sessions\/([^/]+)(?:\/|$)/);
-      const runPath = url.pathname.match(/^\/v1\/runs\/([^/]+)(?:\/|$)/);
+      const runPath = url.pathname === "/v1/runs/preview" ? null
+        : url.pathname.match(/^\/v1\/runs\/([^/]+)(?:\/|$)/);
       const assetPath = url.pathname.match(/^\/v1\/assets\/([^/]+)(?:\/|$)/);
       let documentId = sessionPath ? decodeURIComponent(sessionPath[1]) : "";
       if (runPath) {
@@ -323,15 +333,15 @@ export class AccountAccessControl extends RuntimeAccessControl {
     return await this.accounts.discardPreviewGrant?.(request?.principal);
   }
 
-  async authorizeRunExecution(request) {
-    const grant = await this.accounts.validateGrant(request?.principal, request?.policy);
+  async authorizeRunExecution(request, client) {
+    const grant = await this.accounts.validateGrant(request?.principal, request?.policy, client);
     assertContentRun(grant.principal, { sessionId: request.sessionId || grant.principal.contentScope?.documentId });
     if (this.servedSpaceId && contentSpaceId(grant.principal) !== this.servedSpaceId
       && grant.principal.spaceId !== this.servedSpaceId) throw accountError(403, "grant_runtime_mismatch");
     if (this.sharedSpaces && request.sessionId) {
-      await this.sharedSpaces.requireDocument(grant.principal.userId, contentSpaceId(grant.principal), request.sessionId, "edit");
+      await this.sharedSpaces.requireDocument(grant.principal.userId, contentSpaceId(grant.principal), request.sessionId, "edit", client);
       if (request.metadata?.spaceBindingId) await this.sharedSpaces.requireBinding(
-        grant.principal.userId, grant.principal.spaceId, request.metadata.spaceBindingId);
+        grant.principal.userId, grant.principal.spaceId, request.metadata.spaceBindingId, client);
     }
     let policy = grant.policy;
     if (this.resolveProfile) {
@@ -344,7 +354,8 @@ export class AccountAccessControl extends RuntimeAccessControl {
         if (!profile?.policy) throw accountError(403, "grant_profile_unavailable");
         const membership = await this.accounts.membership(
           grant.principal.userId,
-          grant.principal.spaceId
+          grant.principal.spaceId,
+          client
         );
         policy = intersectAccountPolicy(policy, profile.policy, membership.role);
       }

@@ -6,29 +6,30 @@ import { contentSpaceId } from "../sharing/content-scope.mjs";
 export function createSharedCollaborationPersistence({ spaces, store, access, runs }) {
   return async ({ sessionId, context, contributors = [], kind, text }, action) => {
     return spaces.transaction(store.spaceId, async (client, afterCommit) => {
+      const assetUsers = new Set();
       for (const contributor of new Set([context, ...contributors])) {
         if (contributor?.principal?.kind === "account") {
           const p = contributor.principal;
           if (contentSpaceId(p) !== store.spaceId || contributor.documentId !== sessionId) {
             throw accountError(403, "collaboration_scope_mismatch");
           }
-          await access.reauthorize(p, kind === "bootstrap" ? "runtime.read" : "collaboration.write");
+          // Reuse the lock-owning client. Acquiring another pool connection here
+          // deadlocks when the remaining clients are waiting for this Space lock.
+          await access.reauthorize(p, kind === "bootstrap" ? "runtime.read" : "collaboration.write", client);
           await spaces.requireDocument(p.user.id, store.spaceId, sessionId,
             kind === "bootstrap" ? "view" : "edit", client);
           if (contributor.readOnly && kind !== "bootstrap") throw accountError(403, "collaboration_read_only");
           if (kind !== "checkpoint" && kind !== "bootstrap") {
-            await spaces.bindDocumentAssets(p.user.id, store.spaceId, sessionId,
-              [...String(text || "").matchAll(/zion-asset:\/\/([A-Za-z0-9_-]+)/g)].map(m => m[1]), client);
+            assetUsers.add(p.user.id);
           }
         } else if (contributor?.runtimeRunId) {
-          const run = await runs.get(contributor.runtimeRunId);
+          const run = await runs.get(contributor.runtimeRunId, client);
           if (!run || run.sessionId !== sessionId || contentSpaceId(run.principal) !== store.spaceId) {
             throw accountError(403, "collaboration_run_scope_mismatch");
           }
-          await access.authorizeRunExecution(run);
+          await access.authorizeRunExecution(run, client);
           await spaces.requireDocument(run.principal.userId, store.spaceId, sessionId, "edit", client);
-          if (text != null) await spaces.bindDocumentAssets(run.principal.userId, store.spaceId, sessionId,
-            [...String(text).matchAll(/zion-asset:\/\/([A-Za-z0-9_-]+)/g)].map(m => m[1]), client);
+          if (text != null) assetUsers.add(run.principal.userId);
         } else if (contributor?.committedSnapshot === true) {
           const d = (await client.query("SELECT lifecycle FROM space_documents WHERE space_id=$1 AND id=$2",
             [store.spaceId, sessionId])).rows[0];
@@ -41,7 +42,17 @@ export function createSharedCollaborationPersistence({ spaces, store, access, ru
           throw accountError(403, "collaboration_context_required");
         }
       }
-      const result = await action({ client, afterCommit });
+      const validateCollaborationText = async mergedText => {
+        const assets = [...String(mergedText || "").matchAll(/zion-asset:\/\/([A-Za-z0-9_-]+)/g)]
+          .map(match => match[1]);
+        for (const userId of assetUsers) {
+          await spaces.bindDocumentAssets(userId, store.spaceId, sessionId, assets, client);
+        }
+      };
+      // The incremental store derives the accepted text under this same lock.
+      // Other persistence actions retain their existing pre-action validation.
+      if (kind !== "store" || !store.collaborationUpdates) await validateCollaborationText(text);
+      const result = await action({ client, afterCommit, validateCollaborationText });
       if (kind === "store" && !result?.duplicate) await spaces.invalidateKnowledge(client, store.spaceId, sessionId);
       return result;
     });

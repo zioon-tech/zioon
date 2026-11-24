@@ -90,7 +90,7 @@ describe("automatic account workspace onboarding", () => {
       createHash("sha256").update(b.space.id).digest("hex"));
     await mkdir(earlierAccountDirectory, { recursive: true });
     await writeFile(join(earlierAccountDirectory, "interaction-profiles.json"), JSON.stringify({ profiles: [{
-      id: "interactive.default", modelProfileId: "deepseek-v4-flash", policy,
+      id: "interactive.default", modelProfileId: "platform-default", policy,
       metadata: { defaultToolSetVersion: 23, includeTerminalContext: true }
     }] }));
     const origin = "http://127.0.0.1:18895";
@@ -160,11 +160,19 @@ AliyunAccountStorage.prototype.provision = async function({accountId,workspaceId
     expect((await request(b, "/health")).body.space.id).toBe(b.space.id);
     const defaults = await request(a, "/v1/interaction-profiles");
     expect(defaults.body.profiles.find((item) => item.id === "interactive.default").modelProfileId)
-      .toBe("platform-default");
+      .not.toBe("platform-default");
     expect((await request(b, "/v1/interaction-profiles")).body.profiles
-      .find((item) => item.id === "interactive.default").modelProfileId).toBe("platform-default");
+      .find((item) => item.id === "interactive.default").modelProfileId).not.toBe("platform-default");
     expect(defaults.body.profiles.find((item) => item.id === "interactive.default").policy)
       .toMatchObject({ preset: "trusted-automation", fileRoots: ["/"], allowedTools: expect.arrayContaining(["Bash", "write", "read"]) });
+    expect((await request(a, "/v1/models")).body.profiles.some(item => item.id === "platform-default")).toBe(false);
+    expect((await request(a, "/v1/models/selection", { profileId: "platform-default" }, "PUT")).status).toBe(422);
+    const configured = await request(a, "/v1/model-profiles/account-model", {
+      profile: { providerType: "openai", model: "fixture", endpoint: `http://127.0.0.1:${modelServer.address().port}/chat` },
+      credential: "account-fixture-key"
+    }, "PUT");
+    expect(configured.status, JSON.stringify(configured.body)).toBe(200);
+    expect((await request(a, "/v1/models/selection", { profileId: "account-model" }, "PUT")).status).toBe(200);
     const session = await request(a, "/v1/sessions", { title: "Gateway model check" }, "POST");
     expect(session.status).toBe(201);
     const run = await request(a, "/v1/runs", {
@@ -188,11 +196,11 @@ AliyunAccountStorage.prototype.provision = async function({accountId,workspaceId
       const events = (await request(a, `/v1/runs/${run.body.runId}/events`)).body.events;
       expect(events.some(event => event.type === "run.finalized")).toBe(true);
     }, { timeout: 10000, interval: 100 });
-    expect(modelAuthorization).toBe("Bearer platform-fixture-key");
+    expect(modelAuthorization).toBe("Bearer account-fixture-key");
     const overwrite = await request(a, "/v1/model-profiles/deepseek-v4-flash", {
       profile: { providerType: "openai", model: "custom", endpoint: "https://example.invalid/chat" }
     }, "PUT");
-    expect(overwrite.status).toBe(403);
+    expect(overwrite.status).toBe(200);
     const own = await request(a, "/v1/model-profiles/default", {
       profile: { providerType: "openai", model: "custom", endpoint: "https://example.invalid/chat" }
     }, "PUT");

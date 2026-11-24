@@ -1547,7 +1547,7 @@ function registerDefaultTools() {
         type: "function",
         function: {
           name: "pluginsManage",
-          description: "Manage plugins via Zion Next and local tools service: startDev/stopDev/list/installFromService/enable/disable/uninstall/setServiceUrl.",
+        description: "Manage plugins via Zioon and local tools service: startDev/stopDev/list/installFromService/enable/disable/uninstall/setServiceUrl.",
           parameters: {
             type: "object",
             properties: {

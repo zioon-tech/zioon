@@ -2,8 +2,13 @@ import { accountError } from "../accounts/account-policy.mjs";
 import { mergeSessionTree } from "../session-tree-merge.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { contentSpaceId } from "../sharing/content-scope.mjs";
+import { sessionCardDetails } from "../session-card-projection.mjs";
 
 const sessionIds = (tree) => tree?.type === "session" ? [tree.id] : (tree?.children || []).flatMap(sessionIds);
+const omitDeletedSessions = (tree, deleted) => {
+  if (!tree || tree.type === "session") return deleted.has(tree?.id) ? null : tree;
+  return { ...tree, children: (tree.children || []).map(child => omitDeletedSessions(child, deleted)).filter(Boolean) };
+};
 const pruneTree = (tree, allowed) => {
   if (!tree) return tree;
   if (tree.type === "session") return allowed.has(tree.id) ? tree : null;
@@ -58,10 +63,19 @@ export function createAuthorizedWorkbenchStore({ store, spaces, principal }) {
       meta: Object.fromEntries(Object.entries(record.meta || {}).filter(([key]) =>
         ["id", "title", "createdAt", "updatedAt", "size", "hash", "titleAuto"].includes(key))) };
     const scoped = {
-      async readSession(id) {
+      async readSession(id, options) {
         exact(id); await spaces.requireDocument(userId, spaceId, id);
-        const record = await store.readSession(id);
+        const record = await store.readSession(id, undefined, options);
         return contentRecord(record);
+      },
+      async readSessionMetadataRecord(id, options) {
+        exact(id); await spaces.requireDocument(userId, spaceId, id, "view");
+        return contentRecord(await store.readSessionMetadataRecord(id, options));
+      },
+      async readSessionCardDetails(id, requests) {
+        exact(id);
+        // A document-only sharing grant exposes content, not private Run metadata.
+        return mutate(id, "view", () => sessionCardDetails({ meta: {} }, requests));
       },
       async listSessionRevisions(id) { exact(id); await spaces.requireDocument(userId, spaceId, id); return store.listSessionRevisions(id); },
       async updateSession(id, input) {
@@ -119,10 +133,18 @@ export function createAuthorizedWorkbenchStore({ store, spaces, principal }) {
       return { ...value, documents: ids.size, metadata: ids.size };
     },
     async searchSessions(options) { return store.searchSessions({ ...options, allowedSessionIds: [...await allowed()] }); },
-    async readSession(documentId) {
+    async readSession(documentId, options) {
       await spaces.requireDocument(userId, spaceId, documentId);
-      const record = await store.readSession(documentId);
+      const record = await store.readSession(documentId, undefined, options);
       return record && spaces.sharing ? { ...record, sharedContent: await spaces.sharing.sharedMemory(spaceId, documentId) } : record;
+    },
+    async readSessionMetadataRecord(documentId, options) {
+      await spaces.requireDocument(userId, spaceId, documentId, "view");
+      const record = await store.readSessionMetadataRecord(documentId, options);
+      return record && spaces.sharing ? { ...record, sharedContent: await spaces.sharing.sharedMemory(spaceId, documentId) } : record;
+    },
+    async readSessionCardDetails(documentId, requests) {
+      return mutate(documentId, "view", client => store.readSessionCardDetails(documentId, requests, client));
     },
     async listSessionRevisions(documentId) {
       await spaces.requireDocument(userId, spaceId, documentId);
@@ -130,12 +152,19 @@ export function createAuthorizedWorkbenchStore({ store, spaces, principal }) {
     },
     async listEvents(after, options) {
       if (options?.sessionId) await spaces.requireDocument(userId, spaceId, options.sessionId);
-      const feed = await store.listEvents(after, options), ids = await allowed();
+      const feed = await store.listEvents(after, options);
+      // The stream still reauthorizes the account on every poll. With no
+      // payload to project, avoid loading every document's ACL again.
+      if (!feed.events.length) return { ...feed, cursor: Number(after) || 0 };
+      const ids = await allowed();
       return { ...feed, cursor: feed.events.at(-1)?.sequence || Number(after) || 0,
         events: feed.events.flatMap((event) => {
-          if (event.sessionId) return ids.has(event.sessionId) ? [event] : [];
+          if (event.sessionId && event.type !== "session.deleted") return ids.has(event.sessionId) ? [event] : [];
           // Global tree/metadata events can contain names and IDs of hidden docs.
-          return [{ sequence: event.sequence, type: "catalog.changed", createdAt: event.createdAt }];
+          // Deleted docs no longer pass readableIds, but other tabs still
+          // need a refresh signal without exposing their identity.
+          return [{ sequence: event.sequence, type: "catalog.changed", createdAt: event.createdAt,
+            sourceClientId: event.sourceClientId }];
         }) };
     },
     async updateSession(documentId, input) {
@@ -151,7 +180,12 @@ export function createAuthorizedWorkbenchStore({ store, spaces, principal }) {
     },
     async deleteSession(documentId, input) {
       input = operation(input, "delete", documentId);
-      return mutate(documentId, "manage", async (client, afterCommit) => {
+      return atomicResult(async (client, afterCommit) => {
+        // A lost HTTP response must remain retryable after the document has
+        // become a tombstone. Operation IDs are scoped to this user above.
+        const previous = await store.duplicateOperation(input.operation_id, client);
+        if (previous) return previous;
+        await spaces.requireDocument(userId, spaceId, documentId, "manage", client);
         const result = await store.deleteSession(documentId, input, { client, afterCommit });
         if (!result.ok) return result;
         await client.query(`UPDATE space_documents SET lifecycle='deleted',acl_revision=acl_revision+1,updated_at=$3
@@ -171,24 +205,73 @@ export function createAuthorizedWorkbenchStore({ store, spaces, principal }) {
         return result;
       });
     },
-    async writeTree(tree, index, expectedRevision, sourceClientId, baseTree) {
+    async writeTree(tree, index, expectedRevision, sourceClientId, baseTree, operationId) {
+      operationId = operation({ operation_id: operationId }, "tree", "tree").operation_id;
       return spaces.transaction(spaceId, async (client, afterCommit) => {
         const member = await spaces.member(userId, spaceId, client);
         if (member.role === "viewer") throw accountError(403, "tree_edit_denied");
-        for (const documentId of new Set([...sessionIds(tree), ...sessionIds(baseTree)])) {
-          await spaces.requireDocument(userId, spaceId, documentId, "edit", client);
-        }
+        // Runtime projections use the Workbench row lock, independently of
+        // the ACL lock. Read the merge base under that same lock.
+        await store.ensureState(spaces.now(), client);
+        await client.query("SELECT revision FROM runtime_workbench_state WHERE space_id=$1 FOR UPDATE", [spaceId]);
         const current = await store.readTree(client);
+        const currentIds = new Set(sessionIds(current.tree));
+        // Other tabs can still submit a directory containing confirmed
+        // deletions. Remove those nodes before ACL checks and three-way merge.
+        const submittedIds = [...new Set([...sessionIds(tree), ...sessionIds(baseTree)])];
+        const deleted = new Set((await client.query(
+          "SELECT id FROM space_documents WHERE space_id=$1 AND id=ANY($2::text[]) AND lifecycle='deleted'",
+          [spaceId, submittedIds])).rows.map(row => row.id));
+        tree = omitDeletedSessions(tree, deleted);
+        baseTree = omitDeletedSessions(baseTree, deleted);
+        // A successful delete removes the server node before the client's
+        // next folder save. Its old base may still contain that tombstone.
+        await spaces.requireDocuments(userId, spaceId, [...new Set([...sessionIds(tree),
+          ...sessionIds(baseTree).filter(id => currentIds.has(id))])], "edit", client);
         const ids = new Set(await spaces.readableIds(userId, spaceId, client));
         const base = baseTree || pruneTree(current.tree, ids);
         // Removing a visible folder must not detach somebody else's hidden file.
-        const next = mergeSessionTree(base, tree, current.tree);
+        let next;
+        try { next = mergeSessionTree(base, tree, current.tree); } catch (error) {
+          if (error.statusCode === 409 && sessionIds(current.tree).some(id => !ids.has(id))) {
+            throw accountError(409, "folder_contains_unavailable_documents");
+          }
+          throw error;
+        }
         const preserved = new Set(sessionIds(next));
         if (sessionIds(current.tree).some((documentId) => !ids.has(documentId) && !preserved.has(documentId))) {
           throw accountError(409, "folder_contains_unavailable_documents");
         }
-        return project(await store.writeTree(next, index, current.revision, sourceClientId, current.tree,
+        return project(await store.writeTree(next, index, current.revision, sourceClientId, current.tree, operationId,
           { client, afterCommit }), ids);
+      });
+    },
+    async deleteFolder(folderId, input = {}) {
+      input = operation(input, "folder-delete", folderId);
+      return atomicResult(async (client, afterCommit) => {
+        const previous = await store.duplicateOperation(input.operation_id, client);
+        if (previous) return previous;
+        const member = await spaces.member(userId, spaceId, client);
+        if (member.role === "viewer") throw accountError(403, "tree_edit_denied");
+        await store.ensureState(spaces.now(), client);
+        await client.query("SELECT revision FROM runtime_workbench_state WHERE space_id=$1 FOR UPDATE", [spaceId]);
+        const current = await store.readTree(client);
+        const find = node => node?.id === folderId ? node
+          : (node?.children || []).map(find).find(Boolean);
+        const folder = find(current.tree);
+        const ids = sessionIds(folder);
+        await spaces.requireDocuments(userId, spaceId, ids, "manage", client);
+        const result = await store.deleteFolder(folderId, input, { client, afterCommit });
+        if (!result.ok) return result;
+        for (const id of result.deleted_session_ids || []) {
+          await client.query(`UPDATE space_documents SET lifecycle='deleted',acl_revision=acl_revision+1,updated_at=$3
+            WHERE space_id=$1 AND id=$2`, [spaceId, id, spaces.now()]);
+          await spaces.invalidateKnowledge(client, spaceId, id);
+          await client.query(`UPDATE space_publications SET status='revoked',revoked_at=$3
+            WHERE space_id=$1 AND document_id=$2 AND status='active'`, [spaceId, id, spaces.now()]);
+          await spaces.emit(client, spaceId, userId, "document.deleted", "document", id);
+        }
+        return project(result, new Set(await spaces.readableIds(userId, spaceId, client)));
       });
     },
     async readKV(key) {

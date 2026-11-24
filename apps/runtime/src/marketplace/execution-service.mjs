@@ -1,4 +1,4 @@
-import { posix } from "node:path";
+import { posix, win32 } from "node:path";
 import { isObject } from "../../../../packages/runtime-client/src/extension-package.mjs";
 import { CancellationController } from "../../../../packages/runtime/dist/index.js";
 import { ExtensionHostBridge } from "./host-bridge.mjs";
@@ -166,14 +166,26 @@ export class ExtensionExecutionService {
     return { ok, content: JSON.stringify({ listingId: args.listingId, nodeId, version: install.version, result }),
       ...(!ok ? { failureCode: "extension_tool_error", retryable: false } : {}) };
   }
-  async authorizeHost(context, install) {
+  async authorizeHost(context, install, { modelOnly = false } = {}) {
     const { nodeId, workspaceRoot } = install.config;
     if (!await this.allowNode(nodeId, context.principal)) fail("extension_node_denied", "请选择账户沙箱或已授权的实体 Node，平台服务器不能执行扩展");
-    if (context.policy?.preset !== "trusted-automation" || !["write", "Bash"].every((name) => context.policy.allowedTools?.includes(name))) fail("extension_policy_denied", "扩展执行需要当前 Run 授权 write、Bash 和 trusted-automation");
+    const canStageHost = context.policy?.preset === "trusted-automation"
+      && ["write", "Bash"].every((name) => context.policy.allowedTools?.includes(name));
+    // A selected, pinned model uses the native model Host independently of
+    // exposed chat tools. Shell-based Host staging still requires write/Bash.
+    const nativeModelHost = modelOnly
+      && this.bridge.nativeInvoke
+      && await this.bridge.hasNativeHost(nodeId, context.principal);
+    if (!canStageHost && !nativeModelHost) fail("extension_policy_denied", "扩展执行需要原生模型 Host，或当前 Run 授权 write、Bash 和 trusted-automation");
     for (const path of [workspaceRoot, install.config.credentialsFile].filter(Boolean)) {
       if (context.policy.fileRoots?.length && !context.policy.fileRoots.some((root) => {
-        const relative = posix.relative(root, path);
-        return !relative || (!posix.isAbsolute(relative) && relative !== ".." && !relative.startsWith("../"));
+        const windowsPath = (value) => /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value);
+        if (windowsPath(root) !== windowsPath(path)) return false;
+        const paths = windowsPath(path) ? win32 : posix;
+        if (!paths.isAbsolute(root) || !paths.isAbsolute(path)) return false;
+        const relative = paths.relative(root, path);
+        return !relative || (!paths.isAbsolute(relative) && relative !== ".."
+          && !relative.startsWith(`..${paths.sep}`));
       })) fail("extension_path_denied", "扩展目录或凭据文件超出当前 Run 授权");
     }
   }

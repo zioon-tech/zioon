@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "acorn";
 import { PluginManager } from "../src/plugin/manager";
 import type { PluginInfo } from "../src/plugin/types";
+import stickyManifest from "../extensions/dev.sticky-header/manifest.json";
 
 function pluginInfo(enabled: boolean): PluginInfo {
   return {
@@ -87,6 +88,17 @@ function readBlobText(blob: Blob | undefined): Promise<string> {
 describe("PluginManager enabled state persistence", () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  it("repairs the persisted compatibility plugin display-name ID before activation", async () => {
+    const info = { ...pluginInfo(true), id: stickyManifest.name, name: stickyManifest.name,
+      path: "/extensions/dev.sticky-header", manifest: stickyManifest, origin: "builtin" };
+    localStorage.setItem("zion.installedPlugins", JSON.stringify([info]));
+    const manager = new PluginManager({ pluginDir: "", extensionsDir: "", logLevel: "error" });
+    await (manager as any).loadPersistedPlugins();
+    expect(manager.get("dev.sticky-header")?.id).toBe("dev.sticky-header");
+    expect(manager.get(stickyManifest.name)).toBeNull();
+    expect(() => (manager as any).createPluginContext(manager.get("dev.sticky-header"))).not.toThrow();
   });
 
   it("lets an explicit disabled preference override a stale enabled install record", async () => {

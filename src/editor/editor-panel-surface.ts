@@ -2,6 +2,7 @@ import { Compartment, EditorSelection, type Extension } from "@codemirror/state"
 import { EditorView, keymap } from "@codemirror/view";
 import { findNext, findPrevious, SearchQuery, selectMatches, setSearchQuery } from "@codemirror/search";
 import { EditorCore, type EditorCoreOptions } from "./EditorCore";
+import { createConversationLayout } from "./conversation-layout";
 import { StateBus } from "../core/state-bus";
 import { applyDisplayPresentation, applyEditorWidth, displayPreferenceStorage, DISPLAY_STATE_KEYS,
   readDisplayPreference, readMinimapPreference, subscribeDisplayPreferences } from "./display-preferences";
@@ -150,7 +151,9 @@ export function createEditorPanelSurface(parent: HTMLElement, initialValue = "",
     documentId?: string; translate?: (key: string, fallback: string) => string; i18n?: I18nManager;
     searchProvider?: SurfaceSearchProvider;
   } = {}) {
-  const core = new EditorCore(parent, initialValue, panelId, options);
+  const layout = createConversationLayout(parent);
+  const core = new EditorCore(layout, initialValue, panelId, options);
+  core.own({ dispose: () => layout.remove() });
   bindVimCoordination(core, options.readOnly === true);
   bindEditorCorePreferences(core, options.documentId ? () => options.documentId! : undefined);
   if (!options.readOnly) return { core, dispose: () => core.dispose() };

@@ -4,12 +4,16 @@ export function createExtensionsClient({
   baseUrl = "", fetchImpl = globalThis.fetch, headers = {}, credentials = "same-origin", signal
 } = {}) {
   const base = String(baseUrl).replace(/\/+$/, "");
-  const request = async (path, { method = "GET", body, runtime = false } = {}) => {
+  const request = async (path, { method = "GET", body, runtime = false, timeoutMs = 15000, signal: requestSignal } = {}) => {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000) throw new Error("Request timeout must be 1–180000 ms");
     const pending = new AbortController();
-    const onAbort = () => pending.abort(signal?.reason);
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => pending.abort(), 15000);
+    const parents = [...new Set([signal, requestSignal].filter(Boolean))];
+    const listeners = parents.map(parent => {
+      const listener = () => pending.abort(parent.reason);
+      if (parent.aborted) listener(); else parent.addEventListener("abort", listener, { once: true });
+      return [parent, listener];
+    });
+    const timer = setTimeout(() => pending.abort(new Error("Extensions request timed out")), timeoutMs);
     try {
       const response = await fetchImpl(`${base}/v1/${runtime ? "" : "marketplace/"}${path}`, {
       method, credentials, redirect: "error",
@@ -25,7 +29,7 @@ export function createExtensionsClient({
       return value;
     } finally {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+      for (const [parent, listener] of listeners) parent.removeEventListener("abort", listener);
     }
   };
   return Object.freeze({

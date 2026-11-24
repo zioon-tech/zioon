@@ -1,13 +1,16 @@
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
+import { lazyCardDetails, showCardDetailError } from "../shared/card-details.js";
 import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import { ySyncAnnotation } from "y-codemirror.next";
 import {
   buildRegexAnchors,
   filterDeletedItems,
   findAssistantBlockIdAtOffset,
+  getAssistantDocumentIndex,
   mergeItemsFromAnchors,
   planAssistantMarkerInsertionById,
   reconcileExactAnchors,
+  reconcileMountedItems,
   reconcileNearestAnchors,
   stripCardMarkerIdComment,
   thinkingMarkerText
@@ -55,11 +58,12 @@ function parseThinkingAnchorText(text) {
 
 function buildThinkingAnchors(docString) {
   const text = String(docString || "");
+  const index = getAssistantDocumentIndex(text);
   return buildRegexAnchors(text, THINKING_ANCHOR_RE, (match) => ({
     from: match.index,
     to: match.index + match[0].length,
     markerId: match[1] ? String(match[1]) : null,
-    assistantBlockId: findAssistantBlockIdAtOffset(text, match.index)
+    assistantBlockId: findAssistantBlockIdAtOffset(text, match.index, index)
   }));
 }
 
@@ -701,7 +705,7 @@ export function installThinkingCards() {
           const rawList = Array.isArray(ann.thinking) ? ann.thinking : [];
             const anchors = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
             const deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchors);
-          const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds);
+          const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds, anchors);
           const list = mergeThinkingItemsFromAnchors(
             this.view,
             repair.items,
@@ -769,7 +773,7 @@ export function installThinkingCards() {
         const rawList = Array.isArray(ann.thinking) ? ann.thinking : [];
           const anchors = buildThinkingAnchors(this.view.state.doc.toString()).filter((anchor) => anchor.markerId);
           const deletedIds = reviveDeletedThinkingIdsForAnchors(sid, Array.isArray(ann.deletedThinkingIds) ? ann.deletedThinkingIds : [], anchors);
-        const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds);
+        const repair = repairDuplicateThinkingAnchorIds(this.view, rawList, deletedIds, anchors);
         const list = mergeThinkingItemsFromAnchors(
           this.view,
           repair.items,
@@ -1390,13 +1394,32 @@ export function installThinkingCards() {
       const docLen = doc.length;
       const batchedEffects = [];
       const processedIds = new Set();
+      const pendingItems = [];
       let skippedFallback = false;
+      const byRange = new Map(anchors.map(anchor => [`${anchor.from}:${anchor.to}`, anchor]));
+      const existingItems = this.view.state.field(thinkingField, false)?.items;
+      reconcileMountedItems({
+        items: itemsToProcess, existingItems,
+        canUseMounted: (it, mounted) => {
+          const anchor = byRange.get(`${mounted.from}:${mounted.to}`);
+          return anchor && (!anchor.markerId || anchor.markerId === String(it.id))
+            && hasMatchingAssistantParent(it, anchor)
+            && (!it.text || it.text === mounted.text)
+            && (!it.runId || it.runId === mounted.runId)
+            && (!it.segmentKey || it.segmentKey === mounted.segmentKey);
+        },
+        onMounted: (it, mounted) => {
+          processedIds.add(String(it.id));
+          byRange.get(`${mounted.from}:${mounted.to}`).occupied = true;
+        }
+      });
 
       // Phase 1: 精确位置匹配
       reconcileExactAnchors({
         items: itemsToProcess,
         processedIds,
         anchors,
+        matchByRange: true,
         isExactMatch: (it, anchor) => {
           if (typeof it.from !== "number" || typeof it.to !== "number") return false;
           if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
@@ -1469,7 +1492,7 @@ export function installThinkingCards() {
         const sameIdAnchor = anchors.find((anchor) => String(anchor.markerId || "") === String(it.id || ""));
         if (sameIdAnchor && !hasMatchingAssistantParent(it, sameIdAnchor)) {
           skippedFallback = true;
-          setPendingRestore(restoreSessionId, "thinking", [it]);
+          pendingItems.push(it);
           continue;
         }
         if (isCommentPanelId(this.panelId)) {
@@ -1478,14 +1501,14 @@ export function installThinkingCards() {
         }
 
         const plan = planAssistantMarkerInsertionById({
-          docText: this.view.state.doc.toString(),
+          docText: docString,
           assistantBlockId: it.assistantBlockId,
           markerText: thinkingMarkerText(it.id),
           trailingNewlines: 2
         });
         if (!plan) {
           skippedFallback = true;
-          setPendingRestore(restoreSessionId, "thinking", [it]);
+          pendingItems.push(it);
           continue;
         }
 
@@ -1509,8 +1532,10 @@ export function installThinkingCards() {
         it.from = plan.markerFrom;
         it.to = plan.markerTo;
         processedIds.add(it.id);
+        docString = this.view.state.doc.toString();
       }
 
+      if (pendingItems.length) setPendingRestore(restoreSessionId, "thinking", pendingItems);
       try {
         if (restoreSessionId && processedIds.size >= itemsToProcess.length) {
           clearPendingRestore(restoreSessionId, "thinking");
@@ -1536,8 +1561,22 @@ export function installThinkingCards() {
       if (!el) return false;
       const id = el.getAttribute("data-thinking-id");
       if (!id) return false;
+      if (el.getAttribute("aria-busy") === "true") { event.preventDefault(); return true; }
       ensureThinkingItemFromDoc(view, id);
-      view.dispatch({ effects: [toggleInline.of({ id })] });
+      const sessionId = getViewSessionId(view);
+      const mounted = view.state.field(thinkingField, false)?.items?.get(id);
+      const pending = !mounted?.expanded && lazyCardDetails(sessionId, "thinking", id);
+      if (pending) {
+        el.setAttribute("aria-busy", "true");
+        void pending.then(full => {
+          if (getViewSessionId(view) !== sessionId) return;
+          const item = view.state.field(thinkingField, false)?.items?.get(id);
+          if (!item || item.expanded) return;
+          view.dispatch({ effects: [
+            updateText.of({ id, text: full.text, replace: true }), toggleInline.of({ id })
+          ] });
+        }).catch(showCardDetailError).finally(() => el.removeAttribute("aria-busy"));
+      } else view.dispatch({ effects: [toggleInline.of({ id })] });
       event.preventDefault();
       return true;
     }

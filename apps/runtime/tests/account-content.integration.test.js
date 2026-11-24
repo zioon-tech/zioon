@@ -13,7 +13,7 @@ import { createAuthorizedWorkbenchStore } from "../src/spaces/authorized-workben
 import { createSharedCollaborationPersistence } from "../src/spaces/collaboration-persistence.mjs";
 import { resolveMemoryScope } from "../src/spaces/memory-scope.mjs";
 import { authorizeMemoryContext } from "../src/accounts/memory-delegation.mjs";
-import { createRuntimeCollaborationService, COLLABORATION_TEXT_KEY } from "../src/collaboration-service.mjs";
+import { createRuntimeCollaborationService, COLLABORATION_TEXT_KEY, COLLABORATION_PROTOCOL } from "../src/collaboration-service.mjs";
 import { createRuntimeServer } from "../src/server.mjs";
 import { contentSpaceId } from "../src/sharing/content-scope.mjs";
 import { RuntimeIdentityContextProvider } from "../../../extensions/dev.identity/runtime.js";
@@ -121,7 +121,7 @@ describe("direct document authority through native PostgreSQL and WebSockets", (
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("Presence socket timed out")), 4000);
         provider = new HocuspocusProvider({ url: `${address.url.replace(/^http/, "ws")}/v1/collaboration?${new URLSearchParams({
-          protocol: "6", space: login.personal.id, content_space: h.origin.id, content_document: "doc"
+          protocol: COLLABORATION_PROTOCOL, space: login.personal.id, content_space: h.origin.id, content_document: "doc"
         })}`, name: "doc", document, token: login.token, WebSocketPolyfill: WebSocket,
         onSynced() { clearTimeout(timer); resolve(); }, onAuthenticationFailed({ reason }) { clearTimeout(timer); reject(new Error(reason)); } });
       });
@@ -239,7 +239,7 @@ describe("direct document authority through native PostgreSQL and WebSockets", (
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("WebSocket sync timed out")), 4000);
         provider = new HocuspocusProvider({ url: `${address.url.replace(/^http/, "ws")}/v1/collaboration?${new URLSearchParams({
-          protocol: "6", space: login.personal.id, content_space: h.origin.id, content_document: "doc"
+          protocol: COLLABORATION_PROTOCOL, space: login.personal.id, content_space: h.origin.id, content_document: "doc"
         })}`, name: "doc", document, token: login.token, WebSocketPolyfill: WebSocket,
         onSynced() { clearTimeout(timer); resolve(); }, onAuthenticationFailed({ reason }) { clearTimeout(timer); reject(new Error(reason)); } });
         cleanup.push(() => { provider.destroy(); document.destroy(); });

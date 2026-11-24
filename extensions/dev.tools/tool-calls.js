@@ -1,4 +1,5 @@
 import { workbenchStorage as localStorage } from "../../src/runtime/workbench-space.ts";
+import { lazyCardDetails, showCardDetailError } from "../shared/card-details.js";
 import { Decoration, EditorView, WidgetType, ViewPlugin } from "@codemirror/view";
 import { StateField, StateEffect, Transaction } from "@codemirror/state";
 import { diffWordsWithSpace } from "diff";
@@ -8,6 +9,7 @@ import {
   buildRegexAnchors,
   filterDeletedItems,
   findAssistantBlockIdAtOffset,
+  getAssistantDocumentIndex,
   mergeItemsFromAnchors,
   planAssistantMarkerInsertionById,
   reconcileExactAnchors,
@@ -63,6 +65,7 @@ function parseToolAnchorText(text) {
 
 function buildToolAnchors(docString) {
   const text = String(docString || "");
+  const index = getAssistantDocumentIndex(text);
   return buildRegexAnchors(text, TOOL_ANCHOR_RE, (match) => {
     const hasId = !!match[2];
     const name = String(hasId ? match[1] : match[3] || "").trim();
@@ -72,7 +75,7 @@ function buildToolAnchors(docString) {
       to: match.index + match[0].length,
       name,
       markerId: hasId ? String(match[2]) : null,
-      assistantBlockId: findAssistantBlockIdAtOffset(text, match.index)
+      assistantBlockId: findAssistantBlockIdAtOffset(text, match.index, index)
     };
   });
 }
@@ -128,12 +131,24 @@ function migrateLegacyToolAnchors(view, items, knownAnchors = null) {
 }
 
 function mergeToolItemsFromAnchors(view, items, deletedIds, knownAnchors = null) {
+  const anchors = Array.isArray(knownAnchors)
+    ? knownAnchors
+    : buildToolAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId);
+  const byId = new Map(anchors.map(anchor => [String(anchor.markerId || ""), anchor]));
+  // Persisted preferences can contain only id/kind/runId. The document already
+  // has the card's display name and position; do not wait for Yjs to supply a
+  // full execution record just to mount a collapsed card. Never override an
+  // explicit parent or name, and do not mutate the persisted input records.
+  const displayItems = (Array.isArray(items) ? items : []).map(item => {
+    const anchor = byId.get(String(item?.id || ""));
+    if (!anchor || !hasMatchingAssistantParent(item, anchor) || item?.name) return item;
+    return { ...item, name: anchor.name, from: anchor.from, to: anchor.to,
+      assistantBlockId: item.assistantBlockId || anchor.assistantBlockId || null };
+  });
   return mergeItemsFromAnchors({
-    items,
+    items: displayItems,
     deletedIds,
-    anchors: Array.isArray(knownAnchors)
-      ? knownAnchors
-      : buildToolAnchors(view.state.doc.toString()).filter((anchor) => anchor.markerId),
+    anchors,
     createItem: (anchor) => ({
       id: String(anchor.markerId || ""),
       name: anchor.name || "tool",
@@ -181,6 +196,14 @@ function mergeToolItemsFromAnchors(view, items, deletedIds, knownAnchors = null)
 
   function toolItemNeedsHydration(stored, mounted) {
     if (!stored || !mounted) return false;
+    if ((stored.bodyHydratedRef || stored.detailHydratedRef)
+      && Object.prototype.hasOwnProperty.call(stored, "result")) {
+      try {
+        if (JSON.stringify(stored.result) !== JSON.stringify(mounted.result)) return true;
+      } catch {
+        if (stored.result !== mounted.result) return true;
+      }
+    }
     if (stored.args !== undefined) {
       try {
         if (JSON.stringify(stored.args ?? null) !== JSON.stringify(mounted.args ?? null)) return true;
@@ -1254,16 +1277,23 @@ function getTerminalShortMachineLabel(session) {
   return "Local";
 }
 
+function getToolNodeContext(nodeId = "") {
+  const id = String(nodeId || "").trim();
+  const inventory = window.zion?.state?.get?.("terminal.inventory");
+  const machine = inventory?.machines?.find?.(item => item.nodeId === id && item.kind === "local");
+  const label = id ? String(machine?.name || machine?.nodeLabel || id) : "设备执行";
+  return { label, tooltip: id ? `${label} · ${id}` : "由设备执行策略选择目标", nodeId: id };
+}
+
 function getToolTerminalContext(name, args = {}, fallbackSessionId = "") {
   if (!isTerminalAwareTool(name)) return null;
   const sessionId = String(args?.session_id || fallbackSessionId || "").trim();
   if (!sessionId) {
+    const node = getToolNodeContext(args?.node_id);
     return {
-      inlineLabel: isTerminalCommandTool(name) ? "session required" : "device root",
-      fullLabel: isTerminalCommandTool(name)
-        ? "No terminal session recorded"
-        : "Resolved by Device access policy",
-      sessionId: ""
+      inlineLabel: node.nodeId || isTerminalCommandTool(name) ? node.label : "device root",
+      fullLabel: node.nodeId || isTerminalCommandTool(name) ? node.tooltip : "Resolved by Device access policy",
+      sessionId: "", nodeId: node.nodeId
     };
   }
   const session = findTerminalSession(sessionId);
@@ -1283,12 +1313,11 @@ function getToolTerminalHeaderContext(name, args = {}, fallbackSessionId = "") {
   if (!isTerminalAwareTool(name)) return null;
   const sessionId = String(args?.session_id || fallbackSessionId || "").trim();
   if (!sessionId) {
+    const node = getToolNodeContext(args?.node_id);
     return {
-      label: isTerminalCommandTool(name) ? "Session required" : "Device root",
-      tooltip: isTerminalCommandTool(name)
-        ? "No terminal session recorded"
-        : "Resolved by Device access policy",
-      sessionId: ""
+      label: node.nodeId || isTerminalCommandTool(name) ? node.label : "Device root",
+      tooltip: node.nodeId || isTerminalCommandTool(name) ? node.tooltip : "Resolved by Device access policy",
+      sessionId: "", nodeId: node.nodeId
     };
   }
   const session = findTerminalSession(sessionId);
@@ -1308,15 +1337,15 @@ function appendArtifactTerminalScope(parent, name, args = {}) {
   scope.className = "zion-tool-artifact-preview-scope";
   scope.textContent = context.label;
   scope.title = context.tooltip || context.label;
-  if (!context.sessionId) scope.setAttribute("data-scope", "local-default");
+  if (!context.sessionId) scope.setAttribute("data-scope", context.nodeId ? "node" : "device-default");
   parent.appendChild(scope);
 }
 
-function getTerminalHeaderLabels(sessionId, cwd) {
+function getTerminalHeaderLabels(sessionId, cwd, nodeId = "") {
   const session = findTerminalSession(sessionId);
   const machine = getTerminalMachineLabel(session);
   const workingDir = String(cwd || session?.cwd || session?.initial_cwd || "").trim();
-  const scope = sessionId ? (machine || "Local") : "Session required";
+  const scope = sessionId ? (machine || "Local") : getToolNodeContext(nodeId).label;
   return {
     title: [scope, workingDir].filter(Boolean).join(" · "),
     tooltip: [scope, workingDir || "No terminal session recorded"].filter(Boolean).join("\n")
@@ -1328,7 +1357,7 @@ function createTerminalCommandView(name, args = {}, result = null, ok = null) {
   const command = String(args?.command || parsed?.command || "").trim();
   const cwd = String(parsed?.cwd || args?.cwd || "").trim();
   const sessionId = String(args?.session_id || parsed?.session_id || "").trim();
-  const headerLabels = getTerminalHeaderLabels(sessionId, cwd);
+  const headerLabels = getTerminalHeaderLabels(sessionId, cwd, args?.node_id || parsed?.node_id);
   const exitCode = typeof parsed?.exit_code === "number" ? parsed.exit_code : null;
   const duration = typeof parsed?.duration_ms === "number" ? parsed.duration_ms : null;
   const timedOut = !!parsed?.timeout || (typeof parsed?.error === "string" && /timeout/i.test(parsed.error));
@@ -3642,11 +3671,12 @@ export function installToolCallCards() {
       } catch {}
 
       // Phase 0: reconcile already-mounted items, avoid restoring or toggling them twice
+      const documentIndex = getAssistantDocumentIndex(docString);
       const processedIds = reconcileMountedItems({
         items: itemsToProcess,
         existingItems,
         canUseMounted: (it, mounted) => hasMatchingAssistantParent(it, {
-          assistantBlockId: findAssistantBlockIdAtOffset(docString, mounted?.from)
+          assistantBlockId: findAssistantBlockIdAtOffset(docString, mounted?.from, documentIndex)
         }),
         onMounted: (it, mounted) => {
           const id = String(it?.id || "");
@@ -3667,7 +3697,8 @@ export function installToolCallCards() {
                 assistantBlockId: it.assistantBlockId || null
               }));
             }
-          if (it.result != null && (mounted.result !== it.result || mounted.ok !== it.ok)) {
+          if ((it.result != null || (it.bodyHydratedRef && Object.prototype.hasOwnProperty.call(it, "result")))
+            && (mounted.result !== it.result || mounted.ok !== it.ok)) {
             batchedEffects.push(updateResult.of({ id, result: it.result, ok: it.ok }));
           }
           const action = actionFor(it);
@@ -3682,6 +3713,7 @@ export function installToolCallCards() {
         items: itemsToProcess,
         processedIds,
         anchors,
+        matchByRange: true,
         isExactMatch: (it, anchor) => {
           if (typeof it.from !== "number" || typeof it.to !== "number") return false;
           if (it.from < 0 || it.to > docLen || it.from >= it.to) return false;
@@ -3849,8 +3881,22 @@ export function installToolCallCards() {
       if (!el) return false;
       const id = el.getAttribute("data-tool-id");
       if (!id) return false;
+      if (el.getAttribute("aria-busy") === "true") { event.preventDefault(); return true; }
       ensureToolItemFromDoc(view, id);
-      view.dispatch({ effects: [toggleInline.of({ id })] });
+      const sessionId = getViewSessionId(view);
+      const mounted = view.state.field(toolInlineField, false)?.items?.get(id);
+      const pending = !mounted?.expanded && lazyCardDetails(sessionId, "tools", id);
+      if (pending) {
+        el.setAttribute("aria-busy", "true");
+        void pending.then(full => {
+          if (getViewSessionId(view) !== sessionId) return;
+          const item = view.state.field(toolInlineField, false)?.items?.get(id);
+          if (!item || item.expanded) return;
+          view.dispatch({ effects: [
+            updateResult.of({ id, result: full.result, ok: full.ok }), toggleInline.of({ id })
+          ] });
+        }).catch(showCardDetailError).finally(() => el.removeAttribute("aria-busy"));
+      } else view.dispatch({ effects: [toggleInline.of({ id })] });
       event.preventDefault();
       return true;
     }

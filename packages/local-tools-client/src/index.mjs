@@ -763,8 +763,10 @@ export class LocalToolsBroker {
         const executionOutcomeUnknown = call.name === "Bash"
           && payload?.timeout === true;
         const uncertaintyWarning = executionOutcomeUnknown
-          ? "Command execution timed out, but child-process termination was not confirmed. "
-            + "The command may still be running or may already have completed. "
+          ? (payload?.termination_confirmed === true
+            ? "Command execution timed out and its process group was terminated. Partial effects may remain. "
+            : "Command execution timed out, but child-process termination was not confirmed. "
+              + "The command may still be running or may already have completed. ")
             + "Do not retry it until you have inspected its effects."
           : "";
         const error = String(

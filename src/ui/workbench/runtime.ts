@@ -778,10 +778,48 @@ class AuxiliaryBarRuntime {
   private emitter = new ChangeEmitter();
   private returnFocus: FocusSnapshot = null;
   private readonly orderKey = "zion.ui.auxiliaryBar.viewOrder";
+  private readonly layoutKey = "zion.ui.auxiliaryBar.layout";
+  private layoutRestored = false;
+  private startupLayout = false;
   private transientWidth: { baseWidth: number; appliedWidth: number; owners: Map<string, number> } | null = null;
 
   onDidChange(fn: () => void): Disposable {
     return this.emitter.onDidChange(fn);
+  }
+
+  restoreLayout(defaultViewId: string): void {
+    let saved: { visible?: boolean; activeViewId?: string; width?: number } | null = null;
+    try { saved = JSON.parse(localStorage.getItem(this.layoutKey) || "null"); } catch {}
+    this.layoutRestored = true;
+    this.startupLayout = true;
+    const activeViewId = typeof saved?.activeViewId === "string" && saved.activeViewId
+      ? saved.activeViewId : defaultViewId;
+    core?.state.set("ui.auxiliaryBar.activeViewId", activeViewId);
+    core?.state.set("ui.auxiliaryBar.width", this.clampWidth(
+      typeof saved?.width === "number" && Number.isFinite(saved.width) ? saved.width : 340
+    ));
+    core?.state.set("ui.auxiliaryBar.visible", typeof saved?.visible === "boolean" ? saved.visible : true);
+  }
+
+  isAwaitingStartupView(): boolean {
+    const id = this.getActiveViewId();
+    return this.startupLayout && this.isVisible() && !!id && !this.getViews().some(view => view.id === id);
+  }
+
+  finishStartupLayout(): void {
+    const wasAwaiting = this.isAwaitingStartupView();
+    this.startupLayout = false;
+    if (wasAwaiting) this.emitter.emit();
+  }
+
+  private persistLayout(): void {
+    if (!this.layoutRestored) return;
+    try {
+      localStorage.setItem(this.layoutKey, JSON.stringify({
+        visible: this.isVisible(), activeViewId: this.getActiveViewId(),
+        width: this.transientWidth?.baseWidth ?? this.getWidth()
+      }));
+    } catch {}
   }
 
   registerView(view: AuxiliaryBarView): Disposable {
@@ -836,6 +874,7 @@ class AuxiliaryBarRuntime {
     if (!this.views.has(id)) return;
     this.show();
     core?.state.set("ui.auxiliaryBar.activeViewId", id);
+    this.persistLayout();
     core?.events.emit("ui/auxiliaryBarActiveViewChanged", { id });
     this.emitter.emit();
   }
@@ -859,11 +898,13 @@ class AuxiliaryBarRuntime {
     if (this.isVisible()) return;
     this.returnFocus = captureFocusSnapshot();
     core?.state.set("ui.auxiliaryBar.visible", true);
+    this.persistLayout();
     this.emitter.emit();
   }
 
   hide() {
     core?.state.set("ui.auxiliaryBar.visible", false);
+    this.persistLayout();
     this.emitter.emit();
     const snap = this.returnFocus;
     this.returnFocus = null;
@@ -899,6 +940,7 @@ class AuxiliaryBarRuntime {
 
   setWidth(px: number): void {
     this.applyWidth(px);
+    this.persistLayout();
   }
 
   requestTemporaryWidth(ownerId: string, px: number): void {

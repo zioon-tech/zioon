@@ -59,7 +59,7 @@ export class AccountExtensionModelEngine {
     const entry = selected.extension;
     const resolved = await this.execution.executionFor(request, entry.listingId, entry.epoch);
     await this.authorize(request);
-    await this.execution.authorizeHost(request, resolved.install);
+    await this.execution.authorizeHost(request, resolved.install, { modelOnly: true });
     const plan = { profileId: selected.id, listingId: entry.listingId, providerId: entry.providerId,
       model: entry.model, epoch: entry.epoch, digest: resolved.artifact.digest, configDigest: resolved.configDigest };
     if (context.resumed && contentHash(request.metadata?.extensionModelPlan) !== contentHash(plan)) fail("extension_model_plan_changed");
@@ -77,7 +77,8 @@ export class AccountExtensionModelEngine {
         model: plan.model.id, supportsStreaming: plan.model.supportsStreaming,
         transport: async () => { fail("extension_preview_execution_denied"); }
       });
-      const iterator = previewEngine.streamTurn(request)[Symbol.asyncIterator]();
+      const iterator = previewEngine.streamTurn(request.metadata?.modelOnly === true
+        ? { ...request, tools: [] } : request)[Symbol.asyncIterator]();
       try {
         const first = await iterator.next();
         if (first.done || first.value.type !== "model.request") fail("extension_model_preview_missing");
@@ -91,6 +92,8 @@ export class AccountExtensionModelEngine {
       || plan.model.id !== request.model.modelId || extensionAccountId(run.principal) !== extensionAccountId(request.principal)) {
       fail("extension_model_plan_missing");
     }
+    const modelOnly = run.metadata?.modelOnly === true;
+    const modelRequest = modelOnly ? { ...request, tools: [] } : request;
     const cancellation = new CancellationController();
     const parent = request.signal.onCancel((reason) => cancellation.cancel(reason));
     if (request.signal.cancelled) cancellation.cancel(request.signal.reason);
@@ -101,7 +104,7 @@ export class AccountExtensionModelEngine {
       if (current.artifactDigest !== plan.digest || current.configDigest !== plan.configDigest) fail("extension_model_plan_changed");
       const config = await this.execution.resolveConfig(current.install.config, run.principal);
       if (resolved && contentHash(config) !== contentHash(resolved.install.config)) fail("extension_model_node_changed");
-      await this.execution.authorizeHost(run, { ...current.install, config });
+      await this.execution.authorizeHost(run, { ...current.install, config }, { modelOnly: true });
       return current;
     };
     let guard, guardError, iterator;
@@ -117,13 +120,16 @@ export class AccountExtensionModelEngine {
       const binding = this.execution.bridge.binding(resolved.install, resolved.artifact, extensionAccountId(run.principal));
       const context = { principal: run.principal, policy: run.policy, signal: cancellation.signal,
         runId: request.runId, attemptId: request.attemptId, turn: request.turn, sessionId: run.sessionId,
-        invocationId: `model:${hashExtension([request.runId, request.attemptId, request.turn, plan])}`,
+        invocationId: `model:${hashExtension([
+          request.runId, request.attemptId, request.turn, plan,
+          ...(request.modelRequestId ? [request.modelRequestId] : [])
+        ])}`,
         authorize: fixed };
       const description = await this.execution.bridge.ensure(binding, resolved.artifact, context);
       const handler = description.handlers.find((h) => h.kind === "model" && h.id === plan.providerId);
       const model = handler?.models.find((m) => m.id === plan.model.id);
       if (!model || contentHash(model) !== contentHash(plan.model)) fail("extension_model_catalog_changed");
-      if (request.tools.length && !model.supportsTools) fail("extension_model_tools_unsupported");
+      if (modelRequest.tools.length && !model.supportsTools) fail("extension_model_tools_unsupported");
       if (!model.supportsImages && request.messages.some((m) => Array.isArray(m.content)
         && m.content.some((part) => part.type === "image_url"))) fail("extension_model_images_unsupported");
       await this.execution.marketplace.recordValidation(extensionAccountId(run.principal), plan.listingId, plan.epoch,
@@ -167,7 +173,10 @@ export class AccountExtensionModelEngine {
         id: `account-model:${plan.providerId}`, endpoint: "https://models.zioon.invalid/chat/completions",
         model: model.id, supportsStreaming: model.supportsStreaming, transport, observeTimings: true
       });
-      yield* engine.streamTurn({ ...request, signal: cancellation.signal });
+      for await (const event of engine.streamTurn({ ...modelRequest, signal: cancellation.signal })) {
+        if (modelOnly && event.type === "tool.call") fail("extension_model_tools_denied");
+        yield event;
+      }
       await fixed();
     } catch (error) { throw guardError || error; }
     finally {

@@ -158,6 +158,21 @@ function fakeCloud() {
 }
 
 describe("sandbox Runtime durable integration", () => {
+  it("passes long Bash deadlines to the host and rejects commands over ten minutes", async () => {
+    const cloud = fakeCloud();
+    const h = await harness(cloud);
+    const broker = h.make();
+    expect((await broker.invoke(h.invocation("Bash"), new CancellationController().signal)).ok).toBe(true);
+    expect(cloud.exec.mock.calls.at(-1)[2].timeoutMs).toBe(120000);
+    expect((await broker.invoke(h.invocation("Bash", { command: "echo long", timeout: 600000 }),
+      new CancellationController().signal)).ok).toBe(true);
+    expect(cloud.exec.mock.calls.at(-1)[2].timeoutMs).toBe(600000);
+    const calls = cloud.exec.mock.calls.length;
+    await expect(broker.invoke(h.invocation("Bash", { command: "echo invalid", timeout: 600001 }),
+      new CancellationController().signal)).rejects.toThrow("timeout");
+    expect(cloud.exec.mock.calls.length).toBe(calls);
+  });
+
   it("refuses the legacy managed plugin-data path for Identity", async () => {
     const h = await harness(fakeCloud());
     const directory = await mkdtemp(join(tmpdir(), "zion-sandbox-main-"));

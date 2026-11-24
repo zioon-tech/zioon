@@ -696,7 +696,7 @@ describe("conversation submit keyboard UI", () => {
       const { accountCan, getEd, getSessionId, getRunState, interactivePreparations,
         beginConversationViewportFollow, runtime, pendingRecoveryRuns,
         recoverInteractiveRuntimeRun, performRun, captureDocumentInput,
-        captureInteractiveRuntimeAccount } = deps;
+        captureInteractiveRuntimeAccount, hydrateRemoteAnnotations, getPanelSessionId } = deps;
       ${source.slice(begin, end)}
       return [${submit}, ${selectionCommand}, ${binding}];
     `);
@@ -709,7 +709,9 @@ describe("conversation submit keyboard UI", () => {
         preparation.accept("accepted-ui");
         snapshots.push(preparation.inputSnapshot);
       },
-      captureDocumentInput, captureInteractiveRuntimeAccount: () => null
+      captureDocumentInput, captureInteractiveRuntimeAccount: () => null,
+      hydrateRemoteAnnotations: async (annotations: any) => annotations,
+      getPanelSessionId: () => "shortcut-ui"
     });
     cleanups.push(() => disposables.forEach((disposable: any) => disposable.dispose()));
     const press = async () => {

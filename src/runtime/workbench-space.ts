@@ -262,6 +262,10 @@ function storageKey(key: string) {
   return scope && !globalKey(key) ? `zion.scoped:${encodeURIComponent(scope.userId)}:${encodeURIComponent(scope.spaceId)}:${key}` : key;
 }
 
+export function isWorkbenchStorageEvent(event: Pick<StorageEvent, "key">, key: string) {
+  return event.key === null || event.key === storageKey(key);
+}
+
 /** Explicit facade, rather than monkey-patching browser Storage. No fallback to
  * unowned browser-era content when a signed-in Space has no cached value. */
 export const workbenchStorage = {

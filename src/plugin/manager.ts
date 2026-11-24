@@ -60,14 +60,25 @@ export interface PluginManagerOptions {
   logLevel?: 'error' | 'warn' | 'info' | 'debug';
   /** 当前 Workbench 是否允许激活这个插件 */
   activationAllowed?: (plugin: PluginInfo) => boolean;
+  /** Styles already present in the application's builtin CSS entry. */
+  bundledBuiltinStyles?: ReadonlySet<string>;
+}
+
+export interface PluginActivationTiming {
+  pluginId: string;
+  moduleWaitMs: number;
+  activateMs: number;
+  stylesMs: number;
+  totalMs: number;
 }
 
 /**
  * 插件管理器
  */
 export class PluginManager extends EventEmitter {
-  private options: Required<Omit<PluginManagerOptions, 'activationAllowed'>>;
+  private options: Required<Omit<PluginManagerOptions, 'activationAllowed' | 'bundledBuiltinStyles'>>;
   private activationAllowed: (plugin: PluginInfo) => boolean;
+  private bundledBuiltinStyles: ReadonlySet<string>;
   private loader: PluginLoader;
   private plugins = new Map<string, PluginInfo>();
   private activePlugins = new Map<string, { info: PluginInfo; module: PluginModule; context: PluginContext }>();
@@ -75,6 +86,8 @@ export class PluginManager extends EventEmitter {
   private enabledPlugins = new Set<string>();
   private disabledPlugins = new Set<string>();
   private pluginStyleElements = new Map<string, HTMLStyleElement[]>();
+  private startupModuleLoads = new Map<PluginInfo, Promise<PluginModule>>();
+  private activationTimings = new Map<string, PluginActivationTiming>();
 
   constructor(options: PluginManagerOptions) {
     super();
@@ -87,6 +100,7 @@ export class PluginManager extends EventEmitter {
       logLevel: options.logLevel ?? 'info'
     };
     const hostActivationAllowed = options.activationAllowed ?? (() => true);
+    this.bundledBuiltinStyles = options.bundledBuiltinStyles ?? new Set();
     this.activationAllowed = (plugin) => (
       (
         !EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(plugin.id)
@@ -100,6 +114,11 @@ export class PluginManager extends EventEmitter {
     });
 
     this.setupEventHandlers();
+  }
+
+  /** Latest successful activation per plugin; contains timings only. */
+  getActivationTimings(): PluginActivationTiming[] {
+    return [...this.activationTimings.values()].map(timing => ({ ...timing }));
   }
 
   getPluginOrigin(plugin: PluginInfo | null | undefined): PluginOrigin {
@@ -364,6 +383,8 @@ export class PluginManager extends EventEmitter {
   async initialize(options: {
     beforeActivate?: () => Promise<void>;
     deferActivation?: Set<string>;
+    startupPluginIds?: string[];
+    yieldBetweenActivations?: () => Promise<void>;
   } = {}): Promise<void> {
     this.log('info', '初始化插件管理器...');
     
@@ -379,7 +400,7 @@ export class PluginManager extends EventEmitter {
       await options.beforeActivate?.();
       
       // 激活启用的插件
-      await this.activateEnabledPlugins(options.deferActivation);
+      await this.activateEnabledPlugins(options.deferActivation, options);
       await this.savePluginStates();
       
       this.log('info', '插件管理器初始化完成');
@@ -465,7 +486,7 @@ export class PluginManager extends EventEmitter {
           const dirName = pluginPath.split('/').pop();
           if (!dirName) continue;
           const zionData = (manifest as any)?.zion || {};
-          const pluginId = String(zionData.id || manifest.name || `zion.${dirName.replace(/^dev\./, '')}`);
+          const pluginId = this.loader.normalizeManifest(manifest).id;
           if (EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(pluginId)) {
             this.log('info', `跳过已外迁内置插件: ${pluginId}`);
             continue;
@@ -883,6 +904,8 @@ export class PluginManager extends EventEmitter {
       this.plugins.delete(pluginId);
       this.enabledPlugins.delete(pluginId);
       this.disabledPlugins.delete(pluginId);
+      this.activationTimings.delete(pluginId);
+      this.startupModuleLoads.delete(pluginInfo);
       this.revokePluginEntryUrls(pluginInfo);
       this.removePluginStyles(pluginId);
       await deletePluginScriptContents(pluginInfo.scriptStorageKey);
@@ -1036,7 +1059,11 @@ export class PluginManager extends EventEmitter {
       (pluginInfo as any).activatedAt = Date.now();
 
       // 加载模块
-      const module = await this.loader.loadModule(pluginInfo);
+      const started = performance.now();
+      const preparedModule = this.startupModuleLoads.get(pluginInfo);
+      this.startupModuleLoads.delete(pluginInfo);
+      const module = await (preparedModule || this.loader.loadModule(pluginInfo));
+      const loaded = performance.now();
       
       // 创建上下文
       context = this.createPluginContext(pluginInfo);
@@ -1045,6 +1072,7 @@ export class PluginManager extends EventEmitter {
       if (typeof module.activate === 'function') {
         await module.activate(context);
       }
+      const activated = performance.now();
 
       // 添加到激活插件列表
       this.activePlugins.set(pluginId, {
@@ -1055,6 +1083,14 @@ export class PluginManager extends EventEmitter {
 
       // 更新最终状态
       await this.autoLoadStyles(pluginInfo);
+      const styled = performance.now();
+      this.activationTimings.set(pluginId, {
+        pluginId,
+        moduleWaitMs: loaded - started,
+        activateMs: activated - loaded,
+        stylesMs: styled - activated,
+        totalMs: styled - started
+      });
       pluginInfo.state = 'active';
       pluginInfo.error = undefined;
 
@@ -1102,6 +1138,9 @@ export class PluginManager extends EventEmitter {
           const rel = String(styles[i] || '').replace(/^\.\//, '');
           if (typeof document === 'undefined') continue;
           let css = info.styleContents?.[rel];
+          if (typeof css !== 'string'
+            && this.getPluginOrigin(info) === 'builtin'
+            && this.bundledBuiltinStyles.has(`${basePath}/${rel}`)) continue;
           if (typeof css !== 'string') {
             const url = basePath ? basePath + '/' + rel : rel;
             if (!basePath) continue;
@@ -1279,18 +1318,42 @@ export class PluginManager extends EventEmitter {
   /**
    * 激活所有启用的插件
    */
-  private async activateEnabledPlugins(deferred = new Set<string>()): Promise<void> {
+  private async activateEnabledPlugins(deferred = new Set<string>(), options: {
+    startupPluginIds?: string[];
+    yieldBetweenActivations?: () => Promise<void>;
+  } = {}): Promise<void> {
     this.log('info', '启动启用的插件...');
 
-    const enabledPlugins = this.sortPluginIdsByDependencies(
-      Array.from(this.enabledPlugins).filter((id) => this.plugins.has(id) && !deferred.has(id))
-    );
+    const eligible = Array.from(this.enabledPlugins).filter((id) => this.plugins.has(id) && !deferred.has(id));
+    const preferred = (options.startupPluginIds || []).filter(id => eligible.includes(id));
+    const enabledPlugins = this.sortPluginIdsByDependencies([...new Set([...preferred, ...eligible])]);
 
-    for (const pluginId of enabledPlugins) {
-      try {
-        await this.activate(pluginId);
-      } catch (error) {
-        this.log('warn', `激活插件失败: ${pluginId}`, error);
+    // Fetch the small startup group together, but preserve activation order and
+    // dependencies. Never pre-evaluate arbitrary external/development plugins.
+    const prepared = new Map<PluginInfo, Promise<PluginModule>>();
+    for (const pluginId of preferred) {
+      const info = this.plugins.get(pluginId)!;
+      if (this.getPluginOrigin(info) !== 'builtin' || this.activePlugins.has(pluginId)
+        || !this.startupDependenciesAvailable(info)) continue;
+      const loading = this.loader.loadModule(info);
+      // Activation observes failures; this handler prevents an early rejected
+      // import from becoming an unhandled rejection while earlier plugins run.
+      void loading.catch(() => {});
+      prepared.set(info, loading);
+      this.startupModuleLoads.set(info, loading);
+    }
+    try {
+      for (const pluginId of enabledPlugins) {
+        await options.yieldBetweenActivations?.();
+        try {
+          await this.activate(pluginId);
+        } catch (error) {
+          this.log('warn', `激活插件失败: ${pluginId}`, error);
+        }
+      }
+    } finally {
+      for (const [info, loading] of prepared) {
+        if (this.startupModuleLoads.get(info) === loading) this.startupModuleLoads.delete(info);
       }
     }
 
@@ -1299,6 +1362,16 @@ export class PluginManager extends EventEmitter {
 
   async retryFailedPlugins(): Promise<void> {
     await this.activateEnabledPlugins();
+  }
+
+  private startupDependenciesAvailable(info: PluginInfo, ancestors = new Set<string>()): boolean {
+    if (ancestors.has(info.id) || this.getEnabledPreference(info.id) === false
+      || !this.activationAllowed(info) || !this.loader.supportsHost(info, 'workbench')) return false;
+    const next = new Set([...ancestors, info.id]);
+    return (info.dependencies || []).every(id => {
+      const dependency = this.plugins.get(id);
+      return !!dependency && dependency.state !== 'error' && this.startupDependenciesAvailable(dependency, next);
+    });
   }
 
   private sortPluginIdsByDependencies(pluginIds: string[]): string[] {
@@ -1429,6 +1502,9 @@ export class PluginManager extends EventEmitter {
               ? rec.contract
               : undefined
           };
+          if (info.origin === 'builtin' && info.manifest) {
+            info.id = this.loader.normalizeManifest(info.manifest).id;
+          }
           await this.hydrateScriptContents(info);
           this.rehydrateScriptEntries(info);
           this.plugins.set(info.id, info);

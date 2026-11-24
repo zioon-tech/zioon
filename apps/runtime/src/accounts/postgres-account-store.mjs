@@ -81,6 +81,7 @@ export class PostgresAccountStore {
     idleTimeoutMs = 30_000,
     connectionTimeoutMs = 10_000,
     ssl = undefined,
+    legacyAccountSpaceId = "",
     now = () => Date.now()
   } = {}) {
     if (!pool && !String(connectionString || "").trim()) {
@@ -96,6 +97,16 @@ export class PostgresAccountStore {
     });
     this.ownsPool = !pool;
     this.now = now;
+    // An explicitly configured pre-sharing workspace keeps its existing IDs,
+    // files and memberships while using account model/settings behavior.
+    this.legacyAccountSpaceId = String(legacyAccountSpaceId || "");
+  }
+
+  accountSpace(row) {
+    const space = spaceFromRow(row);
+    return space?.id === this.legacyAccountSpaceId
+      ? { ...space, kind: "personal", legacyAccountWorkspace: true }
+      : space;
   }
 
   async initialize() {
@@ -209,6 +220,14 @@ export class PostgresAccountStore {
   }
 
   async personalSpace(userId, client = this.pool) {
+    if (this.legacyAccountSpaceId) {
+      const legacy = await client.query(`SELECT s.* FROM account_spaces s
+        JOIN account_memberships m ON m.space_id=s.id
+        WHERE s.id=$2 AND s.created_by=$1 AND m.user_id=$1
+          AND m.role='owner' AND m.status='active'`,
+      [userId, this.legacyAccountSpaceId]);
+      if (legacy.rowCount) return this.accountSpace(legacy.rows[0]);
+    }
     const result = await client.query(
       `SELECT s.* FROM account_spaces s
        JOIN account_memberships m ON m.space_id = s.id
@@ -322,7 +341,7 @@ export class PostgresAccountStore {
 
   async space(spaceId, client = this.pool) {
     const result = await client.query("SELECT * FROM account_spaces WHERE id = $1", [spaceId]);
-    return spaceFromRow(result.rows[0]);
+    return this.accountSpace(result.rows[0]);
   }
 
   async membership(userId, spaceId, client = this.pool) {
@@ -350,7 +369,7 @@ export class PostgresAccountStore {
       [userId]
     );
     return result.rows.map((row) => ({
-      ...spaceFromRow(row),
+      ...this.accountSpace(row),
       membership: membershipFromRow(row)
     }));
   }
@@ -407,6 +426,89 @@ export class PostgresAccountStore {
 
   async authenticate(token, { spaceId = "", allowGuest = false } = {}) {
     if (!String(token || "").startsWith("zion_account_v1.")) return null;
+    const tokenHash = hash(token);
+    if (spaceId) {
+      // Explicit selection never repairs the login. Read the live session,
+      // requested space and membership in a single PostgreSQL snapshot.
+      const result = await this.pool.query(
+        `SELECT s.id AS session_id, s.expires_at, u.id AS user_id,
+           u.name, u.email, u.status, u.created_at AS user_created_at,
+           p.id AS space_id, p.name AS space_name, p.kind AS space_kind,
+           p.created_by AS space_created_by, p.created_at AS space_created_at,
+           m.role, m.status AS membership_status, m.revision
+         FROM account_sessions s
+         JOIN account_users u ON u.id = s.user_id
+         LEFT JOIN account_spaces p ON p.id = $3
+         LEFT JOIN account_memberships m ON m.space_id = p.id AND m.user_id = u.id
+         WHERE s.token_hash = $1 AND s.revoked_at IS NULL
+           AND s.expires_at > $2 AND u.status = 'active'`,
+        [tokenHash, this.now(), spaceId]
+      );
+      const row = result.rows[0];
+      if (!row || integer(row.expires_at) <= this.now()) return null;
+      if (!row.space_id || (!allowGuest && row.membership_status !== "active")) {
+        throw accountError(403, "space_unavailable");
+      }
+      return {
+        user: userFromRow({ ...row, id: row.user_id, created_at: row.user_created_at }),
+        sessionId: row.session_id,
+        expiresAt: integer(row.expires_at),
+        space: this.accountSpace({ id: row.space_id, name: row.space_name, kind: row.space_kind,
+          created_by: row.space_created_by, created_at: row.space_created_at }),
+        membership: membershipFromRow(row.role == null ? undefined : {
+          ...row, status: row.membership_status
+        }),
+        explicitSpace: true
+      };
+    }
+    // Ordinary requests only read authority. Resolve the session, user and
+    // membership in one snapshot without serializing requests on the session.
+    const current = await this.pool.query(
+      `SELECT s.id, s.user_id, s.expires_at,
+         u.name, u.email, u.status, u.created_at AS user_created_at,
+         m.role, m.status AS membership_status, m.revision,
+         p.id AS space_id, p.name AS space_name, p.kind AS space_kind,
+         p.created_by AS space_created_by, p.created_at AS space_created_at
+       FROM account_sessions s
+       JOIN account_users u ON u.id = s.user_id
+       LEFT JOIN account_memberships m
+         ON m.user_id = s.user_id AND m.space_id = s.active_space_id AND m.status = 'active'
+       LEFT JOIN account_spaces p ON p.id = m.space_id
+       WHERE s.token_hash = $1 AND s.revoked_at IS NULL
+         AND s.expires_at > $2 AND u.status = 'active'`,
+      [tokenHash, this.now()]
+    );
+    const currentRow = current.rows[0];
+    if (!currentRow || integer(currentRow.expires_at) <= this.now()) return null;
+    if (currentRow.space_id && !this.legacyAccountSpaceId) {
+      return {
+        user: {
+          id: currentRow.user_id,
+          name: currentRow.name,
+          email: currentRow.email,
+          status: currentRow.status,
+          createdAt: integer(currentRow.user_created_at)
+        },
+        sessionId: currentRow.id,
+        expiresAt: integer(currentRow.expires_at),
+        space: {
+          id: currentRow.space_id,
+          name: currentRow.space_name,
+          kind: currentRow.space_kind,
+          createdBy: currentRow.space_created_by,
+          createdAt: integer(currentRow.space_created_at)
+        },
+        membership: {
+          userId: currentRow.user_id,
+          spaceId: currentRow.space_id,
+          role: currentRow.role,
+          status: currentRow.membership_status,
+          revision: integer(currentRow.revision)
+        }
+      };
+    }
+    // A removed membership still needs durable fallback repair. Re-read under
+    // the original lock so repair cannot overwrite a newer selection or revoke.
     return this.transaction(async (client) => {
       const result = await client.query(
         `SELECT s.*, u.name, u.email, u.status, u.created_at AS user_created_at
@@ -414,7 +516,7 @@ export class PostgresAccountStore {
          JOIN account_users u ON s.user_id = u.id
          WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND u.status = 'active'
          FOR UPDATE OF s`,
-        [hash(token)]
+        [tokenHash]
       );
       const row = result.rows[0];
       if (!row || integer(row.expires_at) <= this.now()) return null;
@@ -425,18 +527,11 @@ export class PostgresAccountStore {
         status: row.status,
         createdAt: integer(row.user_created_at)
       };
-      if (spaceId) {
-        const space = await this.space(spaceId, client);
-        const membership = await this.membership(user.id, spaceId, client);
-        if (!space || (!allowGuest && membership?.status !== "active")) {
-          throw accountError(403, "space_unavailable");
-        }
-        return { user, sessionId: row.id, expiresAt: integer(row.expires_at),
-          space, membership, explicitSpace: true };
-      }
-      let membership = await this.membership(user.id, row.active_space_id, client);
+      const legacy = this.legacyAccountSpaceId ? await this.personalSpace(user.id, client) : null;
+      const activeSpaceId = legacy?.legacyAccountWorkspace ? legacy.id : row.active_space_id;
+      let membership = await this.membership(user.id, activeSpaceId, client);
       let space = membership?.status === "active"
-        ? await this.space(row.active_space_id, client)
+        ? await this.space(activeSpaceId, client)
         : null;
       if (!space) {
         space = await this.ensurePersonalSpace(user, client);
@@ -456,8 +551,8 @@ export class PostgresAccountStore {
     });
   }
 
-  async activeSession(sessionId, userId) {
-    const result = await this.pool.query(
+  async activeSession(sessionId, userId, client = this.pool) {
+    const result = await client.query(
       `SELECT 1 FROM account_sessions s
        JOIN account_users u ON u.id = s.user_id
        WHERE s.id = $1 AND s.user_id = $2 AND s.revoked_at IS NULL
@@ -746,11 +841,11 @@ export class PostgresAccountStore {
     };
   }
 
-  async validateGrant(principal, requestedPolicy) {
+  async validateGrant(principal, requestedPolicy, client = this.pool) {
     if (!principal || principal.version !== 1 || !principal.spaceId) {
       throw accountError(403, "invalid_run_principal");
     }
-    const result = await this.pool.query(
+    const result = await client.query(
       `SELECT * FROM account_run_grants
        WHERE id = $1 AND space_id = $2 AND user_id = $3
          AND revoked_at IS NULL AND expires_at > $4`,
@@ -763,8 +858,8 @@ export class PostgresAccountStore {
       throw accountError(403, "content_grant_mismatch");
     }
     if (contentScope) await this.sharing.documentAccess(grant.user_id,
-      contentScope.originSpaceId, contentScope.documentId, "edit");
-    const member = await this.require(grant.user_id, "run.execute", grant.space_id);
+      contentScope.originSpaceId, contentScope.documentId, "edit", client);
+    const member = await this.require(grant.user_id, "run.execute", grant.space_id, client);
     const policy = jsonObject(grant.policy_json);
     const grantedScopes = jsonArray(grant.scopes_json);
     return {

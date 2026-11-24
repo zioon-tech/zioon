@@ -9,6 +9,9 @@ import "./pwa-test";
 import { attachEditor, detachEditor, listAttachedEditorCores, setActiveEditorPanel } from "./ext/registry";
 import type { Disposable } from "./types/zion";
 import { PluginManager } from "./plugin/manager";
+import { normalizePluginManifest } from "../packages/plugin-sdk/src/manifest.mjs";
+import { createWorkbenchReloadController } from "./runtime/workbench-reload";
+import { markWorkbenchStage } from "./runtime/workbench-performance";
 import { HttpPluginInstaller } from "./plugin/http-installer";
 import { syncDevelopmentPlugins } from "./plugin/development-sync";
 import { syncAccountPlugins } from "./plugin/account-sync";
@@ -21,6 +24,7 @@ import {
 } from "./plugin/externalized";
 import { notificationManager } from "./notification/manager";
 import { initWorkbench } from "./ui/workbench/workbench";
+import { auxiliaryBarRuntime } from "./ui/workbench/runtime";
 import { initCommandPalette } from "./ui/workbench/commandPalette";
 import { installZionIcons, zionIconHtml } from "./ui/icons";
 import { mountEditorHeaderOutlineButton, mountEditorHeaderSplitMenu } from "./ui/editor-header";
@@ -2037,7 +2041,11 @@ function mountPanelSessionTabsBar(
       }
       const sessionId = typeof tabOrId === "string" ? tabOrId : tabOrId?.id;
       const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
-      return String(meta?.title || "").trim() || sessionId;
+      const summary = window.zion.state.get<any>(`sessions.summary.${sessionId}`);
+      const savedTitle = typeof tabOrId === "object" ? tabOrId?.title : "";
+      return [meta?.title, summary?.title, savedTitle]
+        .map(value => String(value || "").trim())
+        .find(value => value && value !== sessionId) || "会话";
     };
     const getTabStatus = (tabOrId: any): "streaming" | "awaiting" | "failed" | "aborted" | null => {
       try {
@@ -2084,14 +2092,12 @@ function mountPanelSessionTabsBar(
       for (const id of sessionTabIds) {
         if (!metaDisposables.has(id)) {
           try {
-            metaDisposables.set(
-              id,
-              window.zion.state.onDidChange<any>(`sessions.meta.${id}`, (nv, ov) => {
-                const nt = String(nv?.title || "").trim();
-                const ot = String(ov?.title || "").trim();
-                if (nt !== ot) scheduleRender();
+            const disposables = ["meta", "summary"].map(source =>
+              window.zion.state.onDidChange<any>(`sessions.${source}.${id}`, (nv, ov) => {
+                if (String(nv?.title || "").trim() !== String(ov?.title || "").trim()) scheduleRender();
               })
             );
+            metaDisposables.set(id, { dispose: () => disposables.forEach(item => item.dispose()) });
           } catch {}
         }
         if (!runDisposables.has(id)) {
@@ -3087,6 +3093,7 @@ async function bootstrap() {
   const runtimeHostedWorkbench =
     readWorkbenchRuntimeConfig().mode === "runtime";
 
+  auxiliaryBarRuntime.restoreLayout("dev.tools.context");
   const wb = initWorkbench(host);
   const editorContainer = wb.editorHost;
   const editorHeaderPathEl = wb.editorHeaderPathEl;
@@ -3107,6 +3114,7 @@ async function bootstrap() {
   editorAreaEl.appendChild(panelsHost);
 
   const savedPanelWorkspace = loadPanelWorkspaceSnapshot();
+  window.zion.state.set("sessions.restoreWorkspace", !!savedPanelWorkspace?.manager);
   const shouldStartEmpty = isEmptyPanelWorkspaceSnapshot(savedPanelWorkspace);
   if (shouldStartEmpty) {
     clearPersistedActiveSession();
@@ -3214,7 +3222,8 @@ async function bootstrap() {
     state: window.zion.state,
     events: window.zion.events,
     commands: window.zion.commands,
-    getSessionMeta: (sessionId: string) => window.zion?.commands?.executeCommand?.("zion.sessions.getMeta", sessionId),
+    peekSessionAnnotations: (sessionId: string) =>
+      window.zion?.commands?.executeCommand?.("zion.sessions.peekAnnotations", sessionId),
     getActivePanelId: () => panelManager.getActivePanelId()
   });
   (window.zion as any).chatCards = chatAnnotations;
@@ -3360,6 +3369,11 @@ async function bootstrap() {
   setActiveEditorPanel("panel-0");
   let suspendSessionCurrentSync = false;
   let restoringPanelWorkspace = false;
+  let panelUserInteraction = 0;
+  const notePanelInteraction = () => { panelUserInteraction++; };
+  for (const type of ["pointerdown", "wheel", "keydown", "touchstart"]) {
+    editorAreaEl.addEventListener(type, notePanelInteraction, { capture: true, passive: true });
+  }
   const panelScrollPersistDisposers = new Map<string, () => void>();
   type EditorSlot = {
     panelId: string;
@@ -3744,24 +3758,28 @@ async function bootstrap() {
     }));
   };
   const capturePanelViewStates = () => {
-    const out: Record<string, { scrollTop: number; scrollLeft: number; selectionAnchor: number; selectionHead: number }> = {};
+    const out: Record<string, { scrollTop: number; scrollLeft: number; selectionAnchor: number; selectionHead: number;
+      anchorPos?: number; anchorOffset?: number }> = {};
     try {
       for (const panel of panelManager.listPanels()) {
         const view = panelManager.getEditor(panel.id)?.getView?.();
         const scrollDOM = view?.scrollDOM;
         const sel = view?.state?.selection?.main;
         if (!view?.state?.doc || !scrollDOM || !sel) continue;
+        const block = view.lineBlockAtHeight(scrollDOM.scrollTop);
         out[panel.id] = {
           scrollTop: typeof scrollDOM.scrollTop === "number" ? scrollDOM.scrollTop : 0,
           scrollLeft: typeof scrollDOM.scrollLeft === "number" ? scrollDOM.scrollLeft : 0,
           selectionAnchor: typeof sel.anchor === "number" ? sel.anchor : 0,
-          selectionHead: typeof sel.head === "number" ? sel.head : 0
+          selectionHead: typeof sel.head === "number" ? sel.head : 0,
+          anchorPos: block.from,
+          anchorOffset: scrollDOM.scrollTop - block.top
         };
       }
     } catch {}
     return out;
   };
-  const restorePanelViewState = (panelId: string, viewState: any) => {
+  const restorePanelViewState = async (panelId: string, viewState: any) => {
     try {
       const view = panelManager.getEditor(panelId)?.getView?.();
       if (!view?.state?.doc) return;
@@ -3777,12 +3795,38 @@ async function bootstrap() {
       if (anchor != null && head != null) {
         view.dispatch({ selection: { anchor, head } });
       }
-      if (view.scrollDOM) {
-        view.scrollDOM.scrollTop = Math.max(0, Number(viewState?.scrollTop) || 0);
-        view.scrollDOM.scrollLeft = Math.max(0, Number(viewState?.scrollLeft) || 0);
-      }
+      const interaction = panelUserInteraction;
+      await new Promise<void>(resolve => {
+        let pending = true;
+        const finish = () => { pending = false; resolve(); };
+        const timer = window.setTimeout(finish, 150);
+        view.requestMeasure({
+          read: () => {
+            const position = Number(viewState?.anchorPos);
+            return Number.isFinite(position) && viewState?.anchorPos != null
+              ? view.lineBlockAt(Math.max(0, Math.min(view.state.doc.length, position))).top
+                + (Number(viewState?.anchorOffset) || 0)
+              : Number(viewState?.scrollTop) || 0;
+          },
+          write: (top: number) => {
+            if (pending && interaction === panelUserInteraction) {
+              view.scrollDOM.scrollTop = Math.max(0, top);
+              view.scrollDOM.scrollLeft = Math.max(0, Number(viewState?.scrollLeft) || 0);
+            }
+            clearTimeout(timer);
+            finish();
+          }
+        });
+      });
     } catch {}
   };
+  const restoredViewports = new Set<string>();
+  window.zion.commands.registerCommand("zion.panels.restoreInitialView", async (panelId: string) => {
+    if (!savedPanelWorkspace?.manager || restoredViewports.has(panelId)) return false;
+    restoredViewports.add(panelId);
+    await restorePanelViewState(panelId, savedPanelWorkspace.viewStates?.[panelId]);
+    return true;
+  });
   const buildPanelWorkspaceSnapshot = () => ({
     version: 1,
     savedAt: Date.now(),
@@ -3795,48 +3839,19 @@ async function bootstrap() {
   const persistPanelWorkspaceNow = () => {
     try { savePanelWorkspaceSnapshotNow(buildPanelWorkspaceSnapshot()); } catch {}
   };
-  const reloadWindowPreservingWorkspace = async () => {
-    persistPanelWorkspaceNow();
-    try { window.zion?.state?.set("sessions.reloadPreparing", true); } catch {}
-    try {
+  const reloadController = createWorkbenchReloadController({
+    prepare: async context => {
       const commands = window.zion?.commands;
-      const available = commands?.list?.() || [];
-      if (available.includes("zion.sessions.prepareForReload")) {
-        const timeout = Symbol("reload-timeout");
-        let timeoutId = 0;
-        const prepared = await Promise.race([
-          Promise.resolve(commands.executeCommand("zion.sessions.prepareForReload")),
-          new Promise((resolve) => {
-            timeoutId = window.setTimeout(() => resolve(timeout), 1800);
-          })
-        ]).finally(() => window.clearTimeout(timeoutId));
-        if (prepared !== true) {
-            try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
-            notificationManager.show(prepared === timeout
-              ? "会话仍在保存，请稍后重新加载。"
-              : "会话尚未完成保存，已取消重新加载。", {
-              type: "warning",
-              duration: 3000
-            });
-            return false;
-        }
-      }
-    } catch (error) {
-      try { window.zion?.state?.set("sessions.reloadPreparing", false); } catch {}
-      console.error("[zion] failed to prepare session storage for reload", error);
-      notificationManager.show("会话尚未完成保存，已取消重新加载。", {
-        type: "warning",
-        duration: 3000
-      });
-      return false;
-    }
-    try {
-      window.zion?.state?.set("sessions.reloadPreparing", false);
-      window.zion?.state?.set("sessions.intentionalReload", true);
-    } catch {}
-    location.reload();
-    return true;
-  };
+      if (!commands?.list?.().includes("zion.sessions.prepareForReload")) return true;
+      return (await commands.executeCommand("zion.sessions.prepareForReload", context)) ?? false;
+    },
+    persistWorkspace: persistPanelWorkspaceNow,
+    setPreparing: value => window.zion?.state?.set("sessions.reloadPreparing", value),
+    setIntentionalReload: value => window.zion?.state?.set("sessions.intentionalReload", value),
+    reload: () => location.reload(),
+    notify: (message, options) => notificationManager.show(message, options)
+  });
+  const reloadWindowPreservingWorkspace = () => reloadController.request();
   let updateNoticeShown = false;
   navigator.serviceWorker?.addEventListener("message", (event) => {
     if (event.data?.type !== "ZION_WORKBENCH_UPDATE_AVAILABLE" || updateNoticeShown) return;
@@ -3863,14 +3878,16 @@ async function bootstrap() {
       } catch {}
     });
   };
-  const restorePanelWorkspaceWhenReady = (attempt = 0) => {
+  let panelWorkspaceRestoreStarted = false;
+  const restorePanelWorkspaceWhenReady = () => {
     if (!savedPanelWorkspace?.manager) return;
+    if (panelWorkspaceRestoreStarted || window.zion.state.get("sessions.ready") !== true) return;
     const commands = window.zion?.commands?.list?.() || [];
     if (!commands.includes("zion.sessions.switch")) {
-      if (attempt >= 80) return;
-      window.setTimeout(() => restorePanelWorkspaceWhenReady(attempt + 1), 125);
       return;
     }
+    panelWorkspaceRestoreStarted = true;
+    markWorkbenchStage("panels-restore-start");
     suspendSessionCurrentSync = true;
     restoringPanelWorkspace = true;
     const restored = panelManager.restoreState(savedPanelWorkspace.manager);
@@ -3883,6 +3900,7 @@ async function bootstrap() {
       try { window.zion.events.emit("panel/tabsChanged", { panelId: panel.id }); } catch {}
     }
     const runRestore = async () => {
+      const interaction = panelUserInteraction;
       try {
         const panelsToRestore = panelManager.listPanels()
           .filter((panel) => !!panel.activeTabId)
@@ -3910,11 +3928,7 @@ async function bootstrap() {
             : panelManager.getActivePanelId();
         requestAnimationFrame(() => requestAnimationFrame(() => {
           try {
-            const viewStates = savedPanelWorkspace?.viewStates || {};
-            for (const panel of panelManager.listPanels()) {
-              restorePanelViewState(panel.id, viewStates[panel.id]);
-            }
-            if (finalActivePanelId) {
+            if (finalActivePanelId && interaction === panelUserInteraction) {
               panelManager.focusPanel(finalActivePanelId);
               setActiveEditorPanel(finalActivePanelId);
               syncLegacyEditorTabsState(finalActivePanelId);
@@ -3923,12 +3937,14 @@ async function bootstrap() {
           } finally {
             suspendSessionCurrentSync = false;
             restoringPanelWorkspace = false;
+            window.zion.state.set("sessions.restoreWorkspace", false);
             schedulePanelWorkspacePersist();
           }
         }));
       } catch {
         suspendSessionCurrentSync = false;
         restoringPanelWorkspace = false;
+        window.zion.state.set("sessions.restoreWorkspace", false);
       }
     };
     void runRestore();
@@ -4263,6 +4279,8 @@ async function bootstrap() {
     ]
   }));
   restorePanelWorkspaceWhenReady();
+  const workspaceReadyListener = window.zion.state.onDidChange("sessions.ready", restorePanelWorkspaceWhenReady);
+  window.addEventListener("beforeunload", () => workspaceReadyListener.dispose(), { once: true });
 
   try {
     initServiceBaseUrlConfig();
@@ -4776,8 +4794,10 @@ async function bootstrap() {
     window.zion.state.set("workbench.pluginsReady", false);
     await pluginManager.initialize({
       beforeActivate: () => preinstallBuiltinPlugins(pluginManager),
-      deferActivation: EXTERNALIZED_BUILTIN_PLUGIN_IDS
-    });
+      deferActivation: EXTERNALIZED_BUILTIN_PLUGIN_IDS,
+      startupPluginIds: ["dev.roles", "dev.thinking", "dev.tools", "dev.session-manager"],
+      yieldBetweenActivations: () => new Promise(resolve => setTimeout(resolve, 0))
+    }).finally(() => auxiliaryBarRuntime.finishStartupLayout());
     window.zion.state.set("workbench.pluginsReady", true);
     console.log('[PluginManager] 插件系统初始化完成');
 
@@ -5959,7 +5979,7 @@ async function preinstallBuiltinPlugins(pluginManager: PluginManager) {
         const dirName = extDir.split('/').pop() || extDir;
 
         const zionData = manifest.zion || {};
-        const pluginId = zionData.id || manifest.name || `zion.${dirName.replace(/^dev\./, '')}`;
+        const pluginId = normalizePluginManifest(manifest).id;
         if (EXTERNALIZED_BUILTIN_PLUGIN_IDS.has(pluginId)) {
           console.log(`[PluginManager] 跳过已外迁内置插件: ${pluginId}`);
           continue;

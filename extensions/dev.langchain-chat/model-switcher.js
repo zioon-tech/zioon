@@ -35,6 +35,9 @@ import {
   loadProviderConfig,
   saveProviderConfig
 } from "./provider-config-storage.js";
+import {
+  MENU_PREFERENCES_EVENT, modelMenuKey, readModelMenuPreferences, sortPinnedModels, toggleModelPin
+} from "./model-menu-preferences.js";
 
 function t(key, fallback, values) {
   const fullKey = `dev.langchain-chat.${key}`;
@@ -310,12 +313,12 @@ export function installModelSwitcher() {
     btn.addEventListener("mouseenter", () => {
       btn.style.opacity = "1";
       btn.style.backgroundColor = "var(--hover-bg)";
-      btn.style.color = "var(--fg)";
+      btn.style.color = btn.dataset.active === "true" ? "var(--accent)" : "var(--fg)";
     });
     btn.addEventListener("mouseleave", () => {
       btn.style.opacity = "0.7";
       btn.style.backgroundColor = "transparent";
-      btn.style.color = "color-mix(in srgb, var(--fg) 64%, transparent)";
+      btn.style.color = btn.dataset.active === "true" ? "var(--accent)" : "color-mix(in srgb, var(--fg) 64%, transparent)";
     });
     btn.addEventListener("mousedown", (e) => e.stopPropagation());
     btn.addEventListener("click", (e) => e.stopPropagation());
@@ -408,6 +411,8 @@ export function installModelSwitcher() {
     }
 
     const act = activeSpec();
+    const preferences = readModelMenuPreferences();
+    const defaultModel = window.zion?.state?.get("chat.defaultModel");
     items.forEach((m, i) => {
       const row = document.createElement("div");
       row.dataset.index = String(i);
@@ -447,6 +452,33 @@ export function installModelSwitcher() {
       provSpan.textContent = m.sharedModel ? `${m.providerName || "提供者"} 分享` : m.accountExtension ? "账户插件" : m.providerId;
       right.appendChild(provSpan);
       if (m.sharedModel) right.prepend(sharedResourceMarker(m.providerName));
+
+      const pinned = preferences[modelMenuKey(m)]?.pinned === true;
+      const pinLabel = `${pinned ? "取消置顶" : "置顶"}：${m.label || m.id}`;
+      const btnPin = iconButton(`<svg width="14" height="14" viewBox="0 0 24 24" fill="${pinned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="${pinned ? "0" : "2"}"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2l-2-2z"/></svg>`, pinLabel);
+      btnPin.setAttribute("aria-pressed", String(pinned));
+      if (pinned) { btnPin.style.color = "var(--accent)"; btnPin.dataset.active = "true"; }
+      btnPin.addEventListener("click", () => {
+        try { toggleModelPin(m); }
+        catch (error) { window.zion?.notification?.show?.(`置顶保存失败：${error.message}`, { type: "error" }); }
+      });
+      right.appendChild(btnPin);
+
+      const isDefault = defaultModel?.providerId === m.providerId && defaultModel?.modelId === m.id;
+      const btnDefault = iconButton(`<svg width="14" height="14" viewBox="0 0 24 24" fill="${isDefault ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.5"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z"/></svg>`,
+        `${isDefault ? "当前默认模型" : "设为默认模型"}：${m.label || m.id}`);
+      btnDefault.setAttribute("aria-pressed", String(isDefault));
+      btnDefault.disabled = isDefault;
+      if (isDefault) { btnDefault.style.color = "var(--accent)"; btnDefault.dataset.active = "true"; }
+      btnDefault.addEventListener("click", async () => {
+        btnDefault.disabled = true;
+        try { await window.zion.commands.executeCommand("models.setDefaultModel", `${m.providerId}:${m.id}`); }
+        catch (error) {
+          btnDefault.disabled = false;
+          window.zion?.notification?.show?.(`默认模型保存失败：${error.message}`, { type: "error" });
+        }
+      });
+      right.appendChild(btnDefault);
 
       // 操作按钮
       const canEdit = m.providerId === DYNAMIC_PROVIDER_ID;
@@ -518,7 +550,7 @@ export function installModelSwitcher() {
   }
 
   function refresh() {
-    const models = catalog();
+    const models = sortPinnedModels(catalog());
     const q = (input.value || "").trim().toLowerCase();
     const filtered = models.filter(m => {
       const s = `${m.label || ""} ${m.id} ${m.providerId} ${m.providerName || ""}`.toLowerCase();
@@ -608,9 +640,18 @@ export function installModelSwitcher() {
     metaCache.clear();
     refresh();
   });
+  const dispDefault = window.zion?.state?.onDidChange?.("chat.defaultModel", () => refresh());
+  const dispActive = window.zion?.state?.onDidChange?.("chat.activeModel", () => refresh());
+  const refreshPreferences = () => refresh();
+  window.addEventListener(MENU_PREFERENCES_EVENT, refreshPreferences);
+  window.addEventListener("storage", refreshPreferences);
   function dispose() {
     try { dispI18n?.dispose?.(); } catch {}
     try { dispCatalog?.dispose?.(); } catch {}
+    dispDefault?.dispose?.();
+    dispActive?.dispose?.();
+    window.removeEventListener(MENU_PREFERENCES_EVENT, refreshPreferences);
+    window.removeEventListener("storage", refreshPreferences);
     root.remove();
   }
 

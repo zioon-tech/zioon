@@ -8,6 +8,7 @@ export class ClaudeCodeStrategy {
     return context?.model?.limit?.context > 0
       && context.tokens > context.model.limit.context * this.options.threshold;
   }
+  isAvailable() { return typeof this.options.summarize === "function"; }
   async generateSummary(messages) {
     if (typeof this.options.summarize !== "function") {
       throw new Error("A real summary model is required; use Runtime /compact");
