@@ -676,8 +676,10 @@ export async function activate(ctx) {
     const item = Array.isArray(catalog)
       ? catalog.find((m) => m.providerId === providerId && m.id === modelId)
       : null;
+    if (!item) throw new Error("当前会话的模型已不可用，请重新选择已配置或收到分享的模型");
     return {
-      ...(active?.profileId ? { profileId: String(active.profileId) } : {}),
+      ...(active?.profileId || item?.runtimeProfileId
+        ? { profileId: String(active.profileId || item.runtimeProfileId) } : {}),
       providerId,
       modelId,
       label: String(active?.label || item?.label || modelId),
@@ -691,7 +693,10 @@ export async function activate(ctx) {
   }
   function ensureActiveModel() {
     const active = window.zion.state.get("chat.activeModel");
-    if (!active) {
+    const catalog = window.zion.state.get("models.catalog") || [];
+    if (!active || !catalog.some(item => active.profileId
+      ? item.runtimeProfileId === active.profileId
+      : item.providerId === active.providerId && item.id === active.modelId)) {
       let restored = null;
       try {
         const raw = localStorage.getItem("zion.chat.defaultModel") || "";
@@ -715,12 +720,17 @@ export async function activate(ctx) {
         }
       }
 
-      window.zion.state.set("chat.activeModel", { providerId: "deepseek", modelId: "deepseek-v4-flash", label: "DeepSeek V4 Flash" });
+      const fallback = catalog.find(item => item.providerId === "deepseek" && !item.requiresConfig)
+        || catalog.find(item => !item.requiresConfig) || catalog[0];
+      window.zion.state.set("chat.activeModel", fallback ? {
+        providerId: fallback.providerId, modelId: fallback.id, label: fallback.label || fallback.id,
+        ...(fallback.runtimeProfileId ? { profileId: fallback.runtimeProfileId } : {})
+      } : null);
     }
   }
   await refreshCatalog();
   ensureActiveModel();
-  window.zion.state.set("chat.defaultModel", getResolvedModelSnapshot());
+  window.zion.state.set("chat.defaultModel", window.zion.state.get("chat.activeModel") ? getResolvedModelSnapshot() : null);
   const modelHealthMonitor = startModelHealthMonitor();
   ctx.subscriptions.push(modelHealthMonitor);
 

@@ -9,7 +9,8 @@ import {
 import {
   findRuntimeModelProfile,
   loadRuntimeModelProfiles,
-  mergeRuntimeModelProfileConfig
+  mergeRuntimeModelProfileConfig,
+  shouldUseRuntimeModelStore
 } from "./runtime-user-model-store.js";
 
 function currentCatalog() {
@@ -32,6 +33,8 @@ function providerIds() {
 export async function rebuildModelCatalog({ forceRuntime = false } = {}) {
   const previous = currentCatalog();
   const models = [];
+  const runtimeBacked = !!shouldUseRuntimeModelStore();
+  const representedProfiles = new Set();
   const runtimeProfiles = await loadRuntimeModelProfiles({
     force: forceRuntime
   }).catch(() => null);
@@ -69,6 +72,10 @@ export async function rebuildModelCatalog({ forceRuntime = false } = {}) {
           providerId,
           modelId
         });
+        // Runtime is authoritative. Browser provider presets are not executable
+        // profiles and must never become selectable in a remote workbench.
+        if (runtimeBacked && !runtimeProfile) return null;
+        if (["account-extension", "account-share"].includes(runtimeProfile?.metadata?.source)) return null;
         const effectiveConfig = mergeRuntimeModelProfileConfig(
           config,
           runtimeProfile
@@ -77,6 +84,8 @@ export async function rebuildModelCatalog({ forceRuntime = false } = {}) {
           || runtimeProfile?.credentialConfigured === true;
         const hasCredential = credentialConfigured
           || !!String(effectiveConfig?.key || effectiveConfig?.apiKey || "").trim();
+        if (!runtimeBacked && ["anthropic", "gemini"].includes(providerId) && !hasCredential) return null;
+        if (runtimeProfile) representedProfiles.add(runtimeProfile.id);
         const explicitlyRequiresConfig = !!(
           effectiveConfig?._requiresConfig
           && !hasCredential
@@ -138,18 +147,26 @@ export async function rebuildModelCatalog({ forceRuntime = false } = {}) {
 
   // Installed account model providers have no browser network client. Their
   // immutable profiles are selected through the same Runtime dialog.
-  for (const profile of (runtimeProfiles || []).filter((p) => ["account-extension", "account-share"].includes(p.metadata?.source))) {
+   for (const profile of (runtimeProfiles || []).filter((p) => !representedProfiles.has(p.id))) {
     const config = mergeRuntimeModelProfileConfig(null, profile);
     models.push(applyModelAvailability({
-      providerId: profile.providerId, id: profile.model, label: profile.label || profile.model,
+       providerId: profile.providerId, id: profile.sourceModelId || profile.model, label: profile.label || profile.model,
+       description: normalizeModelDescription(profile.metadata?.description),
       runtimeProfileId: profile.id, accountExtension: profile.metadata?.source === "account-extension",
       sharedModel: profile.metadata?.source === "account-share", providerName: profile.metadata?.providerName || "",
       stream: profile.supportsStreaming,
       credentialConfigured: profile.credentialConfigured === true,
       requiresConfig: profile.credentialConfigured !== true,
       configReason: profile.credentialConfigured === true ? "" : "connection_required",
-      configHint: profile.credentialConfigured === true ? "" : "请在扩展详情中选择连接",
+       configHint: profile.credentialConfigured === true ? "" : profile.metadata?.source === "account-extension"
+         ? "请在扩展详情中选择连接" : "需要配置 API key",
       supportsImage: config.supportsImage === true,
+       supportsThinking: config.supportsThinking === true,
+       supportsThinkingEffort: config.supportsThinkingEffort === true,
+       thinkingMode: config.thinkingMode,
+       thinkingEffort: config.thinkingEffort,
+       preservedThinking: config.preservedThinking === true,
+       interleavedThinking: config.interleavedThinking === true,
       detectedLimits: normalizeModelLimits(profile.limits || {}),
       limits: normalizeModelLimits(config)
     }));

@@ -1,4 +1,5 @@
 import { zionIconHtml } from "./icons";
+import "./context-menu.css";
 import { displayPreferenceStorage, subscribeDisplayPreferences } from "../editor/display-preferences";
 
 export type EditorHeaderMenuItem = {

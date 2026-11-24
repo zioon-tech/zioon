@@ -255,6 +255,14 @@ describe("Workbench remote access bootstrap", () => {
       expect(JSON.parse(localStorage.getItem("zion.access.drafts:old-user:old-space")!))
         .toEqual([{ sessionId: "s", text: "unsaved input" }]);
       expect(document.querySelector("dialog")?.textContent).toContain("重新进入");
+      const dialog = document.querySelector("dialog")!;
+      expect(dialog.className).toBe("zion-access-change-dialog");
+      expect(dialog.getAttribute("aria-labelledby")).toBe(dialog.querySelector("h2")?.id);
+      expect(dialog.textContent).toContain("1 个会话已保留");
+      expect(document.activeElement?.textContent).toBe("重新进入");
+      const cancel = new Event("cancel", { cancelable: true });
+      dialog.dispatchEvent(cancel);
+      expect(cancel.defaultPrevented).toBe(true);
       poll!();
       await Promise.resolve();
       expect(showModal).toHaveBeenCalledOnce();

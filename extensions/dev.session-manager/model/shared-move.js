@@ -2,7 +2,7 @@ import { isReceivedNode } from "./shared-view.js";
 
 /** Save the private session before transferring it, then refresh the authoritative
  * private catalog and restore any editor that was displaying the old document. */
-export function createSharedSessionMover({ zion, view, moveOwn, isOwnSession, refreshOwn, getRevision }) {
+export function createSharedSessionMover({ zion, getZion = () => zion, view, moveOwn, isOwnSession, refreshOwn, getRevision }) {
   const pending = new Map();
   return (id, parent) => {
     if (isReceivedNode(id)) {
@@ -13,6 +13,9 @@ export function createSharedSessionMover({ zion, view, moveOwn, isOwnSession, re
     if (pending.has(id)) return pending.get(id);
     const operation = (async () => {
       try {
+        const zion = getZion();
+        if (!zion?.commands?.executeCommand) throw new Error("工作台正在准备，请稍后重新拖入");
+        view.setMoving?.(id, parent, true);
         const panels = (zion.panels?.listEditors?.() || []).filter(entry => entry.sessionId === id);
         const wasCurrent = zion.state?.get?.("sessions.currentId") === id;
         if (await zion.commands.executeCommand("zion.sessions.flushRunInput", id) !== true
@@ -33,6 +36,8 @@ export function createSharedSessionMover({ zion, view, moveOwn, isOwnSession, re
       } catch (error) {
         view.reportError(error);
         return false;
+      } finally {
+        view.setMoving?.(id, parent, false);
       }
     })();
     pending.set(id, operation);

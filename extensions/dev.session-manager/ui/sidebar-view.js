@@ -687,7 +687,9 @@ export function createSessionsSidebarViewManager(opts) {
       for (const button of sharingFilters.children) {
         button.setAttribute("aria-pressed", String(opts.sharingView?.filter === button.dataset.filter));
       }
-      sharingStatus.textContent = opts.sharingView?.error || "";
+      sharingStatus.textContent = opts.sharingView?.error
+        || (opts.sharingView?.moving?.size ? "正在移入共享文件夹…" : "");
+      sharingStatus.setAttribute("role", "status");
       sharingStatus.hidden = !sharingStatus.textContent;
     };
     if (opts.sharingView) {

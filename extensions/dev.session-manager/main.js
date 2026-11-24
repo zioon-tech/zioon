@@ -2051,7 +2051,7 @@ const sharedSessionView = createSharedSessionView({
   onChange: () => { refreshSessionsSidebarViewIfOpen(); refreshSessionsOverlayIfOpen(); }
 });
 const moveSessionWithSharing = createSharedSessionMover({
-  zion: window.zion, view: sharedSessionView, moveOwn: moveNode,
+  getZion: () => window.zion, view: sharedSessionView, moveOwn: moveNode,
   isOwnSession: id => getIndex().some(entry => entry.id === id),
   refreshOwn: refreshRemoteTree, getRevision: id => remoteSessionRevisions.get(id)
 });

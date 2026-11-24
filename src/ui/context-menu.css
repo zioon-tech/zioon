@@ -1,0 +1,58 @@
+/* Shared by the workbench and public reader, independently of extensions. */
+.zion-context-menu {
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--elevation-2); padding: 4px;
+  min-width: 120px; max-width: 220px; font-size: 12px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.zion-context-menu-row { position: relative; }
+.zion-context-menu-item {
+  display: flex; width: 100%; max-width: 200px; text-align: left;
+  background: transparent; color: var(--fg); border: none;
+  border-radius: 6px; padding: 6px 32px 6px 8px; cursor: pointer;
+  font: inherit; line-height: 1; box-sizing: border-box;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zion-context-menu-item > span, .zion-context-menu-item > div {
+  flex: 1 0 0; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.zion-context-menu-item:hover, .zion-context-menu-item:focus {
+  background: var(--hover-bg); outline: none;
+}
+.zion-context-menu-item:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.zion-context-menu-item:disabled { cursor: default; opacity: .55; }
+.zion-editor-header-menu .zion-editor-header-menu-section { font-weight: 600; padding-right: 8px; }
+.zion-editor-header-menu .zion-editor-header-menu-section-content,
+.zion-editor-header-menu .zion-editor-header-menu-item-content {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+.zion-editor-header-menu .zion-editor-header-menu-item-content {
+  width: 100%; justify-content: space-between; gap: 10px;
+}
+.zion-editor-header-menu .zion-editor-header-menu-item-left {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  flex: 1 1 auto; overflow: hidden;
+}
+.zion-editor-header-menu .zion-editor-header-menu-chevron { width: 14px; flex: 0 0 14px; opacity: .75; color: var(--dim); }
+.zion-editor-header-menu .zion-editor-header-menu-item-state {
+  width: 16px; height: 16px; flex: 0 0 16px; display: inline-flex;
+  align-items: center; justify-content: flex-end; color: var(--accent);
+  opacity: 0; transition: opacity .12s ease;
+}
+.zion-editor-header-menu .zion-editor-header-menu-item-state.is-toggle.is-checked { opacity: .9; }
+.zion-editor-header-menu .zion-editor-header-menu-item-state .codicon { font-size: 13px; line-height: 13px; }
+.zion-editor-header-menu .zion-editor-header-menu-section-title,
+.zion-editor-header-menu .zion-editor-header-menu-item-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zion-editor-header-menu .zion-context-menu-item { max-width: none; padding-right: 10px; line-height: 1.25; white-space: nowrap; }
+.zion-editor-header-menu .zion-context-menu-item.zion-editor-header-menu-item { padding-left: 22px; }
+.zion-editor-header-menu .zion-context-menu-item > span,
+.zion-editor-header-menu .zion-context-menu-item > div { white-space: normal; }
+.zion-editor-header-menu .zion-context-menu-item > .zion-editor-header-menu-item-content,
+.zion-editor-header-menu .zion-context-menu-item > .zion-editor-header-menu-section-content { display: flex; white-space: normal; }
+@media (prefers-reduced-motion: reduce) {
+  .zion-editor-header-menu .zion-editor-header-menu-item-state { transition: none; }
+}

@@ -101,10 +101,10 @@ describe("received content in the native session list", () => {
       isOwnSession: (id: string) => id === "same", refreshOwn, getRevision: () => 7 });
     const one = mover("same", "shared-folder:owner:remote-folder"), two = mover("same", "shared-folder:owner:remote-folder");
     expect(one).toBe(two); expect(await one).toBe(true);
-    expect(order).toEqual(["zion.sessions.flushRunInput", "zion.sessions.flushPendingSave", "import", "refresh", "zion.sessions.switch"]);
+    expect(order.filter(name => name !== "comments.listThreadRelations")).toEqual(["zion.sessions.flushRunInput", "zion.sessions.flushPendingSave", "import", "refresh", "zion.sessions.switch"]);
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(mutate).toHaveBeenCalledWith("shared-folder:owner:remote-folder", { action: "importDocument", sourceDocumentId: "same", sourceRevision: 7 });
-    expect(commands).toHaveBeenLastCalledWith("zion.sessions.switch", {
+    expect(commands).toHaveBeenCalledWith("zion.sessions.switch", {
       id: "shared-document:owner:moved", forceReload: true, skipPersistPrevious: true
     });
     expect(mover("shared-document:owner:same", "mine")).toBe(false);
@@ -119,6 +119,28 @@ describe("received content in the native session list", () => {
     expect(await mover("same", "shared-folder:owner:remote-folder")).toBe(false);
     expect(mutate).not.toHaveBeenCalled(); expect(refreshOwn).not.toHaveBeenCalled();
     expect(view.error).toContain("尚未保存成功"); expect(host.textContent).toContain("尚未保存成功");
+  });
+  it("resolves the workbench at drag time after module initialization and reopens all panels", async () => {
+    let zion: any;
+    const openSession = vi.fn();
+    const mutate = vi.spyOn(view, "mutate").mockResolvedValue("shared-document:owner:moved");
+    const mover = createSharedSessionMover({ getZion: () => zion, view, moveOwn: move,
+      isOwnSession: () => true, refreshOwn: vi.fn(), getRevision: () => 7 });
+    zion = { ...(window as any).zion, panels: {
+      listEditors: () => [{ panelId: "left", sessionId: "same" }, { panelId: "right", sessionId: "same" }],
+      openSession
+    } };
+    values.set("sessions.currentId", "same");
+    let finish: (id: string) => void;
+    mutate.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const pending = mover("same", "shared-folder:owner:remote-folder");
+    await vi.waitFor(() => expect(mutate).toHaveBeenCalledOnce());
+    expect(host.textContent).toContain("正在移入共享文件夹");
+    finish!("shared-document:owner:moved");
+    expect(await pending).toBe(true);
+    expect(openSession.mock.calls.map(([panel]: string[]) => panel)).toEqual(["left", "right"]);
+    expect(view.moving.size).toBe(0);
+    expect(host.textContent).not.toContain("正在移入共享文件夹");
   });
   it("preserves received hierarchy, qualifies colliding IDs and filters all / sent / received without altering the private tree", () => {
     const before = JSON.stringify(own);
