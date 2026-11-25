@@ -143,6 +143,36 @@ test("nonzero process exit is known while transport failure is unknown", async (
   assert.equal(unknown.calls.execs, 1);
 });
 
+test("cancellation wakes a paused scoped instance and preserves its files", async () => {
+  const f = fixture();
+  const provider = new ManagedSandboxProvider({ ...config(), supportsPause: true }, { sdk: f.sdk });
+  const handle = await provider.create(scope, "create:a");
+  const box = f.boxes.get(handle.sandboxId);
+  box.files.set("/workspace/user.txt", "preserve");
+  box.state = "paused";
+  const connect = f.sdk.connect;
+  f.sdk.connect = async (...args) => {
+    const connection = await connect(...args);
+    connection.commands.run = async () => ({ exitCode: 0, stdout: '{"stopped":true}', stderr: "" });
+    return connection;
+  };
+  assert.equal(await provider.stopExecution(handle, scope, { id: "89bae2a1-f159-4355-b6da-dfdf88f275cf" }), true);
+  assert.equal(box.state, "running");
+  assert.equal(box.files.get("/workspace/user.txt"), "preserve");
+  assert.equal(f.calls.creates, 1);
+  assert.equal(f.calls.kills, 0);
+});
+
+test("an unavailable connection is a known failure before command dispatch", async () => {
+  const f = fixture();
+  const handle = await f.provider.create(scope, "create:a");
+  f.boxes.get(handle.sandboxId).state = "paused";
+  await assert.rejects(f.provider.exec(handle, scope, { command: "publish" }), {
+    outcomeKnown: true, toolDispatchState: "not_sent", code: "sandbox_not_running"
+  });
+  assert.equal(f.calls.execs, 0);
+});
+
 test("output overflow aborts reception and preserves unknown outcome", async () => {
   const f = fixture({ largeOutput: true });
   const handle = await f.provider.create(scope, "create:a");

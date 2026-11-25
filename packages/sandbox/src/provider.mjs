@@ -187,7 +187,12 @@ export class ManagedSandboxProvider {
       || maxOutputBytes > 5 * 1024 * 1024) {
       throw new Error("Invalid sandbox output limit");
     }
-    const sandbox = await this.connection(handle, scope);
+    let sandbox;
+    try { sandbox = await this.connection(handle, scope); }
+    catch (error) {
+      // Connecting/resuming cannot have dispatched this command.
+      throw Object.assign(error, { outcomeKnown: true, toolDispatchState: "not_sent" });
+    }
     const controller = new AbortController();
     const subscription = signal?.onCancel(() => controller.abort());
     let process;
@@ -248,7 +253,11 @@ export class ManagedSandboxProvider {
     }
   }
   async stopExecution(handle, scope, execution) {
-    if ((await this.inspect(handle, scope)).state === "destroyed") return true;
+    const info = await this.inspect(handle, scope);
+    if (info.state === "destroyed") return true;
+    // Idle pause preserves processes. Wake the scoped instance to install the
+    // durable cancel marker and terminate them before admitting new work.
+    if (info.state === "paused") await this.resume(handle, scope);
     if (execution?.kind === "pty") {
       const python = `
 import os,pathlib,signal,time,json

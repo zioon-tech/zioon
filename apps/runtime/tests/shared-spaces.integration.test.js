@@ -405,6 +405,37 @@ describe("shared Spaces with real PostgreSQL transactions", () => {
     expect((await h.db.pool.query("SELECT state FROM space_usage_reservations WHERE id=$1", [tool.id])).rows[0].state).toBe("pending");
   });
 
+  it("automatically releases a projected terminal writer without releasing unknown tool quota", async () => {
+    const h = await setup(), d = await h.document(), content = await h.spaces.content(h.team.id, d);
+    const runs = new PostgresRunStore(h.db.pool, { spaceId: h.team.id });
+    await runs.create({ id: "old-tool", attemptId: "latest", status: "completed", sessionId: d,
+      principal: { userId: h.bob.id, spaceId: h.team.id }, metadata: {}, updatedAt: Date.now() });
+    for (const runId of ["old-tool", "new-message"]) await h.execution.enqueue({
+      userId: h.bob.id, spaceId: h.team.id, documentId: d, runId, inputRevision: content.revision
+    });
+    await h.execution.claim(h.team.id, "old-tool");
+    const tool = await h.execution.reserve({ userId: h.bob.id, spaceId: h.team.id, documentId: d,
+      runId: "old-tool", stepId: "tool:uncertain", input: "old mutation" });
+    await h.execution.dispatch(h.team.id, tool.id);
+    await h.execution.pending(h.team.id, tool.id);
+    await h.db.pool.query(`INSERT INTO runtime_run_completion_tasks
+      (space_id,run_id,attempt_id,terminal_sequence,payload_json,available_at,completed_steps)
+      VALUES ($1,'old-tool','earlier',1,'{}',0,'["runtime.document"]')`, [h.team.id]);
+    // An older attempt's final projection cannot release the current writer.
+    expect((await h.execution.finish(h.team.id, "old-tool", "completed",
+      { allowPendingModels: true, allowPendingTools: true })).status).toBe("outcome_unknown");
+    await h.db.pool.query(`UPDATE runtime_run_completion_tasks SET attempt_id='latest',completed_steps='[]'
+      WHERE space_id=$1 AND run_id='old-tool'`, [h.team.id]);
+    expect((await h.execution.finish(h.team.id, "old-tool", "completed",
+      { allowPendingModels: true, allowPendingTools: true })).status).toBe("outcome_unknown");
+    await h.db.pool.query(`UPDATE runtime_run_completion_tasks
+      SET completed_steps='["runtime.transcript","runtime.document"]',status='completed'
+      WHERE space_id=$1 AND run_id='old-tool'`, [h.team.id]);
+    expect((await h.execution.waitForTurn(h.team.id, "new-message")).status).toBe("running");
+    expect((await h.db.pool.query("SELECT state FROM space_usage_reservations WHERE id=$1", [tool.id])).rows[0].state).toBe("pending");
+    expect((await h.db.pool.query("SELECT 1 FROM space_run_queue WHERE space_id=$1 AND status='running'", [h.team.id])).rowCount).toBe(1);
+  });
+
   it("rechecks document and capability authority immediately before dispatch", async () => {
     const h = await setup(), d = await h.document(), b = await h.borrow(), c = await h.spaces.content(h.team.id, d);
     await h.execution.enqueue({ userId: h.bob.id, spaceId: h.team.id, documentId: d, bindingId: b.id, runId: "run", inputRevision: c.revision });

@@ -48,7 +48,7 @@ import { createThemeManager } from "./theme/themeManager";
 import { createI18nManager } from "./i18n/i18nManager";
 import { ensureWorkbenchRuntimeAccess } from "./runtime/workbench-access";
 import { accountCan } from "../packages/account-ui/src/client";
-import { workbenchStorage as localStorage } from "./runtime/workbench-space";
+import { workbenchStorage as localStorage, workbenchSessionTitle } from "./runtime/workbench-space";
 import { mountSharingWorkbench } from "./ui/workbench/SharingWorkbench";
 import { mountEditorParticipants } from "./ui/workbench/EditorParticipants";
 import { mountSharedDocument } from "./ui/workbench/SharedDocument";
@@ -502,7 +502,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
     const treeFromState = window.zion.state.get<any>("sessions.treeMem");
     const tree = treeFromState && treeFromState.type === "folder" ? treeFromState : safeParse<any>(localStorage.getItem("zion.sessions.tree"), null);
     const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
-    const sessionTitle = String(meta?.title || "").trim() || sessionId;
+    const sessionTitle = workbenchSessionTitle(sessionId, meta);
     if (!tree) return sessionTitle;
 
     const parts: string[] = [sessionTitle];
@@ -521,7 +521,7 @@ function mountCurrentSessionPath(pathEl: HTMLElement, panelId?: string | null) {
 
   const computeTitle = (sessionId: string): string => {
     const meta = window.zion.state.get<any>(`sessions.meta.${sessionId}`);
-    return String(meta?.title || "").trim() || sessionId;
+    return workbenchSessionTitle(sessionId, meta);
   };
 
   const computeFilePath = (tabId: string): string => {
@@ -1161,8 +1161,7 @@ function mountEditorSessionTabsBar(containerEl: HTMLElement) {
     const getTitleForSession = (id: string): string => {
       try {
         const meta = window.zion.state.get<any>(`sessions.meta.${id}`);
-        const t = String(meta?.title || "").trim();
-        return t || id;
+        return workbenchSessionTitle(id, meta);
       } catch {
         return id;
       }

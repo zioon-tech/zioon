@@ -19,8 +19,8 @@ const queue = (r) => r && ({
   ownerInstance: r.owner_instance, updatedAt: number(r.updated_at)
 });
 
-/** Durable FIFO and monthly call budgets. Never release an uncertain dispatch
- * on a timeout/cancellation request. Only the broker's receipt settles usage. */
+/** Durable document FIFO and monthly call budgets. Only the broker's receipt
+ * settles uncertain usage; final projection releases the document writer. */
 export class SpaceExecutionStore {
   constructor({ spaces, instanceId = id("runtime") }) {
     this.spaces = spaces;
@@ -291,9 +291,13 @@ export class SpaceExecutionStore {
     try {
       while (true) {
         signal?.throwIfAborted();
-        const result = await this.claim(spaceId, runId);
+        let result = await this.claim(spaceId, runId);
+        if (result?.status === "blocked") {
+          await this.recover(spaceId, { onlyUnknown: true, documentId: result.documentId });
+          result = await this.claim(spaceId, runId);
+        }
         if (result?.status === "blocked") throw accountError(409, result.reason,
-          "这段会话上一条任务的执行结果尚未确认，请联系管理员处理后重试。");
+          "上一条消息正在恢复，请稍后重试。");
         if (result?.status === "failed") throw accountError(409, result.reason, "排队期间文档已变化，请检查最新内容后重试");
         if (result) return result;
         await delay(100, undefined, { signal });
@@ -304,16 +308,30 @@ export class SpaceExecutionStore {
     }
   }
 
-  async finish(spaceId, runId, status, { onlyQueued = false, allowPendingModels = false } = {}) {
+  async finish(spaceId, runId, status, {
+    onlyQueued = false, allowPendingModels = false, allowPendingTools = false
+  } = {}) {
     if (!["completed", "cancelled", "failed", "outcome_unknown"].includes(status)) throw accountError(400, "invalid_queue_status");
     return this.spaces.transaction(spaceId, async (client) => {
       const r = queue((await client.query("SELECT * FROM space_run_queue WHERE space_id=$1 AND run_id=$2", [spaceId, runId])).rows[0]);
       if (!r || onlyQueued && r.status !== "queued") return r;
       if (!["queued", "running", "cancelling", "outcome_unknown"].includes(r.status)) return r;
       if (r.ownerInstance && r.ownerInstance !== this.instanceId) throw accountError(409, "queue_owned_by_another_runtime");
+      // External side effects/billing retain their own receipts and quota.
+      // They cannot keep the document writer after its final projection. The
+      // durable terminal task, not a caller flag or a timeout, is authority.
+      const projected = allowPendingTools && status !== "outcome_unknown" && (await client.query(
+        `SELECT 1 FROM runtime_runs run JOIN runtime_run_completion_tasks t
+          ON t.space_id=run.space_id AND t.run_id=run.id
+         WHERE run.space_id=$1 AND run.id=$2
+           AND run.status IN ('interrupted','completed','aborted','failed','waiting')
+           AND t.attempt_id=run.payload_json->>'attemptId'
+           AND t.completed_steps ? 'runtime.document'`, [spaceId, runId])).rowCount;
       const pending = (await client.query(`SELECT 1 FROM space_usage_reservations
         WHERE space_id=$1 AND run_id=$2 AND state IN ('dispatched','pending')
-          AND ($3=FALSE OR step_id NOT LIKE 'model:%')`, [spaceId, runId, allowPendingModels])).rowCount;
+          AND ($3=FALSE OR step_id NOT LIKE 'model:%')
+          AND ($4=FALSE OR step_id NOT LIKE 'tool:%')`,
+      [spaceId, runId, allowPendingModels, !!projected])).rowCount;
       const next = pending ? "outcome_unknown" : status;
       await client.query("UPDATE space_run_queue SET status=$3,updated_at=$4 WHERE space_id=$1 AND run_id=$2",
         [spaceId, runId, next, this.now()]);
@@ -338,16 +356,16 @@ export class SpaceExecutionStore {
       ORDER BY sequence DESC LIMIT 100`, [spaceId, documentId])).rows.map(queue);
   }
 
-  /** Called after the existing RunStore marks lost owners interrupted. A
-   * restart never repeats an external call. Only undispatched reservations or
-   * durable Runtime tool receipts can release/settle the old writer. */
-  async recover(spaceId, { onlyUnknown = false } = {}) {
+  /** A restart never repeats an external call. Receipts reconcile usage;
+   * completed terminal projection separately releases the document writer. */
+  async recover(spaceId, { onlyUnknown = false, documentId = null } = {}) {
     const rows = await this.spaces.transaction(spaceId, async (client) => {
       const result = await client.query(`SELECT q.*,r.status AS run_status FROM space_run_queue q
         JOIN runtime_runs r ON r.space_id=q.space_id AND r.id=q.run_id
         WHERE q.space_id=$1 AND q.status IN ('queued','running','cancelling','outcome_unknown')
           AND ($2=FALSE OR q.status='outcome_unknown')
-          AND r.status IN ('interrupted','completed','aborted','failed','waiting')`, [spaceId, onlyUnknown]);
+          AND ($3::text IS NULL OR q.document_id=$3)
+          AND r.status IN ('interrupted','completed','aborted','failed','waiting')`, [spaceId, onlyUnknown, documentId]);
       for (const r of result.rows) await client.query(
         "UPDATE space_run_queue SET owner_instance=$3,updated_at=$4 WHERE space_id=$1 AND run_id=$2",
         [spaceId, r.run_id, this.instanceId, this.now()]);
@@ -365,7 +383,8 @@ export class SpaceExecutionStore {
           const receipt = (await this.pool.query(`SELECT result_json FROM runtime_tool_invocation_receipts
             WHERE space_id=$1 AND run_id=$2 AND invocation_id=$3`, [spaceId, r.runId, invocationId])).rows[0];
           if (receipt && receipt.result_json?.failureCode !== "execution_outcome_unknown") {
-            await this.settle(spaceId, r.id, { id: `tool:${invocationId}`, calls: 1, verified: true });
+            await this.settle(spaceId, r.id, { id: `tool:${invocationId}`,
+              calls: receipt.result_json?.toolDispatchState === "not_sent" ? 0 : 1, verified: true });
           } else await this.pending(spaceId, r.id);
         } else await this.pending(spaceId, r.id);
       }
@@ -375,7 +394,7 @@ export class SpaceExecutionStore {
         WHERE space_id=$1 AND run_id=$2 AND status<>'completed'
           AND NOT completed_steps ? 'runtime.document'`, [spaceId, row.run_id])).rowCount;
       const current = await this.finish(spaceId, row.run_id, pendingProjection ? "outcome_unknown" : status,
-        { allowPendingModels: !pendingProjection });
+        { allowPendingModels: !pendingProjection, allowPendingTools: !pendingProjection });
       recovered.push(current);
     }
     return recovered;

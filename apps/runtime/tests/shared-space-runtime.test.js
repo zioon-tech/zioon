@@ -126,7 +126,7 @@ describe("shared Space execution through the actual Agent executor", () => {
     expect(h.events).not.toContain("transport");
     release();
     expect((await handle.completion).status).toBe("completed");
-    await vi.waitFor(() => expect(h.execution.finish).toHaveBeenCalledWith("together", handle.runId, "completed", { allowPendingModels: true }));
+    await vi.waitFor(() => expect(h.execution.finish).toHaveBeenCalledWith("together", handle.runId, "completed", { allowPendingModels: true, allowPendingTools: true }));
     expect(h.events.indexOf("dispatch")).toBeLessThan(h.events.indexOf("transport"));
     expect(h.execution.settle).toHaveBeenCalledWith("together", expect.any(String),
       expect.objectContaining({ calls: 1, inputTokens: 12, outputTokens: 3 }));
@@ -211,6 +211,19 @@ describe("shared Space execution through the actual Agent executor", () => {
     await expect(tools.invoke({ ...invocation, invocationId: "tool-2", toolCall: { ...invocation.toolCall,
       arguments: { ...invocation.toolCall.arguments, bindingId: "private-binding" } } }, parent.signal))
       .rejects.toMatchObject({ code: "capability_not_selected" });
+  });
+
+  it("settles a known pre-dispatch failure without reserving uncertain tool usage", async () => {
+    const h = fixture(), parent = new CancellationController();
+    await h.runtime.prepare(h.request, { runId: "run", signal: parent.signal });
+    h.rawTools.invoke.mockResolvedValueOnce({ ok: false, content: "workspace recovering",
+      failureCode: "sandbox_recovery_pending", toolDispatchState: "not_sent", retryable: true });
+    const result = await h.runtime.wrapTools(h.rawTools).invoke({ ...h.request,
+      runId: "run", invocationId: "not-sent", toolCall: { name: "webFetch", arguments: {} } }, parent.signal);
+    expect(result.toolDispatchState).toBe("not_sent");
+    expect(h.execution.pending).not.toHaveBeenCalled();
+    expect(h.execution.settle).toHaveBeenCalledWith("together", expect.any(String),
+      expect.objectContaining({ calls: 0, verified: true }));
   });
 });
 
