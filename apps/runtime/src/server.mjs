@@ -1089,6 +1089,14 @@ export function createRuntimeServer({
             // A previous waiting attempt must never project over its resumed owner.
             const current = await runs.get(run.id);
             if (current?.attemptId !== run.attemptId || current.status !== run.status) return;
+            const events = await runs.getEvents(run.id);
+            // Requests rejected/cancelled before execution have no document
+            // output or prepared anchor. Their terminal receipt is complete;
+            // do not create a working copy merely to replay that receipt.
+            if (["failed", "aborted"].includes(run.status) && !String(run.output || "").trim()
+              && events.length > 0 && events.every(event =>
+                ["run.failed", "run.aborted", "run.finalized"].includes(event.type)
+                && !String(event.data?.output || "").trim())) return;
             const projection = run.metadata?.documentProjection;
             if (sessionDocumentService?.applyRunEvents && ["live", "final"].includes(projection?.mode)) {
               if (!sessionDocumentService?.prepareRun) throw new Error("Snapshot document preparation is unavailable");
@@ -1103,7 +1111,7 @@ export function createRuntimeServer({
             }
             if (sessionDocumentService?.applyRunEvents) {
               await sessionDocumentService.applyRunEvents(run.sessionId, {
-                runId: run.id, events: await runs.getEvents(run.id),
+                runId: run.id, events,
                 mode: projection?.mode,
                 includeReasoning: run.metadata?.documentProjection?.includeReasoning !== false
               });
