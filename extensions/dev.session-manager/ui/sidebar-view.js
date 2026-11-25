@@ -796,7 +796,10 @@ export function createSessionsSidebarViewManager(opts) {
     listHeaderCount.className = "zion-sessions-list-header-count";
     const listHeaderChips = document.createElement("span");
     listHeaderChips.className = "zion-sessions-list-header-chips";
-    listHeader.append(listHeaderCount, listHeaderChips);
+    const listHeaderInfo = document.createElement("div");
+    listHeaderInfo.className = "zion-sessions-list-header-info";
+    listHeaderInfo.append(listHeaderCount, listHeaderChips);
+    listHeader.append(listHeaderInfo);
     const createActions = document.createElement("div");
     createActions.className = "zion-sessions-create-actions";
     for (const [command, label, icon] of [

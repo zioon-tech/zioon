@@ -287,10 +287,9 @@ export class SharedSpaceRuntime {
           const run = await runtime.runs.get(context.runId);
           await runtime.execution.finish(runtime.runtimeSpaceId, context.runId,
             run?.status === "aborted" ? "cancelled" : run?.status === "failed" ? "failed" : "completed",
-            // A closed model stream may have unknown billing, but cannot make
-            // further document/tool writes after terminal projection. Preserve
-            // its reservation without holding the document's writer forever.
-            { allowPendingModels: true });
+            // Preserve unknown external effects/billing in their receipts and
+            // reservations. Terminal projection ends this document writer.
+            { allowPendingModels: true, allowPendingTools: true });
         } finally { runtime.active.delete(context.runId); }
       }
     };
@@ -433,7 +432,8 @@ export class SharedSpaceRuntime {
             requestHash: digest({ name, arguments: args }), result, completedAt: Date.now()
           });
           await runtime.execution.settle(runtime.runtimeSpaceId, reservation.id, {
-            id: `tool:${invocation.invocationId}`, verified: true, calls: 1
+            id: `tool:${invocation.invocationId}`, verified: true,
+            calls: result.toolDispatchState === "not_sent" ? 0 : 1
           });
           settled = true;
           return result;

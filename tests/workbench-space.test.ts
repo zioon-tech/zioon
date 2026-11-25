@@ -10,6 +10,18 @@ beforeEach(async () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("fixed Workbench Space", () => {
+  it("uses the shared source title when a loaded record contains a generic title and notifies renames", () => {
+    const values = new Map(), set = vi.fn((key, value) => values.set(key, value));
+    (window as any).zion = { state: { get: key => values.get(key), set } };
+    const input = { originSpaceId: "provider", documentId: "doc", role: "editor" as const,
+      title: "旅行安排", providerName: "提供者" };
+    const document = module.registerSharedWorkbenchDocument(input);
+    expect(module.workbenchSessionTitle(document.localId, { title: "会话" })).toBe("旅行安排");
+    module.registerSharedWorkbenchDocument({ ...input, title: "新的旅行安排" });
+    expect(values.get(`sessions.meta.${document.localId}`).title).toBe("新的旅行安排");
+    expect(module.workbenchSessionTitle(document.localId, { title: "会话" })).toBe("新的旅行安排");
+    expect(module.workbenchSessionTitle("own", { title: "自有会话" })).toBe("自有会话");
+  });
   it("keeps requests in the page's Space when another window changes the server default", async () => {
     const fetchImpl = vi.fn(async () => new Response("{}"));
     vi.stubGlobal("fetch", fetchImpl);

@@ -183,6 +183,14 @@ export class ToolInvocationLifecycle {
         throw new Error(`Tool invocation cancelled: ${outcome.reason}`);
       }
       if (outcome.type === "error") {
+        if (outcome.error?.outcomeKnown === true) {
+          return {
+            ok: false, content: errorMessage(outcome.error), error: errorMessage(outcome.error),
+            failureCode: outcome.error.failureCode || outcome.error.code || "tool_error",
+            retryable: outcome.error.retryable === true,
+            ...(outcome.error.toolDispatchState === "not_sent" ? { toolDispatchState: "not_sent" } : {})
+          };
+        }
         if (signal.cancelled) {
           if (execution.idempotency !== "safe") {
             return unknownToolOutcomeResult(invocation, signal.reason);

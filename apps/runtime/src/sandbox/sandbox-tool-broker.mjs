@@ -255,9 +255,15 @@ export class SandboxToolBroker {
         }
         // A live independent invocation can proceed concurrently. Once an
         // orphan has been claimed, its unresolved process must fence new work.
-        if (!stopped) throw new Error("Sandbox operation termination remains unconfirmed");
+        if (!stopped) throw Object.assign(new Error("Sandbox 正在恢复上一条命令，请稍后重试。"), {
+          code: "sandbox_recovery_pending", outcomeKnown: true,
+          toolDispatchState: "not_sent", retryable: true, statusCode: 503
+        });
       });
-      if (required && !recovered) throw new Error("Sandbox operation still has an execution owner");
+      if (required && !recovered) throw Object.assign(new Error("Sandbox 仍有命令正在执行，请稍后重试。"), {
+        code: "sandbox_workspace_busy", outcomeKnown: true,
+        toolDispatchState: "not_sent", retryable: true, statusCode: 409
+      });
     }
   }
   async prepareWorkspace(binding, invocation, signal, bindingHash) {
@@ -615,7 +621,9 @@ export class SandboxToolBroker {
             content: error.message,
             error: error.message,
             failureCode: String(error.failureCode || error.code || "tool_error"),
-            retryable: error.retryable === true
+            retryable: error.retryable === true,
+            ...(!active.dispatched || error.toolDispatchState === "not_sent"
+              ? { toolDispatchState: "not_sent" } : {})
           };
         } else {
           const code = /^[a-z_]{1,80}$/.test(String(error?.code || ""))

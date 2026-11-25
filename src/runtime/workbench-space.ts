@@ -73,7 +73,15 @@ export function registerSharedWorkbenchDocument(input: Omit<SharedWorkbenchDocum
   const document = Object.freeze({ ...input, localId });
   documents.set(localId, document);
   workbenchStorage.setItem("zion.sharing.documents", JSON.stringify([...documents.values()]));
+  const state = (globalThis as any).window?.zion?.state;
+  if (typeof state?.set === "function" && existing?.title !== input.title) {
+    const key = `sessions.meta.${localId}`;
+    state.set(key, { ...state.get(key), id: localId, title: input.title });
+  }
   return document;
+}
+export function workbenchSessionTitle(id: string, meta?: { title?: string } | null) {
+  return sharedWorkbenchDocument(id)?.title?.trim() || String(meta?.title || "").trim() || id;
 }
 export function sharedWorkbenchDocument(localId: string): SharedWorkbenchDocument | null {
   if (!localId?.startsWith(documentPrefix)) return null;

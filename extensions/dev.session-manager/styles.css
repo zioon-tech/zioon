@@ -1078,12 +1078,19 @@ body.zion-sessions-no-transitions .zion-session-row * {
 .zion-sessions-list-header {
   position: relative;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
   flex: 0 0 auto;
   min-height: 28px;
   box-sizing: border-box;
   padding: 6px 8px 4px 8px;
+}
+.zion-sessions-list-header-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 18px;
 }
 .zion-sessions-list-header-count {
   flex: 0 0 auto;
@@ -1101,10 +1108,11 @@ body.zion-sessions-no-transitions .zion-session-row * {
   flex: 1 1 auto;
   min-width: 0;
 }
-.zion-sessions-create-actions { display: flex; flex: 0 0 auto; gap: 3px; margin-left: auto; }
+.zion-sessions-create-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 .zion-sessions-create-actions button {
-  display: inline-flex; align-items: center; gap: 4px; min-height: 26px;
-  padding: 4px 6px; border: 0; border-radius: 4px; background: transparent;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px;
+  flex: 1 1 0; min-width: 0;
+  padding: 4px 6px; border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent); border-radius: 4px; background: transparent;
   color: color-mix(in srgb, var(--fg) 75%, transparent); font: inherit; font-size: 11px;
   white-space: nowrap; cursor: pointer;
 }

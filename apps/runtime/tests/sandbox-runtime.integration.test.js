@@ -399,7 +399,9 @@ describe("sandbox Runtime durable integration", () => {
     cloud.stopExecution.mockRejectedValue(new Error("stop unavailable"));
     const call = h.invocation();
     expect((await h.make().invoke(call, new CancellationController().signal)).failureCode).toBe("execution_outcome_unknown");
-    await expect(h.make().invoke(h.invocation("sandboxRead", { path: "/workspace/file" }), new CancellationController().signal)).rejects.toThrow("termination remains unconfirmed");
+await expect(h.make().invoke(h.invocation("sandboxRead", { path: "/workspace/a" }), new CancellationController().signal)).rejects.toMatchObject({
+      code: "sandbox_recovery_pending", outcomeKnown: true, toolDispatchState: "not_sent"
+    });
     expect(cloud.exec).toHaveBeenCalledTimes(1);
     expect(cloud.create).toHaveBeenCalledTimes(1);
     cloud.stopExecution.mockResolvedValue(true);
