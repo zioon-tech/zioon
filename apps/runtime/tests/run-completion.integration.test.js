@@ -42,6 +42,27 @@ async function fixture(options = {}) {
 }
 
 describe("durable nonblocking completion", () => {
+  it.each(["failed", "aborted"])("finishes a never-started %s request without requiring a document anchor", async status => {
+    const runs = new PostgresRunStore(database.pool, { spaceId: database.nextSpaceId() });
+    const now = Date.now(), id = "never-started-" + status;
+    await runs.createSession({ id: "doc", title: "doc", status: "active", createdAt: now, updatedAt: now });
+    await runs.create({ id, attemptId: "attempt", status: "created", sessionId: "doc", output: "",
+      metadata: { documentProjection: { mode: "live", anchor: {} } }, createdAt: now, updatedAt: now });
+    await runs.append({ schemaVersion: 1, eventId: id, runId: id, attemptId: "attempt",
+      sequence: 1, type: status === "failed" ? "run.failed" : "run.aborted", timestamp: now, data: {} }, { status });
+    const prepareRun = vi.fn(() => { throw new Error("missing anchor"); }), replay = vi.fn();
+    const server = createRuntimeServer({ runs, executor: executor(runs), port: 0,
+      sessionDocumentService: { prepareRun, applyRunEvents: replay } });
+    try {
+      await server.start();
+      await vi.waitFor(async () => expect((await runs.completionTaskState(id, "attempt")).status).toBe("completed"));
+      expect((await runs.completionTaskState(id, "attempt")).completedSteps).toContain("runtime.document");
+      expect(prepareRun).not.toHaveBeenCalled();
+      expect(replay).not.toHaveBeenCalled();
+      expect((await runs.get(id)).status).toBe(status);
+    } finally { await server.close(); }
+  });
+
   it("retries failed snapshot preparation without reporting completed execution as failed", async () => {
     let prepared = false;
     const prepareRun = vi.fn()
