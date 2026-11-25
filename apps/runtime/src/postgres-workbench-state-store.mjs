@@ -1742,7 +1742,7 @@ export class PostgresWorkbenchStateStore {
     if (current.exists) {
       return {
         id,
-        text: normalizeConversationTextForDisplay(current.text),
+        text: options.rawText === true ? current.text : normalizeConversationTextForDisplay(current.text),
         meta: { ...current.meta, id },
         session_revision: current.revision,
         content_hash: current.contentHash || contentHash(current.text, current.meta),

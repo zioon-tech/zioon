@@ -97,6 +97,46 @@ afterEach(async () => {
 });
 
 describe("Runtime collaboration service", () => {
+  it("bootstraps the exact stored text while retaining display normalization for readers", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-raw-bootstrap-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    const text = "question without a role\nassistant existing reply";
+    await workbenchState.createSession({ id: "raw-bootstrap", text });
+    expect((await workbenchState.readSession("raw-bootstrap")).text).toBe("user " + text);
+    const collaboration = createCollaboration({ store: workbenchState });
+    resources.push({ directory, workbenchState, collaboration });
+    const connection = await collaboration.hocuspocus.openDirectConnection("raw-bootstrap");
+    try {
+      expect(connection.document.getText("content").toString()).toBe(text);
+      expect((await workbenchState.currentSession("raw-bootstrap")).text).toBe(text);
+      expect((await workbenchState.readSession("raw-bootstrap")).text).toBe("user " + text);
+    } finally { await connection.disconnect({ unloadImmediately: true }); }
+  });
+
+  it.each(["live", "final"])("releases an empty failed %s projection whose captured anchor no longer exists", async mode => {
+    const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-empty-failure-"));
+    const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });
+    const text = "user my edited working copy", runId = "empty-failed-run";
+    await workbenchState.createSession({ id: "empty-failure", text });
+    const collaboration = createCollaboration({ store: workbenchState });
+    resources.push({ directory, workbenchState, collaboration });
+    await collaboration.prepareRun("empty-failure", { runId, mode,
+      documentAnchor: { fallback: { offset: 13, before: "user original", after: "" } } });
+    await expect(collaboration.applyRunEvents("empty-failure", { runId, mode, events: [
+      { runId, sequence: 1, type: "run.failed", data: { output: "partial answer", error: "Provider unavailable" } }
+    ] })).rejects.toThrow("anchor is not prepared");
+    await collaboration.applyRunEvents("empty-failure", { runId, mode, events: [
+      { runId, sequence: 1, type: "reasoning.started", data: {} },
+      { runId, sequence: 2, type: "run.failed", data: { error: "Provider unavailable" } }
+    ] });
+    const connection = await collaboration.hocuspocus.openDirectConnection("empty-failure");
+    try {
+      expect(connection.document.getText("content").toString()).toBe(text);
+      expect(connection.document.getMap("runProjection").get(runId)).toMatchObject({ detached: true });
+      expect((await workbenchState.currentSession("empty-failure")).text).toBe(text);
+    } finally { await connection.disconnect({ unloadImmediately: true }); }
+  });
+
   it("notifies a mixed revoked document to stop same-provider replay and accepts fresh rejoin edits", async () => {
     const directory = mkdtempSync(join(tmpdir(), "zion-collaboration-reset-"));
     const workbenchState = new PostgresWorkbenchStateStore(database.pool, { spaceId: database.nextSpaceId() });

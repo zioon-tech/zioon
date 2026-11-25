@@ -334,7 +334,7 @@ export function createRuntimeCollaborationService({
       const sessionId = collaborationDocumentName(documentName);
       const [stored, session] = await Promise.all([
         store.readCollaborationDocument(sessionId),
-        store.readSession(sessionId)
+        store.readSession(sessionId, { rawText: true })
       ]);
       if (session?.deleted) throw Object.assign(new Error("Session has been deleted"), {
         code: "session_deleted", statusCode: 410
@@ -415,7 +415,7 @@ export function createRuntimeCollaborationService({
         // Drop peers and reload from the committed snapshot on their next join.
         quarantineDocument(sessionId, document);
         updateQueues.delete(sessionId);
-        const snapshot = await store.readSession(sessionId);
+        const snapshot = await store.readSession(sessionId, { rawText: true });
         const committed = await store.readCollaborationDocument(sessionId);
         const restored = new Y.Doc();
         if (committed?.state?.length) Y.applyUpdate(restored, committed.state);
@@ -696,6 +696,16 @@ export function createRuntimeCollaborationService({
             // A user-detached working copy needs no further document replay.
             // Its captured anchor may remain unresolved after an edit.
             if (projection?.mode === mode && projection.detached) return;
+            // A failed provider that emitted no body has nothing to insert at
+            // a missing anchor. Let the projector persist detachment, keeping
+            // the user's working copy and the accepted Run facts intact.
+            const terminal = events?.findLast(event =>
+              ["run.completed", "run.failed", "run.aborted", "run.waiting"].includes(event.type));
+            const failedBeforeOutput = terminal?.type === "run.failed"
+              && !events.some(event => ["message.delta", "message.completed", "reasoning.delta",
+                "reasoning.completed", "tool.requested", "tool.completed", "tool.denied"].includes(event.type)
+                || String(event.data?.output || "").trim());
+            if (projection?.mode === mode && projection.pendingAnchor && failedBeforeOutput) return;
             if (!projection || projection.pendingAnchor || projection.mode !== mode) {
               throw new Error("Snapshot document anchor is not prepared");
             }
